@@ -140,6 +140,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Cell width for per-frame visualization contact sheets.",
     )
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--progress",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Print per-frame/camera/role SAM3 candidate generation progress.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -336,6 +342,7 @@ def process_camera(
     role_doc: Mapping[str, Any],
     out_dir: Path,
     args: argparse.Namespace,
+    progress_label: str | None = None,
 ) -> dict[str, Any]:
     resume_files = (
         out_dir / "candidates.json",
@@ -343,9 +350,13 @@ def process_camera(
         out_dir / "candidate_grid.png",
     )
     if args.resume and all(path.is_file() for path in resume_files):
+        if args.progress and progress_label:
+            print(f"SAM3 progress {progress_label}: resume cached candidates", flush=True)
         return json.loads((out_dir / "candidates.json").read_text(encoding="utf-8"))
     out_dir.mkdir(parents=True, exist_ok=True)
     image = Image.open(image_path).convert("RGB")
+    if args.progress and progress_label:
+        print(f"SAM3 progress {progress_label}: start {image_path}", flush=True)
     candidates: list[dict[str, Any]] = []
     prompt_attempts: list[dict[str, Any]] = []
     for role in ROLE_ORDER:
@@ -406,6 +417,15 @@ def process_camera(
     }
     atomic_json_dump(result, out_dir / "candidates.json")
     save_visuals(image, candidates, out_dir, args.mask_alpha)
+    if args.progress and progress_label:
+        role_counts = {role: 0 for role in ROLE_ORDER}
+        for candidate in candidates:
+            role_counts[str(candidate["role"])] += 1
+        print(
+            f"SAM3 progress {progress_label}: done total_candidates={len(candidates)} "
+            f"role_counts={role_counts}",
+            flush=True,
+        )
     return result
 
 
@@ -508,9 +528,21 @@ def main() -> None:
         frame_key = f"{frame_index:06d}_{frame_id}"
         frame_entry = {"frame_index": frame_index, "frame_id": frame_id, "views": {}}
         camera_overlays: dict[str, Path] = {}
-        for camera in args.cameras:
+        for camera_index, camera in enumerate(args.cameras):
             out = output_dir / "frames" / frame_key / camera / "qwen_candidates"
-            result = process_camera(processor, camera_frames[camera][frame_id], role_doc, out, args)
+            progress_label = (
+                f"frame {frame_index + 1}/{len(selected_frame_ids)} "
+                f"({frame_key}) camera {camera_index + 1}/{len(args.cameras)} "
+                f"({camera})"
+            )
+            result = process_camera(
+                processor,
+                camera_frames[camera][frame_id],
+                role_doc,
+                out,
+                args,
+                progress_label=progress_label,
+            )
             camera_overlays[camera] = out / "numbered_candidates.png"
             frame_entry["views"][camera] = {
                 "output_dir": str(out),

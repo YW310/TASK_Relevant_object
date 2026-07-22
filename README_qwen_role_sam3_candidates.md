@@ -201,6 +201,23 @@ python qwen_role_sam3_candidate_episode.py \
   --max-frames 10
 ```
 
+
+## SAM3 progress output
+
+SAM3 candidate generation can be slow across many frames and cameras. Progress
+logging is enabled by default and prints one line when each camera starts, one
+line per role prompt with raw/non-empty mask counts, and one completion line with
+per-role saved candidate totals. Disable it with `--no-progress` if you need
+quieter logs.
+
+Example progress lines:
+
+```text
+SAM3 progress frame 1/10 (000000_0) camera 1/3 (front): start /path/front_rgb/0.png
+SAM3 progress frame 1/10 (000000_0) camera 1/3 (front): role=target prompt=1 raw_masks=20 non_empty=6 saved_so_far=0
+SAM3 progress frame 1/10 (000000_0) camera 1/3 (front): done total_candidates=8 role_counts={'target': 4, 'reference': 3, 'interaction_part': 1}
+```
+
 ## Visualization options
 
 Per camera, the script writes:
