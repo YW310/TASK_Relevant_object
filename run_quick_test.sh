@@ -16,7 +16,7 @@ if [[ -z "${MODEL_DIR}" ]]; then
   exit 2
 fi
 
-"${PYTHON}" "${SCRIPT_DIR}/test_sam3_modelscope.py" \
+"${PYTHON}" "${SCRIPT_DIR}/demo_sam3.py" \
   --model-dir "${MODEL_DIR}" \
   --image "${SCRIPT_DIR}/inputs/coffee_scene.png" \
   --device "${DEVICE}" \
