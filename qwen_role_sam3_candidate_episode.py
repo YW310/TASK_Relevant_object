@@ -119,12 +119,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--prompt-variants",
         type=int,
-        default=3,
+        default=5,
         help=(
-            "Maximum text-prompt variants tried per role. SAM3 concept prompting is "
-            "more reliable with short object names, so the default tries the short "
-            "role name before longer cue-rich descriptions."
+            "Maximum text-prompt variants tried per role. Qwen-provided sam_prompts "
+            "are tried first, capped to 3-5 prompts to avoid SAM3 candidate explosion."
         ),
+    )
+    parser.add_argument(
+        "--mask-nms-iou",
+        type=float,
+        default=0.80,
+        help="Mask IoU threshold for per-role NMS across all prompt variants.",
     )
     parser.add_argument("--mask-alpha", type=int, default=105)
     parser.add_argument(
@@ -203,35 +208,61 @@ def _append_unique_text(values: list[str], value: Any) -> None:
         values.append(text)
 
 
+def _iter_text_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if not isinstance(value, Sequence):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
 def text_prompts_for_role(role_spec: Mapping[str, Any], role: str, max_variants: int) -> list[str]:
     """Build SAM3-friendly text prompts for a semantic role.
 
-    The Qwen role document can contain rich relational descriptions. Those are
-    useful for humans/Qwen, but SAM3 text prompting is a concept segmenter and is
-    usually much more robust with concise category names such as "red mug" than
-    with full sentences such as "red mug to the left of the plate". Try short
-    identifiers first and keep longer cue-rich prompts as fallbacks.
+    Qwen-provided sam_prompts are used first because they are explicitly written
+    for SAM3 concept segmentation. Older role_spec.json files are still supported
+    by falling back to names and concise identity-cue prompts.
     """
     spec = role_spec.get(role)
     if not isinstance(spec, Mapping):
         return []
 
     prompts: list[str] = []
+    for prompt in _iter_text_list(spec.get("sam_prompts")):
+        _append_unique_text(prompts, prompt)
+
     for key in ("name", "object", "category", "type", "class", "label"):
         _append_unique_text(prompts, spec.get(key))
 
     display = role_display_text(role_spec, role)
-    _append_unique_text(prompts, display)
-
     cues = role_identity_cues(role_spec, role)
     for cue in cues:
         _append_unique_text(prompts, cue)
     if cues:
         _append_unique_text(prompts, f"{display}. Visual cues: {'; '.join(cues)}")
 
-    if max_variants > 0:
-        return prompts[:max_variants]
-    return prompts
+    cap = min(max_variants, 5) if max_variants > 0 else 5
+    return prompts[:cap]
+
+
+def mask_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
+    intersection = int(np.logical_and(mask_a, mask_b).sum())
+    if intersection == 0:
+        return 0.0
+    union = int(np.logical_or(mask_a, mask_b).sum())
+    return intersection / union if union else 0.0
+
+
+def mask_iou_nms(candidates: Sequence[dict[str, Any]], iou_threshold: float, top_k: int) -> list[dict[str, Any]]:
+    kept: list[dict[str, Any]] = []
+    for candidate in sorted(candidates, key=lambda item: float(item["score"]), reverse=True):
+        if top_k > 0 and len(kept) >= top_k:
+            break
+        mask = candidate["mask"]
+        if any(mask_iou(mask, kept_candidate["mask"]) > iou_threshold for kept_candidate in kept):
+            continue
+        kept.append(candidate)
+    return kept
 
 
 def mask_bbox(mask: np.ndarray) -> list[int] | None:
@@ -364,52 +395,65 @@ def process_camera(
         if not prompts:
             continue
         prefix = ROLE_PREFIX[role]
-        saved_for_role = 0
-        seen_boxes: set[tuple[int, int, int, int]] = set()
-        for prompt in prompts:
-            if saved_for_role >= args.top_k_per_role:
-                break
+        role_candidates: list[dict[str, Any]] = []
+        for prompt_index, prompt in enumerate(prompts):
             masks, scores, boxes = run_text_prompt(processor, image, prompt, args)
             prompt_attempts.append(
                 {
                     "role": role,
                     "text_prompt": prompt,
+                    "source_prompt": prompt,
+                    "prompt_index": prompt_index,
                     "raw_masks": int(len(masks)),
                     "non_empty_masks": int(
                         sum(mask_bbox(mask) is not None for mask in masks)
                     ),
                 }
             )
+            if args.progress and progress_label:
+                print(
+                    f"SAM3 progress {progress_label}: role={role} "
+                    f"prompt={prompt_index + 1}/{len(prompts)} raw_masks={len(masks)}",
+                    flush=True,
+                )
             for output_index, (mask, score) in enumerate(zip(masks, scores)):
-                if saved_for_role >= args.top_k_per_role:
-                    break
                 bbox = mask_bbox(mask)
                 if bbox is None:
                     continue
                 area = int(mask.sum())
                 if area < args.min_mask_area:
                     continue
-                bbox_key = tuple(bbox)
-                if bbox_key in seen_boxes:
-                    continue
-                seen_boxes.add(bbox_key)
-                saved_for_role += 1
-                cid = f"{prefix}{saved_for_role}"
-                mask_path, crop_path, masked_path = save_crop_sets(image, mask, bbox, cid, out_dir)
                 item: dict[str, Any] = {
-                    "id": cid,
                     "role": role,
                     "text_prompt": prompt,
+                    "source_prompt": prompt,
+                    "prompt_index": prompt_index,
+                    "sam_output_index": output_index,
                     "score": float(score),
                     "mask_bbox_xyxy": bbox,
                     "mask_area_pixels": area,
+                    "mask": mask,
+                }
+                if boxes is not None and output_index < len(boxes):
+                    item["sam_box_xyxy"] = [float(v) for v in boxes[output_index]]
+                role_candidates.append(item)
+
+        kept_for_role = mask_iou_nms(role_candidates, args.mask_nms_iou, args.top_k_per_role)
+        for saved_index, item in enumerate(kept_for_role, start=1):
+            cid = f"{prefix}{saved_index}"
+            mask = item.pop("mask")
+            mask_path, crop_path, masked_path = save_crop_sets(
+                image, mask, item["mask_bbox_xyxy"], cid, out_dir
+            )
+            item.update(
+                {
+                    "id": cid,
                     "mask_path": mask_path,
                     "crop_path": crop_path,
                     "masked_crop_path": masked_path,
                 }
-                if boxes is not None and output_index < len(boxes):
-                    item["sam_box_xyxy"] = [float(v) for v in boxes[output_index]]
-                candidates.append(item)
+            )
+            candidates.append(item)
     result = {
         "image_path": str(image_path),
         "candidates": candidates,

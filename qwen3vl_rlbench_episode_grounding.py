@@ -77,8 +77,10 @@ Rules:
 4. Do not invent unsupported view-specific statements such as "on the floor",
    "behind the robot", or "under another object".
 5. Describe only stable identity cues needed to find the same instance in another view.
-6. Do not output bounding boxes in this stage.
-7. Return one valid JSON object only.
+6. For every non-null role, include sam_prompts: 3 to 5 short text prompts that SAM3 can use to segment the object or part. Prefer concise noun phrases, aliases, and visually grounded variants; do not include long instructions.
+7. For every non-null role, include negative_cues: objects or regions that must not be selected.
+8. Do not output bounding boxes in this stage.
+9. Return one valid JSON object only.
 
 Schema:
 {{
@@ -86,15 +88,21 @@ Schema:
   "relation": "short target-reference relation",
   "target": {{
     "name": "category or object name",
-    "identity_cues": ["stable visible cue", "instruction-based cue"]
+    "sam_prompts": ["short SAM3 prompt", "alias", "visual variant"],
+    "identity_cues": ["stable visible cue", "instruction-based cue"],
+    "negative_cues": ["nearby distractor", "robot gripper"]
   }},
   "reference": null or {{
     "name": "category or object name",
-    "identity_cues": ["stable visible cue", "instruction-based cue"]
+    "sam_prompts": ["short SAM3 prompt", "alias", "visual variant"],
+    "identity_cues": ["stable visible cue", "instruction-based cue"],
+    "negative_cues": ["nearby distractor", "robot gripper"]
   }},
   "interaction_part": null or {{
     "name": "part name",
-    "identity_cues": ["stable visible cue"]
+    "sam_prompts": ["short SAM3 prompt", "alias", "visual variant"],
+    "identity_cues": ["stable visible cue"],
+    "negative_cues": ["nearby distractor", "robot gripper"]
   }},
   "uncertain": false,
   "uncertain_reason": null
