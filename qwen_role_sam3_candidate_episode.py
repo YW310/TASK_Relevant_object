@@ -102,8 +102,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
     parser.add_argument("--no-bf16", action="store_true")
     parser.add_argument("--compile", action="store_true")
-    parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument("--threshold", type=float, default=0.25)
     parser.add_argument("--top-k-per-role", type=int, default=8)
+    parser.add_argument(
+        "--candidate-pool-size",
+        type=int,
+        default=20,
+        help="Raw SAM3 masks to inspect per prompt before per-role top-k saving.",
+    )
+    parser.add_argument(
+        "--min-mask-area",
+        type=int,
+        default=4,
+        help="Minimum mask area in pixels. Keep this small for tiny RLBench candidates.",
+    )
+    parser.add_argument(
+        "--prompt-variants",
+        type=int,
+        default=3,
+        help=(
+            "Maximum text-prompt variants tried per role. SAM3 concept prompting is "
+            "more reliable with short object names, so the default tries the short "
+            "role name before longer cue-rich descriptions."
+        ),
+    )
     parser.add_argument("--mask-alpha", type=int, default=105)
     parser.add_argument(
         "--save-frame-contact-sheet",
@@ -118,6 +140,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Cell width for per-frame visualization contact sheets.",
     )
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--progress",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Print per-frame/camera/role SAM3 candidate generation progress.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -169,15 +197,41 @@ def load_or_identify_role_spec(
     return doc
 
 
-def text_prompt_for_role(role_spec: Mapping[str, Any], role: str) -> str | None:
+def _append_unique_text(values: list[str], value: Any) -> None:
+    text = str(value).strip() if value is not None else ""
+    if text and text.lower() not in {item.lower() for item in values}:
+        values.append(text)
+
+
+def text_prompts_for_role(role_spec: Mapping[str, Any], role: str, max_variants: int) -> list[str]:
+    """Build SAM3-friendly text prompts for a semantic role.
+
+    The Qwen role document can contain rich relational descriptions. Those are
+    useful for humans/Qwen, but SAM3 text prompting is a concept segmenter and is
+    usually much more robust with concise category names such as "red mug" than
+    with full sentences such as "red mug to the left of the plate". Try short
+    identifiers first and keep longer cue-rich prompts as fallbacks.
+    """
     spec = role_spec.get(role)
     if not isinstance(spec, Mapping):
-        return None
-    text = role_display_text(role_spec, role)
+        return []
+
+    prompts: list[str] = []
+    for key in ("name", "object", "category", "type", "class", "label"):
+        _append_unique_text(prompts, spec.get(key))
+
+    display = role_display_text(role_spec, role)
+    _append_unique_text(prompts, display)
+
     cues = role_identity_cues(role_spec, role)
+    for cue in cues:
+        _append_unique_text(prompts, cue)
     if cues:
-        return f"{text}. Visual cues: {'; '.join(cues)}"
-    return text
+        _append_unique_text(prompts, f"{display}. Visual cues: {'; '.join(cues)}")
+
+    if max_variants > 0:
+        return prompts[:max_variants]
+    return prompts
 
 
 def mask_bbox(mask: np.ndarray) -> list[int] | None:
@@ -215,14 +269,24 @@ def run_text_prompt(processor: Any, image: Image.Image, prompt: str, args: argpa
         output = processor.set_text_prompt(prompt=prompt, state=state)
     masks = normalize_masks(output["masks"])
     scores = normalize_scores(output.get("scores"), len(masks))
-    order = np.argsort(-scores)[: args.top_k_per_role]
+    order = np.argsort(-scores)
+    if args.candidate_pool_size > 0:
+        order = order[: args.candidate_pool_size]
     boxes = output.get("boxes")
     boxes_np = None
     if boxes is not None:
         raw_boxes = tensor_to_numpy(boxes).reshape((-1, 4))
         if len(raw_boxes) == len(masks):
             boxes_np = raw_boxes[order]
-    return masks[order], scores[order], boxes_np
+    masks = masks[order]
+    if masks.size and masks.shape[1:] != (image.height, image.width):
+        resized_masks = []
+        for mask in masks:
+            mask_image = Image.fromarray((mask.astype(np.uint8) * 255), mode="L")
+            mask_image = mask_image.resize(image.size, Image.Resampling.NEAREST)
+            resized_masks.append(np.asarray(mask_image) > 127)
+        masks = np.asarray(resized_masks, dtype=bool)
+    return masks, scores[order], boxes_np
 
 
 def save_visuals(
@@ -278,6 +342,7 @@ def process_camera(
     role_doc: Mapping[str, Any],
     out_dir: Path,
     args: argparse.Namespace,
+    progress_label: str | None = None,
 ) -> dict[str, Any]:
     resume_files = (
         out_dir / "candidates.json",
@@ -285,38 +350,90 @@ def process_camera(
         out_dir / "candidate_grid.png",
     )
     if args.resume and all(path.is_file() for path in resume_files):
+        if args.progress and progress_label:
+            print(f"SAM3 progress {progress_label}: resume cached candidates", flush=True)
         return json.loads((out_dir / "candidates.json").read_text(encoding="utf-8"))
     out_dir.mkdir(parents=True, exist_ok=True)
     image = Image.open(image_path).convert("RGB")
+    if args.progress and progress_label:
+        print(f"SAM3 progress {progress_label}: start {image_path}", flush=True)
     candidates: list[dict[str, Any]] = []
+    prompt_attempts: list[dict[str, Any]] = []
     for role in ROLE_ORDER:
-        prompt = text_prompt_for_role(role_doc, role)
-        if not prompt:
+        prompts = text_prompts_for_role(role_doc, role, args.prompt_variants)
+        if not prompts:
             continue
-        masks, scores, boxes = run_text_prompt(processor, image, prompt, args)
         prefix = ROLE_PREFIX[role]
-        for index, (mask, score) in enumerate(zip(masks, scores), start=1):
-            bbox = mask_bbox(mask)
-            if bbox is None:
-                continue
-            cid = f"{prefix}{index}"
-            mask_path, crop_path, masked_path = save_crop_sets(image, mask, bbox, cid, out_dir)
-            item: dict[str, Any] = {
-                "id": cid,
-                "role": role,
-                "text_prompt": prompt,
-                "score": float(score),
-                "mask_bbox_xyxy": bbox,
-                "mask_path": mask_path,
-                "crop_path": crop_path,
-                "masked_crop_path": masked_path,
-            }
-            if boxes is not None and index - 1 < len(boxes):
-                item["sam_box_xyxy"] = [float(v) for v in boxes[index - 1]]
-            candidates.append(item)
-    result = {"image_path": str(image_path), "candidates": candidates}
+        saved_for_role = 0
+        seen_boxes: set[tuple[int, int, int, int]] = set()
+        for prompt in prompts:
+            if saved_for_role >= args.top_k_per_role:
+                break
+            masks, scores, boxes = run_text_prompt(processor, image, prompt, args)
+            non_empty_masks = int(
+                sum(mask_bbox(mask) is not None for mask in masks)
+            )
+            prompt_attempts.append(
+                {
+                    "role": role,
+                    "text_prompt": prompt,
+                    "raw_masks": int(len(masks)),
+                    "non_empty_masks": non_empty_masks,
+                }
+            )
+            if args.progress and progress_label:
+                print(
+                    f"SAM3 progress {progress_label}: role={role} "
+                    f"prompt={len(prompt_attempts)} raw_masks={len(masks)} "
+                    f"non_empty={non_empty_masks} saved_so_far={saved_for_role}",
+                    flush=True,
+                )
+            for output_index, (mask, score) in enumerate(zip(masks, scores)):
+                if saved_for_role >= args.top_k_per_role:
+                    break
+                bbox = mask_bbox(mask)
+                if bbox is None:
+                    continue
+                area = int(mask.sum())
+                if area < args.min_mask_area:
+                    continue
+                bbox_key = tuple(bbox)
+                if bbox_key in seen_boxes:
+                    continue
+                seen_boxes.add(bbox_key)
+                saved_for_role += 1
+                cid = f"{prefix}{saved_for_role}"
+                mask_path, crop_path, masked_path = save_crop_sets(image, mask, bbox, cid, out_dir)
+                item: dict[str, Any] = {
+                    "id": cid,
+                    "role": role,
+                    "text_prompt": prompt,
+                    "score": float(score),
+                    "mask_bbox_xyxy": bbox,
+                    "mask_area_pixels": area,
+                    "mask_path": mask_path,
+                    "crop_path": crop_path,
+                    "masked_crop_path": masked_path,
+                }
+                if boxes is not None and output_index < len(boxes):
+                    item["sam_box_xyxy"] = [float(v) for v in boxes[output_index]]
+                candidates.append(item)
+    result = {
+        "image_path": str(image_path),
+        "candidates": candidates,
+        "prompt_attempts": prompt_attempts,
+    }
     atomic_json_dump(result, out_dir / "candidates.json")
     save_visuals(image, candidates, out_dir, args.mask_alpha)
+    if args.progress and progress_label:
+        role_counts = {role: 0 for role in ROLE_ORDER}
+        for candidate in candidates:
+            role_counts[str(candidate["role"])] += 1
+        print(
+            f"SAM3 progress {progress_label}: done total_candidates={len(candidates)} "
+            f"role_counts={role_counts}",
+            flush=True,
+        )
     return result
 
 
@@ -419,9 +536,21 @@ def main() -> None:
         frame_key = f"{frame_index:06d}_{frame_id}"
         frame_entry = {"frame_index": frame_index, "frame_id": frame_id, "views": {}}
         camera_overlays: dict[str, Path] = {}
-        for camera in args.cameras:
+        for camera_index, camera in enumerate(args.cameras):
             out = output_dir / "frames" / frame_key / camera / "qwen_candidates"
-            result = process_camera(processor, camera_frames[camera][frame_id], role_doc, out, args)
+            progress_label = (
+                f"frame {frame_index + 1}/{len(selected_frame_ids)} "
+                f"({frame_key}) camera {camera_index + 1}/{len(args.cameras)} "
+                f"({camera})"
+            )
+            result = process_camera(
+                processor,
+                camera_frames[camera][frame_id],
+                role_doc,
+                out,
+                args,
+                progress_label=progress_label,
+            )
             camera_overlays[camera] = out / "numbered_candidates.png"
             frame_entry["views"][camera] = {
                 "output_dir": str(out),

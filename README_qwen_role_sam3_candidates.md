@@ -135,8 +135,38 @@ python qwen_role_sam3_candidate_episode.py \
   --cameras front,left_shoulder,right_shoulder \
   --frame-interval 1 \
   --top-k-per-role 8 \
-  --threshold 0.5
+  --threshold 0.25
 ```
+
+
+## Avoiding empty `candidate_grid.png` outputs
+
+If `candidate_grid.png` says `No SAM3 candidates`, the most common cause is
+that SAM3 filtered out every text-prompt result. This entrypoint now defaults to
+`--threshold 0.25` and tries concise role-name prompts before longer
+cue-heavy descriptions, because SAM3 concept prompting is usually more reliable
+with short object names such as `red mug` than with full relational sentences.
+
+Useful knobs for small RLBench objects:
+
+```bash
+set -euxo pipefail
+python qwen_role_sam3_candidate_episode.py \
+  --episode-dir /path/to/episode \
+  --role-spec-json outputs/<episode>/role_spec.json \
+  --sam-model-dir /common-data-32t/.cache/facebook/sam3 \
+  --threshold 0.20 \
+  --candidate-pool-size 20 \
+  --prompt-variants 5 \
+  --top-k-per-role 8 \
+  --min-mask-area 4
+```
+
+Use `--prompt-variants 1` to only try the shortest role name, or increase it to
+include more Qwen-provided visual cues as fallbacks. `candidates.json` also records
+`prompt_attempts`, `mask_area_pixels`, and the exact `text_prompt` that produced
+each candidate, so you can confirm whether SAM3 returned masks and whether tiny
+objects were filtered by area.
 
 ## Reuse an existing role spec
 
@@ -171,12 +201,29 @@ python qwen_role_sam3_candidate_episode.py \
   --max-frames 10
 ```
 
+
+## SAM3 progress output
+
+SAM3 candidate generation can be slow across many frames and cameras. Progress
+logging is enabled by default and prints one line when each camera starts, one
+line per role prompt with raw/non-empty mask counts, and one completion line with
+per-role saved candidate totals. Disable it with `--no-progress` if you need
+quieter logs.
+
+Example progress lines:
+
+```text
+SAM3 progress frame 1/10 (000000_0) camera 1/3 (front): start /path/front_rgb/0.png
+SAM3 progress frame 1/10 (000000_0) camera 1/3 (front): role=target prompt=1 raw_masks=20 non_empty=6 saved_so_far=0
+SAM3 progress frame 1/10 (000000_0) camera 1/3 (front): done total_candidates=8 role_counts={'target': 4, 'reference': 3, 'interaction_part': 1}
+```
+
 ## Visualization options
 
 Per camera, the script writes:
 
 - `numbered_candidates.png`: source image with mask overlays and candidate IDs.
-- `candidate_grid.png`: masked crop grid with candidate IDs and scores.
+- `candidate_grid.png`: masked crop grid with candidate IDs and scores. Very small masks are enlarged in this grid so tiny RLBench objects remain visible.
 
 Per frame, the script writes `qwen_candidates_contact_sheet.png` by default, combining all camera `numbered_candidates.png` images.
 
