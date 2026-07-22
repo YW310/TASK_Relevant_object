@@ -1,0 +1,74 @@
+{
+  "coordinate_convention": {
+    "point": "[x, y, label], label=1 foreground, label=0 background",
+    "box": "[x1, y1, x2, y2] in pixels"
+  },
+  "coffee_scene": {
+    "image": "inputs/coffee_scene.png",
+    "text": "cup",
+    "positive_points": [
+      [
+        292,
+        206,
+        1
+      ]
+    ],
+    "negative_points": [
+      [
+        392,
+        286,
+        0
+      ],
+      [
+        85,
+        80,
+        0
+      ]
+    ],
+    "box_xyxy": [
+      164,
+      16,
+      430,
+      322
+    ],
+    "negative_box_xyxy": [
+      326,
+      202,
+      455,
+      346
+    ],
+    "mask_prompt": "inputs/coffee_mask_prompt.png",
+    "notes": "The positive prompt targets the cup. The negative point/box suppresses the spoon or background."
+  },
+  "shapes_scene": {
+    "image": "inputs/shapes_scene.png",
+    "text": "green rectangle",
+    "positive_points": [
+      [
+        372,
+        245,
+        1
+      ]
+    ],
+    "negative_points": [
+      [
+        160,
+        255,
+        0
+      ],
+      [
+        655,
+        260,
+        0
+      ]
+    ],
+    "box_xyxy": [
+      244,
+      114,
+      500,
+      378
+    ],
+    "mask_prompt": "inputs/shapes_green_rectangle_mask.png",
+    "notes": "Synthetic prompt-interface test. Interactive prompts should target the central green rectangle."
+  }
+}

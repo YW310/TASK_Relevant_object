@@ -812,7 +812,7 @@ def role_display_text(role_spec: Mapping[str, Any], role_name: str) -> str:
         return name
     if not cues:
         return name
-    return f"{name} â {'; '.join(cues)}"
+    return f"{name} — {'; '.join(cues)}"
 
 
 def load_font(size: int):
@@ -968,7 +968,7 @@ def compose_multiview_frame(
     if not paper_vis:
         draw.text(
             (12, 8),
-            f"Frame {frame_index} Â· source id {frame_id}",
+            f"Frame {frame_index} · source id {frame_id}",
             font=font,
             fill=(255, 255, 255),
         )
@@ -1164,8 +1164,8 @@ def create_episode_html(
         for role_name in ("target", "reference", "interaction_part")
         if role_name != "interaction_part" or isinstance(role_spec.get(role_name), Mapping)
     )
-    task_type = html.escape(str(role_spec.get("task_type") or "â"))
-    relation = html.escape(str(role_spec.get("relation") or "â"))
+    task_type = html.escape(str(role_spec.get("task_type") or "—"))
+    relation = html.escape(str(role_spec.get("relation") or "—"))
 
     document = f"""<!doctype html>
 <html lang="en">
@@ -1735,7 +1735,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--stride",
         dest="frame_interval",
         type=int,
-        default=1,
+        default=10,
         help=(
             "Process one frame every N source frames. For example, 5 selects "
             "source-frame indices 0, 5, 10, ... within the start/end range. "

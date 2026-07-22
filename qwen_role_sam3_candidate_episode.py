@@ -2,9 +2,6 @@
 """
 Episode-level Qwen role specification + SAM 3 text-prompt candidate generation.
 
-This script targets RLBench/RLBench-exported episodes with synchronized
-`<camera>_rgb` folders and standard variation-description instruction files.
-
 Stage 1 runs Qwen3-VL once on a synchronized multiview frame to produce a
 bbox-free role_spec.json. Stage 2 runs SAM 3 text prompts for target/reference/
 interaction_part on every selected frame and camera, saving numbered candidate
