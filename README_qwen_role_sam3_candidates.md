@@ -277,3 +277,33 @@ python qwen_role_sam3_candidate_episode.py \
   --role-spec-json /path/to/role_spec.json \
   --dry-run
 ```
+
+## Fuse multiview 2D candidates into 3D objects
+
+`multiview_candidate_fusion.py` reads the SAM3 per-camera candidate masks,
+matching per-frame depth images, and camera intrinsics/extrinsics to create
+frame-level 3D object candidates. It writes `frame_fused_candidates.json`, where
+each object keeps the contributing 2D observations plus 3D fields such as
+`points_world`, `centroid_world`, `bbox3d_world`, `visible_camera`, `mask_area`,
+and `sam_score`.
+
+Expected depth files are searched in common layouts such as
+`<camera>_depth/<frame_id>.npy`, `<camera>_depth/<frame_id>.png`,
+`depth/<camera>/<frame_id>.npy`, or `depths/<camera>/<frame_id>.png`.
+Camera parameters can be supplied with `--camera-params-json` using either
+`intrinsics`/`extrinsics` or `K`/`T_world_camera` keys. Intrinsics may be a 3x3
+matrix or `[fx, fy, cx, cy]`; extrinsics must transform camera-frame points into
+the world or robot base frame.
+
+```bash
+set -euxo pipefail
+python multiview_candidate_fusion.py \
+  --episode-dir /path/to/episode \
+  --candidates-json outputs/<episode>/episode_candidates.json \
+  --camera-params-json /path/to/camera_params.json \
+  --cluster-distance-m 0.03 \
+  --bbox-iou-threshold 0.0
+```
+
+Objects are clustered only within the same role. Stable IDs use role-specific
+prefixes such as `target_obj_000`, `reference_obj_000`, and `part_obj_000`.
