@@ -28,6 +28,7 @@ from qwen3_bbox_guided_sam3_demo import (
     load_font,
     normalize_masks,
     normalize_scores,
+    tensor_to_numpy,
 )
 from qwen3vl_rlbench_episode_grounding import (
     DEFAULT_CAMERAS,
@@ -218,7 +219,7 @@ def run_text_prompt(processor: Any, image: Image.Image, prompt: str, args: argpa
     boxes = output.get("boxes")
     boxes_np = None
     if boxes is not None:
-        raw_boxes = np.asarray(boxes).reshape((-1, 4))
+        raw_boxes = tensor_to_numpy(boxes).reshape((-1, 4))
         if len(raw_boxes) == len(masks):
             boxes_np = raw_boxes[order]
     return masks[order], scores[order], boxes_np
