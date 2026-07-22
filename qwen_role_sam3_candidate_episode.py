@@ -370,24 +370,16 @@ def process_camera(
             if saved_for_role >= args.top_k_per_role:
                 break
             masks, scores, boxes = run_text_prompt(processor, image, prompt, args)
-            non_empty_masks = int(
-                sum(mask_bbox(mask) is not None for mask in masks)
-            )
             prompt_attempts.append(
                 {
                     "role": role,
                     "text_prompt": prompt,
                     "raw_masks": int(len(masks)),
-                    "non_empty_masks": non_empty_masks,
+                    "non_empty_masks": int(
+                        sum(mask_bbox(mask) is not None for mask in masks)
+                    ),
                 }
             )
-            if args.progress and progress_label:
-                print(
-                    f"SAM3 progress {progress_label}: role={role} "
-                    f"prompt={len(prompt_attempts)} raw_masks={len(masks)} "
-                    f"non_empty={non_empty_masks} saved_so_far={saved_for_role}",
-                    flush=True,
-                )
             for output_index, (mask, score) in enumerate(zip(masks, scores)):
                 if saved_for_role >= args.top_k_per_role:
                     break
