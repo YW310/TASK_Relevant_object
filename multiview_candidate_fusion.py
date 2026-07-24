@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pickle
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -43,6 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-json", default=None, help="Default: frame_fused_candidates.json next to episode_candidates.json.")
     parser.add_argument("--cameras", default=None, help="Optional comma-separated camera subset.")
     parser.add_argument("--camera-params-json", default=None, help="Optional camera parameter JSON overriding auto-discovery.")
+    parser.add_argument("--rlbench-low-dim-obs", default=None, help="Optional path to RLBench low_dim_obs.pkl. Default: <episode-dir>/low_dim_obs.pkl.")
+    parser.add_argument("--invert-rlbench-extrinsics", action="store_true", help="Invert RLBench camera extrinsics before transforming camera points to world coordinates.")
     parser.add_argument("--depth-scale", type=float, default=1.0, help="Divide raw depth values by this scale.")
     parser.add_argument("--max-points-per-candidate", type=int, default=4096)
     parser.add_argument("--cluster-distance-m", type=float, default=0.03, help="Centroid threshold, e.g. 0.02-0.05 m.")
@@ -113,6 +116,131 @@ def load_camera_params(path: Path | None) -> dict[str, dict[str, np.ndarray]]:
     return params
 
 
+class _PickleFallbackObject:
+    """Minimal object used when unpickling optional RLBench classes."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.args = args
+        self.__dict__.update(kwargs)
+
+    def __setstate__(self, state: Any) -> None:
+        if isinstance(state, Mapping):
+            self.__dict__.update(state)
+        else:
+            self.state = state
+
+
+class _PickleFallbackDemo(list):
+    """List-compatible stand-in for rlbench.demo.Demo."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args)
+        self.__dict__.update(kwargs)
+
+    def __setstate__(self, state: Any) -> None:
+        if isinstance(state, Mapping):
+            self.__dict__.update(state)
+        elif isinstance(state, tuple) and len(state) == 2:
+            list_state, dict_state = state
+            if list_state is not None:
+                self.extend(list_state)
+            if isinstance(dict_state, Mapping):
+                self.__dict__.update(dict_state)
+        else:
+            self.state = state
+
+
+class _RLBenchOptionalUnpickler(pickle.Unpickler):
+    def find_class(self, module: str, name: str) -> Any:
+        if module.startswith("rlbench"):
+            if name == "Demo":
+                return _PickleFallbackDemo
+            return _PickleFallbackObject
+        return super().find_class(module, name)
+
+
+def load_rlbench_observations(path: Path | None) -> list[Any]:
+    if path is None or not path.is_file():
+        return []
+    with path.open("rb") as handle:
+        try:
+            loaded = pickle.load(handle)
+        except ModuleNotFoundError as exc:
+            if exc.name != "rlbench":
+                raise
+            handle.seek(0)
+            loaded = _RLBenchOptionalUnpickler(handle).load()
+    if hasattr(loaded, "_observations"):
+        observations = getattr(loaded, "_observations")
+        if isinstance(observations, Sequence):
+            return list(observations)
+    if isinstance(loaded, list):
+        return loaded
+    if isinstance(loaded, tuple):
+        return list(loaded)
+    try:
+        return list(loaded)
+    except TypeError as exc:
+        raise ValueError(
+            f"Expected RLBench low_dim_obs.pkl to contain a sequence, got {type(loaded).__name__}"
+        ) from exc
+
+
+def observation_misc(observation: Any) -> Mapping[str, Any]:
+    misc = getattr(observation, "misc", None)
+    if misc is None and isinstance(observation, Mapping):
+        misc = observation.get("misc")
+    if not isinstance(misc, Mapping):
+        raise ValueError("RLBench observation does not expose a misc mapping with camera parameters")
+    return misc
+
+
+def frame_index_from_frame(frame: Mapping[str, Any]) -> int | None:
+    raw = frame.get("frame_index")
+    if raw is None:
+        raw = frame.get("frame_id")
+    try:
+        return int(str(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def camera_param_from_rlbench_observation(
+    observation: Any,
+    camera: str,
+    *,
+    invert_extrinsics: bool = False,
+) -> dict[str, np.ndarray]:
+    misc = observation_misc(observation)
+    intr_key = f"{camera}_camera_intrinsics"
+    extr_key = f"{camera}_camera_extrinsics"
+    if intr_key not in misc or extr_key not in misc:
+        raise KeyError(f"Missing RLBench camera keys: {intr_key!r} / {extr_key!r}")
+    intrinsics = normalize_intrinsics(misc[intr_key])
+    extrinsics = normalize_extrinsics(misc[extr_key])
+    if invert_extrinsics:
+        extrinsics = np.linalg.inv(extrinsics)
+    return {"intrinsics": intrinsics, "extrinsics": extrinsics}
+
+
+def resolve_rlbench_camera_param(
+    observations: Sequence[Any],
+    camera: str,
+    frame_index: int | None,
+    *,
+    invert_extrinsics: bool = False,
+) -> dict[str, np.ndarray] | None:
+    if not observations:
+        return None
+    index = frame_index if frame_index is not None else 0
+    if index < 0 or index >= len(observations):
+        raise IndexError(
+            f"RLBench frame_index={index} is outside low_dim_obs range 0..{len(observations) - 1}"
+        )
+    return camera_param_from_rlbench_observation(
+        observations[index], camera, invert_extrinsics=invert_extrinsics
+    )
+
 def find_first(paths: Sequence[Path]) -> Path | None:
     return next((path for path in paths if path.is_file()), None)
 
@@ -132,9 +260,24 @@ def resolve_depth_path(episode_dir: Path, camera: str, frame_id: str) -> Path:
     return found
 
 
-def resolve_camera_param(params: Mapping[str, dict[str, np.ndarray]], episode_dir: Path, camera: str) -> dict[str, np.ndarray]:
+def resolve_camera_param(
+    params: Mapping[str, dict[str, np.ndarray]],
+    episode_dir: Path,
+    camera: str,
+    rlbench_observations: Sequence[Any],
+    frame_index: int | None,
+    args: argparse.Namespace,
+) -> dict[str, np.ndarray]:
     if camera in params:
         return params[camera]
+    rlbench_param = resolve_rlbench_camera_param(
+        rlbench_observations,
+        camera,
+        frame_index,
+        invert_extrinsics=args.invert_rlbench_extrinsics,
+    )
+    if rlbench_param is not None:
+        return rlbench_param
     for path in (episode_dir / f"{camera}_camera.json", episode_dir / "camera_params.json", episode_dir / "cameras.json"):
         if path.is_file():
             loaded = load_camera_params(path)
@@ -210,13 +353,21 @@ def observation_to_json(obs: Observation3D) -> dict[str, Any]:
     }
 
 
-def fuse_frame(frame: Mapping[str, Any], episode_dir: Path, camera_params: Mapping[str, dict[str, np.ndarray]], cameras: Sequence[str] | None, args: argparse.Namespace) -> dict[str, Any]:
+def fuse_frame(
+    frame: Mapping[str, Any],
+    episode_dir: Path,
+    camera_params: Mapping[str, dict[str, np.ndarray]],
+    rlbench_observations: Sequence[Any],
+    cameras: Sequence[str] | None,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
     observations: list[Observation3D] = []
     frame_id = str(frame["frame_id"])
+    frame_index = frame_index_from_frame(frame)
     for camera, view in frame.get("views", {}).items():
         if cameras is not None and camera not in cameras:
             continue
-        params = resolve_camera_param(camera_params, episode_dir, camera)
+        params = resolve_camera_param(camera_params, episode_dir, camera, rlbench_observations, frame_index, args)
         depth = read_depth(resolve_depth_path(episode_dir, camera, frame_id), args.depth_scale)
         data = json.loads(Path(view["candidates_json"]).read_text(encoding="utf-8"))
         for cand in data.get("candidates", []):
@@ -266,14 +417,25 @@ def main() -> None:
     output_path = Path(args.output_json).expanduser().resolve() if args.output_json else candidates_path.with_name("frame_fused_candidates.json")
     summary = json.loads(candidates_path.read_text(encoding="utf-8"))
     camera_params = load_camera_params(Path(args.camera_params_json).expanduser().resolve() if args.camera_params_json else None)
+    rlbench_low_dim_path = (
+        Path(args.rlbench_low_dim_obs).expanduser().resolve()
+        if args.rlbench_low_dim_obs
+        else episode_dir / "low_dim_obs.pkl"
+    )
+    rlbench_observations = load_rlbench_observations(rlbench_low_dim_path)
     cameras = parse_csv(args.cameras)
-    frames = [fuse_frame(frame, episode_dir, camera_params, cameras, args) for frame in summary.get("frames", [])]
+    frames = [
+        fuse_frame(frame, episode_dir, camera_params, rlbench_observations, cameras, args)
+        for frame in summary.get("frames", [])
+    ]
     result = {
         "episode_dir": str(episode_dir),
         "source_candidates_json": str(candidates_path),
         "cluster_distance_m": args.cluster_distance_m,
         "bbox_iou_threshold": args.bbox_iou_threshold,
         "nearest_distance_m": args.nearest_distance_m,
+        "rlbench_low_dim_obs": str(rlbench_low_dim_path) if rlbench_observations else None,
+        "invert_rlbench_extrinsics": bool(args.invert_rlbench_extrinsics),
         "frames": frames,
     }
     atomic_json_dump(result, output_path)
