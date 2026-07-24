@@ -147,13 +147,8 @@ def draw_overlay(
     for (u_min, v_min, u_max, v_max), color in bboxes:
         draw.rectangle([u_min, v_min, u_max, v_max], outline=(*color, 255), width=2)
     for (cu, cv), label, color in labels:
-        draw.ellipse([cu - 5, cv - 5, cu + 5, cv + 5], outline=(255, 255, 255, 255), width=2)
-        text_bbox = draw.textbbox((cu + 6, cv - 6), label)
-        pad = 2
-        draw.rectangle(
-            [text_bbox[0] - pad, text_bbox[1] - pad, text_bbox[2] + pad, text_bbox[3] + pad],
-            fill=(0, 0, 0, 140),
-        )
+        r = 1.25  # 25% of the original 5px centroid marker radius.
+        draw.ellipse([cu - r, cv - r, cu + r, cv + r], outline=(255, 255, 255, 255), width=1)
         draw.text((cu + 6, cv - 6), label, fill=(*color, 230))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
