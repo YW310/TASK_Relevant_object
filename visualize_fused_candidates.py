@@ -205,28 +205,62 @@ def set_axes_equal_3d(ax, points: np.ndarray) -> None:
 
 
 def plot_pointcloud(objects: Sequence[Mapping[str, Any]], out_path: Path) -> None:
+    """Render the fused point cloud from several viewing angles into one PNG.
+
+    A single default-angle 3D scatter is easy to misread (e.g. a flat object
+    can look tall or vice versa depending on azimuth/elevation). Rendering a
+    perspective + top/front/side view side-by-side in one image gives a
+    quick, unambiguous multi-view sanity check without needing to rotate an
+    interactive plot.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig = plt.figure(figsize=(8, 8))
-    ax = fig.add_subplot(111, projection="3d")
     all_points: list[np.ndarray] = []
-    for index, obj in enumerate(objects):
+    for obj in objects:
         points = np.asarray(obj.get("points_world", []), dtype=np.float64)
-        if len(points) == 0:
-            continue
-        color = np.array(OBJECT_COLORS[index % len(OBJECT_COLORS)]) / 255.0
-        ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=2, color=color, label=f'{obj["id"]} ({obj["role"]})')
-        centroid = np.asarray(obj["centroid_world"], dtype=np.float64)
-        ax.scatter([centroid[0]], [centroid[1]], [centroid[2]], s=90, marker="x", color=color)
-        all_points.append(points)
-    ax.set_xlabel("x (m)")
-    ax.set_ylabel("y (m)")
-    ax.set_zlabel("z (m)")
-    ax.legend(loc="upper left", fontsize=7)
-    if all_points:
-        set_axes_equal_3d(ax, np.concatenate(all_points, axis=0))
+        if len(points) > 0:
+            all_points.append(points)
+    combined_points = np.concatenate(all_points, axis=0) if all_points else np.empty((0, 3))
+
+    views: tuple[tuple[str, float, float], ...] = (
+        ("perspective", 20.0, -60.0),
+        # elev=89.9 (not exactly 90) avoids matplotlib's degenerate top-down
+        # projection, which otherwise collapses the z-axis tick labels onto
+        # a single point and renders them as an unreadable jumble.
+        ("top (bird's-eye, XY)", 89.9, -90.0),
+        ("front (XZ)", 0.0, -90.0),
+        ("side (YZ)", 0.0, 0.0),
+    )
+    cols = 2
+    rows = (len(views) + cols - 1) // cols
+    fig = plt.figure(figsize=(6 * cols, 6 * rows))
+    for view_index, (title, elev, azim) in enumerate(views):
+        ax = fig.add_subplot(rows, cols, view_index + 1, projection="3d")
+        for index, obj in enumerate(objects):
+            points = np.asarray(obj.get("points_world", []), dtype=np.float64)
+            if len(points) == 0:
+                continue
+            color = np.array(OBJECT_COLORS[index % len(OBJECT_COLORS)]) / 255.0
+            ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=2, color=color, label=f'{obj["id"]} ({obj["role"]})')
+            centroid = np.asarray(obj["centroid_world"], dtype=np.float64)
+            ax.scatter([centroid[0]], [centroid[1]], [centroid[2]], s=90, marker="x", color=color)
+        ax.set_xlabel("x (m)")
+        ax.set_ylabel("y (m)")
+        ax.set_zlabel("z (m)")
+        ax.set_title(title, fontsize=10)
+        ax.view_init(elev=elev, azim=azim)
+        if title.startswith("top"):
+            # Looking almost straight down, the z-axis is edge-on and its
+            # tick labels overlap into an unreadable jumble; z isn't a
+            # useful read in this view anyway, so hide the labels.
+            ax.set_zticklabels([])
+        if len(combined_points) > 0:
+            set_axes_equal_3d(ax, combined_points)
+        if view_index == 0:
+            ax.legend(loc="upper left", fontsize=7)
+    fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
