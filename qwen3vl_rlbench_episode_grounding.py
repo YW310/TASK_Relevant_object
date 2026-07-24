@@ -265,6 +265,17 @@ class Qwen3VLRLBenchGrounder:
         )
         self.model.eval()
         self.processor = AutoProcessor.from_pretrained(model_path)
+        self.max_model_input_tokens = 100000
+        tokenizer = getattr(self.processor, "tokenizer", None)
+        if tokenizer is not None:
+            tokenizer.model_max_length = self.max_model_input_tokens
+            tokenizer.truncation_side = "left"
+        generation_config = getattr(self.model, "generation_config", None)
+        if generation_config is not None:
+            generation_config.do_sample = False
+            for sampling_attr in ("temperature", "top_p", "top_k"):
+                if hasattr(generation_config, sampling_attr):
+                    setattr(generation_config, sampling_attr, None)
         self.grounding_min_side = grounding_min_side
         self.max_retries = max_retries
 
@@ -284,6 +295,8 @@ class Qwen3VLRLBenchGrounder:
             add_generation_prompt=True,
             return_dict=True,
             return_tensors="pt",
+            max_length=self.max_model_input_tokens,
+            truncation=False,
         )
         inputs = inputs.to(self.input_device)
 
