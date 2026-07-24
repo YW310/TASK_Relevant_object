@@ -21,10 +21,13 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PIL import Image
 
+# Matches the per-camera candidate id prefixes (T/R/P) used by
+# qwen_role_sam3_candidate_episode.py, so fused object ids (e.g. "T1", "R1")
+# read consistently with the upstream per-view candidate ids.
 ROLE_OBJECT_PREFIX = {
-    "target": "target_obj",
-    "reference": "reference_obj",
-    "interaction_part": "part_obj",
+    "target": "T",
+    "reference": "R",
+    "interaction_part": "P",
 }
 
 
@@ -467,10 +470,10 @@ def fuse_frame(
     for cluster in sorted(clusters, key=lambda c: (c[0].role, float(c[0].centroid_world[0]))):
         role = cluster[0].role
         prefix = ROLE_OBJECT_PREFIX.get(role, f"{role}_obj")
-        index = role_counts.get(role, 0); role_counts[role] = index + 1
+        index = role_counts.get(role, 0) + 1; role_counts[role] = index
         all_points = np.concatenate([obs.points_world for obs in cluster], axis=0)
         objects.append({
-            "id": f"{prefix}_{index:03d}",
+            "id": f"{prefix}{index}",
             "role": role,
             "points_world": all_points.tolist(),
             "centroid_world": all_points.mean(axis=0).tolist(),
