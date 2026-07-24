@@ -47,7 +47,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--camera-params-json", default=None, help="Optional camera parameter JSON overriding auto-discovery.")
     parser.add_argument("--rlbench-low-dim-obs", default=None, help="Optional path to RLBench low_dim_obs.pkl. Default: <episode-dir>/low_dim_obs.pkl.")
     parser.add_argument("--invert-rlbench-extrinsics", action="store_true", help="Invert RLBench camera extrinsics before transforming camera points to world coordinates.")
-    parser.add_argument("--depth-scale", type=float, default=1.0, help="Divide raw depth values by this scale.")
+    parser.add_argument("--depth-scale", type=float, default=1.0, help="Divide raw depth values by this scale (only used for --depth-mode=raw / single-channel depth).")
+    parser.add_argument(
+        "--depth-mode",
+        choices=("auto", "rlbench-rgb", "raw"),
+        default="auto",
+        help=(
+            "How to decode depth PNGs. 'rlbench-rgb' forces RLBench's 24-bit R<<16|G<<8|B "
+            "normalized-depth encoding (needs low_dim_obs.pkl near/far). 'raw' forces the legacy "
+            "path: first channel (or .npy) divided by --depth-scale. 'auto' (default) uses "
+            "rlbench-rgb only when the PNG's R/G/B channels actually differ (a grayscale depth "
+            "PNG replicated across channels has R==G==B and is never RLBench-packed) and "
+            "near/far are available; otherwise falls back to 'raw'."
+        ),
+    )
     parser.add_argument("--max-points-per-candidate", type=int, default=4096)
     parser.add_argument("--cluster-distance-m", type=float, default=0.03, help="Centroid threshold, e.g. 0.02-0.05 m.")
     parser.add_argument("--bbox-iou-threshold", type=float, default=0.0, help="Optional 3D bbox IoU threshold for merging.")
@@ -68,11 +81,62 @@ def parse_csv(value: str | None) -> tuple[str, ...] | None:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
-def read_depth(path: Path, depth_scale: float) -> np.ndarray:
+# RLBench encodes depth as a normalized value packed into a 24-bit RGB PNG
+# (R<<16 | G<<8 | B), scaled into [0, 1], then linearly mapped into
+# [near, far] meters. Naively reading only the R channel (or dividing the
+# raw byte values by --depth-scale) silently produces near-random, heavily
+# quantized depth and looks exactly like a camera-alignment bug even though
+# the intrinsics/extrinsics math is fine. See RLBench's
+# ``rlbench.backend.utils.image_to_float_array`` / ``const.DEPTH_SCALE``.
+RLBENCH_DEPTH_SCALE_FACTOR = float(2 ** 24 - 1)
+
+
+def decode_rlbench_rgb_depth(image_array: np.ndarray, near: float, far: float, scale_factor: float = RLBENCH_DEPTH_SCALE_FACTOR) -> np.ndarray:
+    r, g, b = (image_array[..., i].astype(np.uint32) for i in range(3))
+    normalized = ((r << 16) | (g << 8) | b).astype(np.float64) / scale_factor
+    return near + normalized * (far - near)
+
+
+def looks_like_rlbench_packed_depth(image_array: np.ndarray) -> bool:
+    """Distinguish RLBench's 24-bit R<<16|G<<8|B packed depth from a plain
+    grayscale depth PNG that happens to be saved with 3 replicated channels.
+
+    A grayscale-as-RGB PNG has R == G == B for every pixel; treating it as a
+    packed 24-bit value would produce nonsense depth. Genuine RLBench-packed
+    depth almost never has all three channels identical everywhere.
+    """
+    return not (np.array_equal(image_array[..., 0], image_array[..., 1]) and np.array_equal(image_array[..., 1], image_array[..., 2]))
+
+
+def read_depth(
+    path: Path,
+    depth_scale: float,
+    near: float | None = None,
+    far: float | None = None,
+    mode: str = "auto",
+) -> np.ndarray:
     if path.suffix.lower() == ".npy":
         depth = np.load(path)
-    else:
-        depth = np.asarray(Image.open(path))
+        if depth.ndim == 3:
+            depth = depth[..., 0]
+        return depth.astype(np.float64) / float(depth_scale)
+
+    image_array = np.asarray(Image.open(path))
+    is_rgb = image_array.ndim == 3 and image_array.shape[-1] >= 3
+    has_near_far = near is not None and far is not None
+
+    use_rlbench = False
+    if mode == "rlbench-rgb":
+        if not (is_rgb and has_near_far):
+            raise ValueError(f"--depth-mode=rlbench-rgb requires a 3-channel PNG and near/far, got shape={image_array.shape} near={near} far={far} ({path}).")
+        use_rlbench = True
+    elif mode == "auto":
+        use_rlbench = is_rgb and has_near_far and looks_like_rlbench_packed_depth(image_array[..., :3])
+
+    if use_rlbench:
+        return decode_rlbench_rgb_depth(image_array[..., :3], near, far)
+
+    depth = image_array
     if depth.ndim == 3:
         depth = depth[..., 0]
     return depth.astype(np.float64) / float(depth_scale)
@@ -188,6 +252,27 @@ def camera_param_from_rlbench_observation(
     if invert_extrinsics:
         extrinsics = np.linalg.inv(extrinsics)
     return {"intrinsics": intrinsics, "extrinsics": extrinsics}
+
+
+def resolve_rlbench_near_far(
+    camera: str,
+    frame_index: int | None,
+    rlbench_observations: Sequence[Any],
+) -> tuple[float, float] | None:
+    """Fetch the per-frame depth near/far clip planes RLBench needs to decode its RGB-packed depth PNGs."""
+    if not rlbench_observations:
+        return None
+    index = frame_index if frame_index is not None else 0
+    if index < 0 or index >= len(rlbench_observations):
+        return None
+    try:
+        misc = observation_misc(rlbench_observations[index])
+    except ValueError:
+        return None
+    near_key, far_key = f"{camera}_camera_near", f"{camera}_camera_far"
+    if near_key not in misc or far_key not in misc:
+        return None
+    return float(misc[near_key]), float(misc[far_key])
 
 
 def find_first(paths: Sequence[Path]) -> Path | None:
@@ -354,7 +439,9 @@ def fuse_frame(
                 file=sys.stderr,
             )
             continue
-        depth = read_depth(resolve_depth_path(episode_dir, camera, frame_id), args.depth_scale)
+        depth_near_far = resolve_rlbench_near_far(camera, frame_index, rlbench_observations)
+        near, far = depth_near_far if depth_near_far is not None else (None, None)
+        depth = read_depth(resolve_depth_path(episode_dir, camera, frame_id), args.depth_scale, near=near, far=far, mode=args.depth_mode)
         data = json.loads(Path(view["candidates_json"]).read_text(encoding="utf-8"))
         for cand in data.get("candidates", []):
             mask = load_mask(Path(cand["mask_path"]))
