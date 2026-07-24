@@ -116,74 +116,17 @@ def load_camera_params(path: Path | None) -> dict[str, dict[str, np.ndarray]]:
     return params
 
 
-class _PickleFallbackObject:
-    """Minimal object used when unpickling optional RLBench classes."""
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self.args = args
-        self.__dict__.update(kwargs)
-
-    def __setstate__(self, state: Any) -> None:
-        if isinstance(state, Mapping):
-            self.__dict__.update(state)
-        else:
-            self.state = state
-
-
-class _PickleFallbackDemo(list):
-    """List-compatible stand-in for rlbench.demo.Demo."""
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args)
-        self.__dict__.update(kwargs)
-
-    def __setstate__(self, state: Any) -> None:
-        if isinstance(state, Mapping):
-            self.__dict__.update(state)
-        elif isinstance(state, tuple) and len(state) == 2:
-            list_state, dict_state = state
-            if list_state is not None:
-                self.extend(list_state)
-            if isinstance(dict_state, Mapping):
-                self.__dict__.update(dict_state)
-        else:
-            self.state = state
-
-
-class _RLBenchOptionalUnpickler(pickle.Unpickler):
-    def find_class(self, module: str, name: str) -> Any:
-        if module.startswith("rlbench"):
-            if name == "Demo":
-                return _PickleFallbackDemo
-            return _PickleFallbackObject
-        return super().find_class(module, name)
-
 
 def load_rlbench_observations(path: Path | None) -> list[Any]:
     if path is None or not path.is_file():
         return []
     with path.open("rb") as handle:
-        try:
-            loaded = pickle.load(handle)
-        except ModuleNotFoundError as exc:
-            if exc.name != "rlbench":
-                raise
-            handle.seek(0)
-            loaded = _RLBenchOptionalUnpickler(handle).load()
-    if hasattr(loaded, "_observations"):
-        observations = getattr(loaded, "_observations")
-        if isinstance(observations, Sequence):
-            return list(observations)
+        loaded = pickle.load(handle)
     if isinstance(loaded, list):
         return loaded
     if isinstance(loaded, tuple):
         return list(loaded)
-    try:
-        return list(loaded)
-    except TypeError as exc:
-        raise ValueError(
-            f"Expected RLBench low_dim_obs.pkl to contain a sequence, got {type(loaded).__name__}"
-        ) from exc
+    raise ValueError(f"Expected RLBench low_dim_obs.pkl to contain a sequence, got {type(loaded).__name__}")
 
 
 def observation_misc(observation: Any) -> Mapping[str, Any]:
