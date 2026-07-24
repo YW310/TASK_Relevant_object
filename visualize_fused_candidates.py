@@ -149,6 +149,30 @@ def sanity_report_for_object(obj: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def set_axes_equal_3d(ax, points: np.ndarray) -> None:
+    """Force equal x/y/z scale on a 3D axes.
+
+    matplotlib's 3D axes auto-scale each axis independently to fill the plot,
+    so a physically flat/thin point cloud (small z range vs. x/y range, e.g.
+    buttons on a table) gets visually stretched into a tall column even
+    though the underlying world coordinates are correct. This makes the
+    "height" look wrong in the rendered image despite the data being fine.
+    """
+    if len(points) == 0:
+        return
+    mins = points.min(axis=0)
+    maxs = points.max(axis=0)
+    centers = (mins + maxs) / 2.0
+    half_range = max((maxs - mins).max() / 2.0, 1e-3)
+    ax.set_xlim(centers[0] - half_range, centers[0] + half_range)
+    ax.set_ylim(centers[1] - half_range, centers[1] + half_range)
+    ax.set_zlim(centers[2] - half_range, centers[2] + half_range)
+    try:
+        ax.set_box_aspect((1, 1, 1))
+    except AttributeError:
+        pass  # older matplotlib without set_box_aspect; limits above still help.
+
+
 def plot_pointcloud(objects: Sequence[Mapping[str, Any]], out_path: Path) -> None:
     import matplotlib
     matplotlib.use("Agg")
@@ -156,6 +180,7 @@ def plot_pointcloud(objects: Sequence[Mapping[str, Any]], out_path: Path) -> Non
 
     fig = plt.figure(figsize=(8, 8))
     ax = fig.add_subplot(111, projection="3d")
+    all_points: list[np.ndarray] = []
     for index, obj in enumerate(objects):
         points = np.asarray(obj.get("points_world", []), dtype=np.float64)
         if len(points) == 0:
@@ -164,10 +189,13 @@ def plot_pointcloud(objects: Sequence[Mapping[str, Any]], out_path: Path) -> Non
         ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=2, color=color, label=f'{obj["id"]} ({obj["role"]})')
         centroid = np.asarray(obj["centroid_world"], dtype=np.float64)
         ax.scatter([centroid[0]], [centroid[1]], [centroid[2]], s=90, marker="x", color=color)
+        all_points.append(points)
     ax.set_xlabel("x (m)")
     ax.set_ylabel("y (m)")
     ax.set_zlabel("z (m)")
     ax.legend(loc="upper left", fontsize=7)
+    if all_points:
+        set_axes_equal_3d(ax, np.concatenate(all_points, axis=0))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
