@@ -61,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--invert-rlbench-extrinsics", action="store_true", help="Invert RLBench camera extrinsics (same as fusion script).")
     parser.add_argument("--point-stride", type=int, default=4, help="Subsample points_world by this stride before rendering.")
     parser.add_argument("--point-radius", type=int, default=2, help="Reprojected point marker radius in pixels.")
+    parser.add_argument("--mask-alpha", type=int, default=80, help="Alpha (0-255) for the semi-transparent reprojected point mask; lower = more transparent.")
     parser.add_argument("--max-frames", type=int, default=None, help="Optional cap on the number of frames to render.")
     parser.add_argument("--skip-pointcloud", action="store_true", help="Skip the matplotlib 3D scatter plot (only render 2D overlays + report).")
     return parser
@@ -98,9 +99,14 @@ def draw_overlay(
     point_stride: int,
     point_radius: int,
     out_path: Path,
+    mask_alpha: int = 80,
 ) -> None:
-    image = Image.open(rgb_path).convert("RGB")
-    draw = ImageDraw.Draw(image)
+    image = Image.open(rgb_path).convert("RGBA")
+    width, height = image.size
+    mask_layer = np.zeros((height, width, 4), dtype=np.uint8)
+    bboxes: list[tuple[tuple[int, int, int, int], tuple[int, int, int]]] = []
+    labels: list[tuple[tuple[float, float], str, tuple[int, int, int]]] = []
+
     for index, obj in enumerate(objects):
         color = OBJECT_COLORS[index % len(OBJECT_COLORS)]
         points = np.asarray(obj["points_world"], dtype=np.float64)
@@ -109,19 +115,49 @@ def draw_overlay(
         if point_stride > 1:
             points = points[::point_stride]
         uv, valid = project_points(points, intrinsics, extrinsics)
-        for (u, v), ok in zip(uv, valid):
-            if not ok or not (0 <= u < image.width and 0 <= v < image.height):
-                continue
-            draw.ellipse([u - point_radius, v - point_radius, u + point_radius, v + point_radius], fill=color)
+        in_bounds = valid & (uv[:, 0] >= 0) & (uv[:, 0] < width) & (uv[:, 1] >= 0) & (uv[:, 1] < height)
+        visible_uv = uv[in_bounds]
+        if len(visible_uv) == 0:
+            continue
+
+        # Semi-transparent "mask": stamp a small translucent disk at every
+        # reprojected point instead of a fully opaque dot. Overlapping disks
+        # are combined with max() so dense point clouds read as one soft
+        # translucent blob over the object rather than a cluster of solid dots.
+        layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        layer_draw = ImageDraw.Draw(layer)
+        for u, v in visible_uv:
+            layer_draw.ellipse(
+                [u - point_radius, v - point_radius, u + point_radius, v + point_radius],
+                fill=(*color, mask_alpha),
+            )
+        mask_layer = np.maximum(mask_layer, np.asarray(layer))
+
+        u_min, v_min = visible_uv.min(axis=0)
+        u_max, v_max = visible_uv.max(axis=0)
+        bboxes.append(((int(u_min), int(v_min), int(u_max), int(v_max)), color))
 
         centroid_uv, centroid_valid = project_points(np.asarray([obj["centroid_world"]], dtype=np.float64), intrinsics, extrinsics)
         if centroid_valid[0]:
             cu, cv = centroid_uv[0]
-            draw.ellipse([cu - 5, cv - 5, cu + 5, cv + 5], outline=(255, 255, 255), width=2)
-            draw.text((cu + 6, cv - 6), f'{obj["id"]}', fill=color)
+            labels.append(((float(cu), float(cv)), str(obj["id"]), color))
+
+    image = Image.alpha_composite(image, Image.fromarray(mask_layer, mode="RGBA"))
+    draw = ImageDraw.Draw(image, "RGBA")
+    for (u_min, v_min, u_max, v_max), color in bboxes:
+        draw.rectangle([u_min, v_min, u_max, v_max], outline=(*color, 255), width=2)
+    for (cu, cv), label, color in labels:
+        draw.ellipse([cu - 5, cv - 5, cu + 5, cv + 5], outline=(255, 255, 255, 255), width=2)
+        text_bbox = draw.textbbox((cu + 6, cv - 6), label)
+        pad = 2
+        draw.rectangle(
+            [text_bbox[0] - pad, text_bbox[1] - pad, text_bbox[2] + pad, text_bbox[3] + pad],
+            fill=(0, 0, 0, 140),
+        )
+        draw.text((cu + 6, cv - 6), label, fill=(*color, 230))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(out_path)
+    image.convert("RGB").save(out_path)
 
 
 def sanity_report_for_object(obj: Mapping[str, Any]) -> dict[str, Any]:
@@ -251,7 +287,16 @@ def main() -> None:
                 print(f"[warn] frame_id={frame_id} camera={camera}: no camera intrinsics/extrinsics found; skipping overlay.", file=sys.stderr)
                 continue
             out_path = output_dir / f"{frame_id}_{camera}_reproj.png"
-            draw_overlay(rgb_path, objects, params["intrinsics"], params["extrinsics"], args.point_stride, args.point_radius, out_path)
+            draw_overlay(
+                rgb_path,
+                objects,
+                params["intrinsics"],
+                params["extrinsics"],
+                args.point_stride,
+                args.point_radius,
+                out_path,
+                mask_alpha=args.mask_alpha,
+            )
 
         if not args.skip_pointcloud:
             try:
