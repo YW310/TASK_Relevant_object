@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import pickle
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -117,8 +118,26 @@ def load_camera_params(path: Path | None) -> dict[str, dict[str, np.ndarray]]:
 
 
 
-def load_rlbench_observations(path: Path | None) -> list[Any]:
-    if path is None or not path.is_file():
+def resolve_rlbench_low_dim_path(episode_dir: Path, override_path: Path | None = None) -> Path:
+    return override_path if override_path is not None else episode_dir / "low_dim_obs.pkl"
+
+
+def load_rlbench_observations(episode_dir: Path, override_path: Path | None = None) -> list[Any]:
+    """Load RLBench ``low_dim_obs.pkl`` observations for an episode directory.
+
+    Defaults to ``episode_dir / "low_dim_obs.pkl"`` unless ``override_path`` is
+    given (e.g. via ``--rlbench-low-dim-obs``). Returns ``[]`` when the file is
+    missing, so callers can gracefully fall back to other camera-parameter
+    sources.
+
+    RLBench episodes are pickled as a ``rlbench.demo.Demo`` object, which
+    wraps a plain list in ``self._observations`` and supports ``len()``/
+    indexing but is not a ``list``/``tuple`` itself. Handle that case via
+    duck-typing so this works even when the ``rlbench`` package (and thus
+    the ``Demo`` class) is not importable in the current environment.
+    """
+    path = resolve_rlbench_low_dim_path(episode_dir, override_path)
+    if not path.is_file():
         return []
     with path.open("rb") as handle:
         loaded = pickle.load(handle)
@@ -126,6 +145,11 @@ def load_rlbench_observations(path: Path | None) -> list[Any]:
         return loaded
     if isinstance(loaded, tuple):
         return list(loaded)
+    observations = getattr(loaded, "_observations", None)
+    if isinstance(observations, (list, tuple)):
+        return list(observations)
+    if hasattr(loaded, "__len__") and hasattr(loaded, "__getitem__"):
+        return [loaded[i] for i in range(len(loaded))]
     raise ValueError(f"Expected RLBench low_dim_obs.pkl to contain a sequence, got {type(loaded).__name__}")
 
 
@@ -166,24 +190,6 @@ def camera_param_from_rlbench_observation(
     return {"intrinsics": intrinsics, "extrinsics": extrinsics}
 
 
-def resolve_rlbench_camera_param(
-    observations: Sequence[Any],
-    camera: str,
-    frame_index: int | None,
-    *,
-    invert_extrinsics: bool = False,
-) -> dict[str, np.ndarray] | None:
-    if not observations:
-        return None
-    index = frame_index if frame_index is not None else 0
-    if index < 0 or index >= len(observations):
-        raise IndexError(
-            f"RLBench frame_index={index} is outside low_dim_obs range 0..{len(observations) - 1}"
-        )
-    return camera_param_from_rlbench_observation(
-        observations[index], camera, invert_extrinsics=invert_extrinsics
-    )
-
 def find_first(paths: Sequence[Path]) -> Path | None:
     return next((path for path in paths if path.is_file()), None)
 
@@ -203,30 +209,52 @@ def resolve_depth_path(episode_dir: Path, camera: str, frame_id: str) -> Path:
     return found
 
 
-def resolve_camera_param(
-    params: Mapping[str, dict[str, np.ndarray]],
-    episode_dir: Path,
+def resolve_camera_param_for_frame(
     camera: str,
-    rlbench_observations: Sequence[Any],
     frame_index: int | None,
-    args: argparse.Namespace,
-) -> dict[str, np.ndarray]:
-    if camera in params:
-        return params[camera]
-    rlbench_param = resolve_rlbench_camera_param(
-        rlbench_observations,
-        camera,
-        frame_index,
-        invert_extrinsics=args.invert_rlbench_extrinsics,
-    )
-    if rlbench_param is not None:
-        return rlbench_param
+    frame_id: str,
+    explicit_camera_params: Mapping[str, dict[str, np.ndarray]],
+    rlbench_observations: Sequence[Any],
+    episode_dir: Path,
+    *,
+    invert_rlbench_extrinsics: bool = False,
+) -> dict[str, np.ndarray] | None:
+    """Resolve intrinsics/extrinsics for one camera at one frame.
+
+    Priority:
+      1. ``explicit_camera_params`` (from ``--camera-params-json``).
+      2. RLBench ``low_dim_obs.pkl`` observation at ``frame_index`` (works for
+         both static cameras and the moving wrist camera, since every camera
+         is read per-frame).
+      3. ``{camera}_camera.json`` / ``camera_params.json`` / ``cameras.json``
+         fallback files next to the episode.
+      4. ``None`` when no geometry is available; callers should degrade to
+         visual-only matching for this camera/frame instead of failing.
+    """
+    if camera in explicit_camera_params:
+        return explicit_camera_params[camera]
+
+    if rlbench_observations:
+        index = frame_index if frame_index is not None else 0
+        if index < 0 or index >= len(rlbench_observations):
+            raise IndexError(
+                f"RLBench frame_index={index} (frame_id={frame_id!r}) is outside "
+                f"low_dim_obs range 0..{len(rlbench_observations) - 1}"
+            )
+        try:
+            return camera_param_from_rlbench_observation(
+                rlbench_observations[index], camera, invert_extrinsics=invert_rlbench_extrinsics
+            )
+        except KeyError:
+            pass  # This camera has no entry in RLBench misc; try other sources.
+
     for path in (episode_dir / f"{camera}_camera.json", episode_dir / "camera_params.json", episode_dir / "cameras.json"):
         if path.is_file():
             loaded = load_camera_params(path)
             if camera in loaded:
                 return loaded[camera]
-    raise FileNotFoundError(f"Missing camera intrinsics/extrinsics for camera={camera}")
+
+    return None
 
 
 def backproject_mask(depth: np.ndarray, mask: np.ndarray, intrinsics: np.ndarray, max_points: int) -> np.ndarray:
@@ -310,7 +338,22 @@ def fuse_frame(
     for camera, view in frame.get("views", {}).items():
         if cameras is not None and camera not in cameras:
             continue
-        params = resolve_camera_param(camera_params, episode_dir, camera, rlbench_observations, frame_index, args)
+        params = resolve_camera_param_for_frame(
+            camera,
+            frame_index,
+            frame_id,
+            camera_params,
+            rlbench_observations,
+            episode_dir,
+            invert_rlbench_extrinsics=args.invert_rlbench_extrinsics,
+        )
+        if params is None:
+            print(
+                f"[warn] frame_id={frame_id} camera={camera}: no camera intrinsics/extrinsics found; "
+                "skipping 3D fusion for this view (visual-only matching not yet implemented).",
+                file=sys.stderr,
+            )
+            continue
         depth = read_depth(resolve_depth_path(episode_dir, camera, frame_id), args.depth_scale)
         data = json.loads(Path(view["candidates_json"]).read_text(encoding="utf-8"))
         for cand in data.get("candidates", []):
@@ -360,12 +403,9 @@ def main() -> None:
     output_path = Path(args.output_json).expanduser().resolve() if args.output_json else candidates_path.with_name("frame_fused_candidates.json")
     summary = json.loads(candidates_path.read_text(encoding="utf-8"))
     camera_params = load_camera_params(Path(args.camera_params_json).expanduser().resolve() if args.camera_params_json else None)
-    rlbench_low_dim_path = (
-        Path(args.rlbench_low_dim_obs).expanduser().resolve()
-        if args.rlbench_low_dim_obs
-        else episode_dir / "low_dim_obs.pkl"
-    )
-    rlbench_observations = load_rlbench_observations(rlbench_low_dim_path)
+    rlbench_low_dim_override = Path(args.rlbench_low_dim_obs).expanduser().resolve() if args.rlbench_low_dim_obs else None
+    rlbench_low_dim_path = resolve_rlbench_low_dim_path(episode_dir, rlbench_low_dim_override)
+    rlbench_observations = load_rlbench_observations(episode_dir, rlbench_low_dim_override)
     cameras = parse_csv(args.cameras)
     frames = [
         fuse_frame(frame, episode_dir, camera_params, rlbench_observations, cameras, args)
