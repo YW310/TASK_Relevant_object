@@ -498,6 +498,60 @@ def warn_near_miss_unmerged_clusters(clusters: list[list[Observation3D]], args: 
                 )
 
 
+def solve_min_cost_assignment(cost: np.ndarray) -> list[tuple[int, int]]:
+    """Solve a square min-cost bipartite assignment (Hungarian algorithm).
+
+    O(n^3) Kuhn-Munkres with potentials; no scipy dependency so this module
+    keeps working with plain ``python3`` (only numpy/PIL are required).
+    Returns one (row, col) pair per row, covering every row and column
+    exactly once. ``cost`` must be square.
+    """
+    n = cost.shape[0]
+    assert cost.shape[1] == n, "solve_min_cost_assignment requires a square cost matrix"
+    INF = float("inf")
+    u = [0.0] * (n + 1)
+    v = [0.0] * (n + 1)
+    p = [0] * (n + 1)  # p[j] = 1-indexed row currently assigned to column j
+    way = [0] * (n + 1)
+    for i in range(1, n + 1):
+        p[0] = i
+        j0 = 0
+        minv = [INF] * (n + 1)
+        used = [False] * (n + 1)
+        while True:
+            used[j0] = True
+            i0 = p[j0]
+            delta = INF
+            j1 = -1
+            for j in range(1, n + 1):
+                if not used[j]:
+                    cur = cost[i0 - 1, j - 1] - u[i0] - v[j]
+                    if cur < minv[j]:
+                        minv[j] = cur
+                        way[j] = j0
+                    if minv[j] < delta:
+                        delta = minv[j]
+                        j1 = j
+            for j in range(n + 1):
+                if used[j]:
+                    u[p[j]] += delta
+                    v[j] -= delta
+                else:
+                    minv[j] -= delta
+            j0 = j1
+            if p[j0] == 0:
+                break
+        while j0:
+            j1 = way[j0]
+            p[j0] = p[j1]
+            j0 = j1
+    pairs = []
+    for j in range(1, n + 1):
+        if p[j] != 0:
+            pairs.append((p[j] - 1, j - 1))
+    return pairs
+
+
 def observation_to_json(obs: Observation3D) -> dict[str, Any]:
     c = obs.candidate
     return {
@@ -526,9 +580,11 @@ def assign_object_ids(
     if two same-role objects' relative x-position (or which clusters exist at
     all) changes between frames, the sort order changes and the same physical
     object can flip from e.g. "T1" to "T2". Instead, match each frame's
-    clusters to the previous processed frame's tracked objects by nearest
-    centroid (within ``args.track_distance_m``) and inherit that id; only
-    assign a brand-new id when no previous track is close enough.
+    clusters to the previous processed frame's tracked objects with a
+    globally optimal Hungarian-algorithm assignment (minimizing total centroid
+    distance, restricted to pairs within ``args.track_distance_m``; see
+    ``solve_min_cost_assignment``) and inherit that id; only assign a
+    brand-new id when no previous track is close enough.
 
     ``track_state`` is ``{"tracks": {role: [{"index": int, "centroid": [...]},
     ...]}, "next_index": {role: int}}`` from the previous frame and is not
@@ -557,28 +613,45 @@ def assign_object_ids(
             for cluster in role_clusters_list
         ]
 
-        # Greedily assign the globally closest (cluster, previous track) pairs first,
-        # instead of walking clusters in an arbitrary order and grabbing whichever
-        # previous track is merely close enough. Processing in x-sorted (or any other
-        # fixed) order can hand a previous track to a cluster that is a mediocre match
-        # while a genuinely better match for that track is processed later and finds
-        # it already taken, minting a spurious extra id for what is really the same
-        # tracked object.
-        candidate_pairs: list[tuple[float, int, int]] = []
-        for cluster_index, centroid in enumerate(centroids):
-            for prev_index, track in enumerate(prev_tracks):
-                dist = float(np.linalg.norm(centroid - np.array(track["centroid"])))
-                if dist <= args.track_distance_m:
-                    candidate_pairs.append((dist, cluster_index, prev_index))
-        candidate_pairs.sort(key=lambda item: item[0])
-
+        # Solve the globally optimal (cluster, previous track) matching with the
+        # Hungarian algorithm, rather than a greedy walk that can settle for a
+        # locally-available match and leave a genuinely closer pairing unmatched
+        # elsewhere. Matching is framed as a square assignment problem: real
+        # (cluster, track) pairs cost their centroid distance if within
+        # ``args.track_distance_m`` (else a large forbidden cost), and each
+        # cluster/track also gets an "abstain" dummy costing just over
+        # ``args.track_distance_m`` -- strictly more than any allowed real
+        # match, so the solver always prefers a real match when one exists,
+        # but nothing is forced into a bad match just to complete the
+        # assignment (crucially the abstain cost must NOT be 0: an all-dummy
+        # "everyone stays unmatched" solution would otherwise always beat any
+        # real match, since every real distance is >= 0).
+        n_clusters = len(role_clusters_list)
+        n_prev = len(prev_tracks)
         assigned_index_by_cluster: dict[int, int] = {}
-        used_prev: set[int] = set()
-        for _dist, cluster_index, prev_index in candidate_pairs:
-            if cluster_index in assigned_index_by_cluster or prev_index in used_prev:
-                continue
-            assigned_index_by_cluster[cluster_index] = prev_tracks[prev_index]["index"]
-            used_prev.add(prev_index)
+        if n_clusters and n_prev:
+            size = n_clusters + n_prev
+            abstain_cost = args.track_distance_m + 1e-6
+            forbidden_cost = abstain_cost * 1000.0 + 1e6
+            cost = np.full((size, size), forbidden_cost, dtype=float)
+            for cluster_index, centroid in enumerate(centroids):
+                for prev_index, track in enumerate(prev_tracks):
+                    dist = float(np.linalg.norm(centroid - np.array(track["centroid"])))
+                    if dist <= args.track_distance_m:
+                        cost[cluster_index, prev_index] = dist
+            # Each cluster may abstain (stay unmatched) via its own dummy column.
+            for cluster_index in range(n_clusters):
+                cost[cluster_index, n_prev + cluster_index] = abstain_cost
+            # Each previous track may abstain (stay unmatched) via its own dummy row.
+            for prev_index in range(n_prev):
+                cost[n_clusters + prev_index, prev_index] = abstain_cost
+            # Dummy-vs-dummy padding cells only complete the permutation; they carry
+            # no real meaning, so they're free.
+            cost[n_clusters:, n_prev:] = 0.0
+
+            for row, col in solve_min_cost_assignment(cost):
+                if row < n_clusters and col < n_prev:
+                    assigned_index_by_cluster[row] = prev_tracks[col]["index"]
 
         assigned_tracks: list[dict[str, Any]] = []
         for cluster_index, cluster in enumerate(role_clusters_list):
