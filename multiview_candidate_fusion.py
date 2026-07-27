@@ -68,6 +68,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cluster-distance-m", type=float, default=0.03, help="Centroid threshold, e.g. 0.02-0.05 m.")
     parser.add_argument("--bbox-iou-threshold", type=float, default=0.0, help="Optional 3D bbox IoU threshold for merging.")
     parser.add_argument("--nearest-distance-m", type=float, default=None, help="Optional point-cloud nearest-distance threshold for merging.")
+    parser.add_argument(
+        "--track-distance-m",
+        type=float,
+        default=0.15,
+        help=(
+            "Max centroid displacement (meters) between consecutive processed frames for a "
+            "same-role fused object to keep its id (e.g. 'T1') across frames. Without this, ids "
+            "are re-derived from scratch every frame by sorting clusters, which can silently "
+            "flip which physical object is 'T1' vs 'T2' between frames whenever their sort order "
+            "changes -- increase this if --frame-interval is large and objects move a lot between "
+            "selected frames, decrease it if unrelated objects of the same role are close together."
+        ),
+    )
     return parser
 
 
@@ -447,6 +460,86 @@ def observation_to_json(obs: Observation3D) -> dict[str, Any]:
     }
 
 
+def assign_object_ids(
+    clusters: list[list[Observation3D]],
+    track_state: dict[str, Any],
+    args: argparse.Namespace,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Assign fused-object ids that stay consistent across frames.
+
+    Re-deriving ids every frame from a fresh ``role_counts`` counter combined
+    with sorting clusters by x-coordinate is order-dependent across frames:
+    if two same-role objects' relative x-position (or which clusters exist at
+    all) changes between frames, the sort order changes and the same physical
+    object can flip from e.g. "T1" to "T2". Instead, match each frame's
+    clusters to the previous processed frame's tracked objects by nearest
+    centroid (within ``args.track_distance_m``) and inherit that id; only
+    assign a brand-new id when no previous track is close enough.
+
+    ``track_state`` is ``{"tracks": {role: [{"index": int, "centroid": [...]},
+    ...]}, "next_index": {role: int}}`` from the previous frame and is not
+    mutated; the updated state to carry into the next frame is returned
+    alongside the objects. ``next_index`` is tracked separately from (and
+    monotonically, regardless of) the currently live tracks so a role's id
+    counter never gets reused after its tracks briefly disappear (e.g. one
+    frame of occlusion) and then reappear.
+    """
+    role_clusters: dict[str, list[list[Observation3D]]] = {}
+    for cluster in clusters:
+        role_clusters.setdefault(cluster[0].role, []).append(cluster)
+
+    prev_tracks_by_role: dict[str, list[dict[str, Any]]] = track_state.get("tracks", {})
+    next_index_by_role: dict[str, int] = dict(track_state.get("next_index", {}))
+
+    objects: list[dict[str, Any]] = []
+    new_tracks_by_role: dict[str, list[dict[str, Any]]] = {}
+    for role in sorted(role_clusters):
+        prefix = ROLE_OBJECT_PREFIX.get(role, f"{role}_obj")
+        prev_tracks = prev_tracks_by_role.get(role, [])
+        next_index = next_index_by_role.get(role, 0)
+        role_clusters_list = sorted(
+            role_clusters[role],
+            key=lambda c: float(np.concatenate([o.points_world for o in c], axis=0).mean(axis=0)[0]),
+        )
+        assigned_tracks: list[dict[str, Any]] = []
+        used_prev: set[int] = set()
+        for cluster in role_clusters_list:
+            all_points = np.concatenate([obs.points_world for obs in cluster], axis=0)
+            centroid = all_points.mean(axis=0)
+            best_prev_index = None
+            best_dist = None
+            for prev_index, track in enumerate(prev_tracks):
+                if prev_index in used_prev:
+                    continue
+                dist = float(np.linalg.norm(centroid - np.array(track["centroid"])))
+                if dist <= args.track_distance_m and (best_dist is None or dist < best_dist):
+                    best_prev_index = prev_index
+                    best_dist = dist
+            if best_prev_index is not None:
+                used_prev.add(best_prev_index)
+                index = prev_tracks[best_prev_index]["index"]
+            else:
+                next_index += 1
+                index = next_index
+            objects.append({
+                "id": f"{prefix}{index}",
+                "role": role,
+                "points_world": all_points.tolist(),
+                "centroid_world": centroid.tolist(),
+                "bbox3d_world": np.stack([all_points.min(axis=0), all_points.max(axis=0)]).tolist(),
+                "visible_camera": sorted({obs.camera for obs in cluster}),
+                "mask_area": int(sum(int(obs.candidate.get("mask_area_pixels", 0)) for obs in cluster)),
+                "sam_score": float(np.mean([float(obs.candidate.get("score", 0.0)) for obs in cluster])),
+                "observations": [observation_to_json(obs) for obs in cluster],
+            })
+            assigned_tracks.append({"index": index, "centroid": centroid.tolist()})
+        new_tracks_by_role[role] = assigned_tracks
+        next_index_by_role[role] = next_index
+    objects.sort(key=lambda obj: (obj["role"], obj["id"].__len__(), obj["id"]))
+    new_track_state = {"tracks": new_tracks_by_role, "next_index": next_index_by_role}
+    return objects, new_track_state
+
+
 def fuse_frame(
     frame: Mapping[str, Any],
     episode_dir: Path,
@@ -454,6 +547,7 @@ def fuse_frame(
     rlbench_observations: Sequence[Any],
     cameras: Sequence[str] | None,
     args: argparse.Namespace,
+    track_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     observations: list[Observation3D] = []
     frame_id = str(frame["frame_id"])
@@ -492,25 +586,10 @@ def fuse_frame(
             observations.append(Observation3D(str(cand["role"]), camera, cand, points_world, centroid, bbox))
 
     clusters = cluster_observations(observations, args)
-
-    role_counts = {role: 0 for role in ROLE_OBJECT_PREFIX}
-    objects = []
-    for cluster in sorted(clusters, key=lambda c: (c[0].role, float(c[0].centroid_world[0]))):
-        role = cluster[0].role
-        prefix = ROLE_OBJECT_PREFIX.get(role, f"{role}_obj")
-        index = role_counts.get(role, 0) + 1; role_counts[role] = index
-        all_points = np.concatenate([obs.points_world for obs in cluster], axis=0)
-        objects.append({
-            "id": f"{prefix}{index}",
-            "role": role,
-            "points_world": all_points.tolist(),
-            "centroid_world": all_points.mean(axis=0).tolist(),
-            "bbox3d_world": np.stack([all_points.min(axis=0), all_points.max(axis=0)]).tolist(),
-            "visible_camera": sorted({obs.camera for obs in cluster}),
-            "mask_area": int(sum(int(obs.candidate.get("mask_area_pixels", 0)) for obs in cluster)),
-            "sam_score": float(np.mean([float(obs.candidate.get("score", 0.0)) for obs in cluster])),
-            "observations": [observation_to_json(obs) for obs in cluster],
-        })
+    objects, updated_track_state = assign_object_ids(clusters, track_state or {}, args)
+    if track_state is not None:
+        track_state.clear()
+        track_state.update(updated_track_state)
     return {"frame_index": frame.get("frame_index"), "frame_id": frame_id, "objects": objects}
 
 
@@ -525,8 +604,9 @@ def main() -> None:
     rlbench_low_dim_path = resolve_rlbench_low_dim_path(episode_dir, rlbench_low_dim_override)
     rlbench_observations = load_rlbench_observations(episode_dir, rlbench_low_dim_override)
     cameras = parse_csv(args.cameras)
+    track_state: dict[str, Any] = {}
     frames = [
-        fuse_frame(frame, episode_dir, camera_params, rlbench_observations, cameras, args)
+        fuse_frame(frame, episode_dir, camera_params, rlbench_observations, cameras, args, track_state=track_state)
         for frame in summary.get("frames", [])
     ]
     result = {
