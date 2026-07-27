@@ -45,10 +45,14 @@
 # Example:
   # EPISODE_DIR=data/BridgeVLA_RLBench_EVAL_DATA/push_buttons/all_variations/episodes/episode0 \
   # SAM_MODEL_DIR=/common-data-32t/.cache/facebook/sam3 \
+  # FRAME_INTERVAL=10 \
   # MODEL_PATH=/new-common-data/new-common-data/huggingface/Qwen3-VL-8B-Instruct \
   # CAMERA_THRESHOLD_OVERRIDES="left_shoulder=0.15,right_shoulder=0.15" \
+  # SKIP_DECISION=0 \
+  # SAVE_OBJECT_SUMMARY=1 \
+  # DECISION_MODEL_PATH=/new-common-data/new-common-data/huggingface/Qwen3-VL-8B-Instruct \
   # ./run_full_pipeline.sh
-
+  
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
