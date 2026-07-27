@@ -30,6 +30,16 @@ Use [run_full_pipeline.sh](run_full_pipeline.sh) when you want one command for t
 - Output: object_predictions.json with current target/reference object ids, confidence, uncertainty, and evidence.
 - Default is disabled (SKIP_DECISION=1).
 
+5. Stage 5 (optional decision visualization)
+- Script: [stage4_visualize_decision.py](stage4_visualize_decision.py)
+- Input: object_predictions.json + frame_fused_candidates.json.
+- Output: per-frame decision overlays under outputs/<episode>/viz_decision.
+
+6. Stage 6 (optional compact stage comparison)
+- Script: [stage6_visualize_stage_montage.py](stage6_visualize_stage_montage.py)
+- Input: Stage 3 reprojection overlays + Stage 5 decision overlays.
+- Output: side-by-side per-frame comparison panels under outputs/<episode>/viz_compare.
+
 ### Default execution behavior
 
 - By default, Stages 1-3 run and Stage 4 is skipped.

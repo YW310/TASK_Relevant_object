@@ -32,6 +32,7 @@
 #   DECISION_FRAME (default: last)          first|last decision frame from object_summary.
 #   DECISION_FRAME_ID                        Optional explicit frame_id for decision.
 #   DECISION_WINDOW_FRAMES (default: 3)     Temporal window size (recent frames) for stage-4 decision.
+#   DECISION_MAX_NEW_TOKENS (default: 1024) Stage-4 JSON generation budget per frame.
 #   DECISION_OUTPUT_JSON                     Optional explicit output path for object_predictions.json.
 #   MAX_CANDIDATE_IMAGES (default: 8)       Max representative object images attached to decision prompt.
 #   MAX_CANDIDATES_FOR_DECISION (default: 12) Max candidates kept for stage-4 prompt after filtering.
@@ -41,6 +42,8 @@
 #   MAX_EE_DISTANCE_M                         Optional filter by min end-effector distance across the temporal window.
 #   SKIP_DECISION_VIZ (default: 0)          Set to 1 to skip Stage 5 decision visualization.
 #   DECISION_VIZ_OUTPUT_DIR                  Optional explicit output dir for decision overlays.
+#   SKIP_STAGE_COMPARE (default: 1)         Set to 0 to render compact Stage 3 vs Stage 5 montages.
+#   STAGE_COMPARE_OUTPUT_DIR                Optional explicit output dir for stage comparison montages.
 #   CAMERA_PARAMS_JSON                      Optional explicit camera params (fusion + viz stages).
 #   INVERT_RLBENCH_EXTRINSICS (default: 0)  Set to 1 to pass --invert-rlbench-extrinsics.
 #   SKIP_CANDIDATES (default: 0)            Set to 1 to skip stage 1 (reuse existing episode_candidates.json).
@@ -89,6 +92,7 @@ DECISION_MODEL_PATH="${DECISION_MODEL_PATH:-${MODEL_PATH:-}}"
 DECISION_FRAME="${DECISION_FRAME:-last}"
 DECISION_FRAME_ID="${DECISION_FRAME_ID:-}"
 DECISION_WINDOW_FRAMES="${DECISION_WINDOW_FRAMES:-3}"
+DECISION_MAX_NEW_TOKENS="${DECISION_MAX_NEW_TOKENS:-1024}"
 DECISION_OUTPUT_JSON="${DECISION_OUTPUT_JSON:-}"
 MAX_CANDIDATE_IMAGES="${MAX_CANDIDATE_IMAGES:-8}"
 MAX_CANDIDATES_FOR_DECISION="${MAX_CANDIDATES_FOR_DECISION:-12}"
@@ -98,6 +102,8 @@ MIN_CANDIDATE_SAM_SCORE="${MIN_CANDIDATE_SAM_SCORE:-0.0}"
 MAX_EE_DISTANCE_M="${MAX_EE_DISTANCE_M:-}"
 SKIP_DECISION_VIZ="${SKIP_DECISION_VIZ:-0}"
 DECISION_VIZ_OUTPUT_DIR="${DECISION_VIZ_OUTPUT_DIR:-}"
+SKIP_STAGE_COMPARE="${SKIP_STAGE_COMPARE:-1}"
+STAGE_COMPARE_OUTPUT_DIR="${STAGE_COMPARE_OUTPUT_DIR:-}"
 CAMERA_PARAMS_JSON="${CAMERA_PARAMS_JSON:-}"
 INVERT_RLBENCH_EXTRINSICS="${INVERT_RLBENCH_EXTRINSICS:-0}"
 SKIP_CANDIDATES="${SKIP_CANDIDATES:-0}"
@@ -192,6 +198,7 @@ else
     --object-summary-json "${SUMMARY_INPUT}"
     --decision-frame "${DECISION_FRAME}"
     --decision-window-frames "${DECISION_WINDOW_FRAMES}"
+    --max-new-tokens "${DECISION_MAX_NEW_TOKENS}"
     --max-candidate-images "${MAX_CANDIDATE_IMAGES}"
     --max-candidates-for-decision "${MAX_CANDIDATES_FOR_DECISION}"
     --min-candidate-point-count "${MIN_CANDIDATE_POINT_COUNT}"
@@ -243,6 +250,23 @@ else
   "${PYTHON}" "${SCRIPT_DIR}/stage4_visualize_decision.py" "${STAGE5_ARGS[@]}"
 fi
 
+# ---------------------------------------------------------------------------
+# Stage 6: Compact stage comparison montage (optional)
+# ---------------------------------------------------------------------------
+if [[ "${SKIP_DECISION}" == "1" ]]; then
+  echo "[stage 6/6] Skipping stage comparison (Stage 4 disabled)."
+elif [[ "${SKIP_STAGE_COMPARE}" == "1" ]]; then
+  echo "[stage 6/6] Skipping stage comparison (SKIP_STAGE_COMPARE=1)."
+else
+  echo "[stage 6/6] Rendering compact Stage 3 vs Stage 5 montages..."
+  STAGE_COMPARE_META="${DECISION_VIZ_OUTPUT_DIR:-${DECISION_VIZ_DIR_DEFAULT}}/decision_visualization.json"
+  STAGE6_ARGS=(
+    --decision-meta-json "${STAGE_COMPARE_META}"
+  )
+  [[ -n "${STAGE_COMPARE_OUTPUT_DIR}" ]] && STAGE6_ARGS+=(--output-dir "${STAGE_COMPARE_OUTPUT_DIR}")
+  "${PYTHON}" "${SCRIPT_DIR}/stage6_visualize_stage_montage.py" "${STAGE6_ARGS[@]}"
+fi
+
 echo "=========================================="
 echo "Done. Outputs under: ${OUTPUT_DIR}"
 echo "  Candidates: ${CANDIDATES_JSON}"
@@ -256,5 +280,8 @@ if [[ "${SKIP_DECISION}" == "0" ]]; then
 fi
 if [[ "${SKIP_DECISION}" == "0" && "${SKIP_DECISION_VIZ}" != "1" ]]; then
   echo "  DecisionViz:${DECISION_VIZ_OUTPUT_DIR:-${DECISION_VIZ_DIR_DEFAULT}}"
+fi
+if [[ "${SKIP_DECISION}" == "0" && "${SKIP_STAGE_COMPARE}" != "1" ]]; then
+  echo "  StageCmp:   ${STAGE_COMPARE_OUTPUT_DIR:-${OUTPUT_DIR}/viz_compare}"
 fi
 echo "=========================================="

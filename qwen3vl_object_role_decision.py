@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--grounding-min-side", type=int, default=512)
     parser.add_argument("--max-retries", type=int, default=1)
-    parser.add_argument("--max-new-tokens", type=int, default=384)
+    parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument(
         "--max-candidate-images",
         type=int,
@@ -446,7 +446,7 @@ def _validate_decision_ids(result: dict[str, Any], valid_ids: set[str]) -> None:
             raise ValueError(f"{key}={value!r} is not in candidate object ids: {sorted(valid_ids)}")
 
 
-def _summarize_previous_decisions(frame_decisions: Sequence[Mapping[str, Any]], max_items: int = 5) -> list[dict[str, Any]]:
+def _summarize_previous_decisions(frame_decisions: Sequence[Mapping[str, Any]], max_items: int = 3) -> list[dict[str, Any]]:
     if max_items <= 0:
         return []
     selected = list(frame_decisions[-max_items:])
