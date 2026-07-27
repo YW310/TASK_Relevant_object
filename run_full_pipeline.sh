@@ -21,6 +21,8 @@
 #   THRESHOLD (default: 0.25)               SAM3 confidence threshold.
 #   CAMERA_THRESHOLD_OVERRIDES              e.g. "left_shoulder=0.15,right_shoulder=0.15".
 #   CLUSTER_DISTANCE_M (default: 0.03)      Fusion clustering centroid distance threshold.
+#   MIN_FUSED_POINTS (default: 0)           Drop fused objects with fewer combined points than this (0=off).
+#   MIN_BBOX_DIAGONAL_M (default: 0.0)      Drop fused objects with a smaller 3D bbox diagonal than this (0=off).
 #   CAMERA_PARAMS_JSON                      Optional explicit camera params (fusion + viz stages).
 #   INVERT_RLBENCH_EXTRINSICS (default: 0)  Set to 1 to pass --invert-rlbench-extrinsics.
 #   SKIP_CANDIDATES (default: 0)            Set to 1 to skip stage 1 (reuse existing episode_candidates.json).
@@ -56,6 +58,8 @@ USE_BF16="${USE_BF16:-0}"
 THRESHOLD="${THRESHOLD:-0.25}"
 CAMERA_THRESHOLD_OVERRIDES="${CAMERA_THRESHOLD_OVERRIDES:-}"
 CLUSTER_DISTANCE_M="${CLUSTER_DISTANCE_M:-0.03}"
+MIN_FUSED_POINTS="${MIN_FUSED_POINTS:-0}"
+MIN_BBOX_DIAGONAL_M="${MIN_BBOX_DIAGONAL_M:-0.0}"
 CAMERA_PARAMS_JSON="${CAMERA_PARAMS_JSON:-}"
 INVERT_RLBENCH_EXTRINSICS="${INVERT_RLBENCH_EXTRINSICS:-0}"
 SKIP_CANDIDATES="${SKIP_CANDIDATES:-0}"
@@ -123,6 +127,8 @@ else
     --candidates-json "${CANDIDATES_JSON}"
     --output-json "${FUSED_JSON}"
     --cluster-distance-m "${CLUSTER_DISTANCE_M}"
+    --min-fused-points "${MIN_FUSED_POINTS}"
+    --min-bbox-diagonal-m "${MIN_BBOX_DIAGONAL_M}"
   )
   [[ -n "${CAMERAS}" ]] && STAGE2_ARGS+=(--cameras "${CAMERAS}")
   [[ -n "${CAMERA_PARAMS_JSON}" ]] && STAGE2_ARGS+=(--camera-params-json "${CAMERA_PARAMS_JSON}")

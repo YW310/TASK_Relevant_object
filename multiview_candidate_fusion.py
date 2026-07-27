@@ -102,6 +102,29 @@ def build_parser() -> argparse.ArgumentParser:
             "selected frames, decrease it if unrelated objects of the same role are close together."
         ),
     )
+    parser.add_argument(
+        "--min-fused-points",
+        type=int,
+        default=0,
+        help=(
+            "Drop a fused (post-clustering) object if its combined point cloud (summed across all "
+            "its observations/cameras) has fewer than this many points. 0 (default) disables this "
+            "filter. Useful for dropping small/noisy single-camera fragments (e.g. a stray partial "
+            "mask that didn't merge with the real object) that would otherwise show up as spurious "
+            "extra tiny boxes."
+        ),
+    )
+    parser.add_argument(
+        "--min-bbox-diagonal-m",
+        type=float,
+        default=0.0,
+        help=(
+            "Drop a fused (post-clustering) object if its 3D bounding box diagonal is smaller than "
+            "this many meters. 0.0 (default) disables this filter. Also useful for dropping small/ "
+            "noisy fragments; unlike --min-fused-points this is robust to candidates with many "
+            "points crammed into a tiny volume (e.g. a thin sliver mask)."
+        ),
+    )
     return parser
 
 
@@ -498,6 +521,45 @@ def warn_near_miss_unmerged_clusters(clusters: list[list[Observation3D]], args: 
                 )
 
 
+def filter_small_clusters(clusters: list[list[Observation3D]], args: argparse.Namespace) -> list[list[Observation3D]]:
+    """Drop fused (post-clustering) objects that are too small to be real.
+
+    A common source of spurious extra boxes is a small, low-confidence,
+    single-camera mask that didn't merge with the real object's cluster (its
+    centroid drifted just far enough away) -- see ``warn_near_miss_unmerged_clusters``.
+    Rather than only warning about it, this lets --min-fused-points and/or
+    --min-bbox-diagonal-m actually remove such clusters from the output once
+    clustering is done, based on the FUSED (combined multi-camera) point count
+    / bbox size, not any single camera's raw candidate stats -- so a real
+    object that is only barely visible from one camera but has enough total
+    points/extent still survives.
+    """
+    if args.min_fused_points <= 0 and args.min_bbox_diagonal_m <= 0.0:
+        return clusters
+    kept = []
+    for cluster in clusters:
+        all_points = np.concatenate([obs.points_world for obs in cluster], axis=0)
+        if args.min_fused_points > 0 and len(all_points) < args.min_fused_points:
+            print(
+                f"[info] dropping small '{cluster[0].role}' cluster (cameras "
+                f"{sorted({obs.camera for obs in cluster})}): {len(all_points)} points < "
+                f"--min-fused-points {args.min_fused_points}.",
+                file=sys.stderr,
+            )
+            continue
+        diagonal = float(np.linalg.norm(all_points.max(axis=0) - all_points.min(axis=0)))
+        if args.min_bbox_diagonal_m > 0.0 and diagonal < args.min_bbox_diagonal_m:
+            print(
+                f"[info] dropping small '{cluster[0].role}' cluster (cameras "
+                f"{sorted({obs.camera for obs in cluster})}): bbox diagonal {diagonal:.3f}m < "
+                f"--min-bbox-diagonal-m {args.min_bbox_diagonal_m}.",
+                file=sys.stderr,
+            )
+            continue
+        kept.append(cluster)
+    return kept
+
+
 def solve_min_cost_assignment(cost: np.ndarray) -> list[tuple[int, int]]:
     """Solve a square min-cost bipartite assignment (Hungarian algorithm).
 
@@ -727,6 +789,7 @@ def fuse_frame(
             observations.append(Observation3D(str(cand["role"]), camera, cand, points_world, centroid, bbox))
 
     clusters = cluster_observations(observations, args)
+    clusters = filter_small_clusters(clusters, args)
     objects, updated_track_state = assign_object_ids(clusters, track_state or {}, args)
     if track_state is not None:
         track_state.clear()
@@ -756,6 +819,8 @@ def main() -> None:
         "cluster_distance_m": args.cluster_distance_m,
         "bbox_iou_threshold": args.bbox_iou_threshold,
         "nearest_distance_m": args.nearest_distance_m,
+        "min_fused_points": args.min_fused_points,
+        "min_bbox_diagonal_m": args.min_bbox_diagonal_m,
         "rlbench_low_dim_obs": str(rlbench_low_dim_path) if rlbench_observations else None,
         "invert_rlbench_extrinsics": bool(args.invert_rlbench_extrinsics),
         "frames": frames,
