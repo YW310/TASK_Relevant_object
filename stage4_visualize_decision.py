@@ -36,6 +36,11 @@ ROLE_COLORS = {
     "reference": (80, 180, 255),
 }
 
+ROLE_TAG = {
+    "target": "TD",
+    "reference": "RD",
+}
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -112,7 +117,7 @@ def _draw_decision_overlay(
 
         u_min, v_min = visible_uv.min(axis=0)
         u_max, v_max = visible_uv.max(axis=0)
-        label = f"{role_name.upper()} {object_id}"
+        label = f"{ROLE_TAG.get(role_name, role_name[:2].upper())}_{object_id}"
         boxes.append(((int(u_min), int(v_min), int(u_max), int(v_max)), color, label))
 
         centroid_uv, centroid_valid = project_points(np.asarray([obj.get("centroid_world", [0.0, 0.0, 0.0])], dtype=np.float64), intrinsics, extrinsics)
@@ -125,9 +130,10 @@ def _draw_decision_overlay(
     image = Image.alpha_composite(image, Image.fromarray(mask_layer, mode="RGBA"))
     draw = ImageDraw.Draw(image, "RGBA")
     for (u_min, v_min, u_max, v_max), color, label in boxes:
-        draw.rectangle([u_min, v_min, u_max, v_max], outline=(*color, 255), width=3)
+        # Keep decision overlays translucent to preserve scene context under the highlight.
+        draw.rectangle([u_min, v_min, u_max, v_max], outline=(*color, 170), width=3)
         text_w = max(80, 7 * len(label))
-        draw.rectangle([u_min, max(0, v_min - 18), min(width - 1, u_min + text_w), v_min], fill=(*color, 220))
+        draw.rectangle([u_min, max(0, v_min - 18), min(width - 1, u_min + text_w), v_min], fill=(*color, 130))
         draw.text((u_min + 3, max(0, v_min - 16)), label, fill=(255, 255, 255, 255))
     for cu, cv, label, color in labels:
         draw.ellipse([cu - 3, cv - 3, cu + 3, cv + 3], fill=(*color, 255), outline=(255, 255, 255, 255), width=1)

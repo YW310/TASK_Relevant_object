@@ -54,6 +54,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max representative object images to attach to the decision prompt.",
     )
     parser.add_argument(
+        "--max-candidates-for-decision",
+        type=int,
+        default=12,
+        help="Keep at most this many candidates (after filtering) for Qwen decision prompt.",
+    )
+    parser.add_argument(
+        "--min-candidate-point-count",
+        type=int,
+        default=0,
+        help="Drop candidates with fewer points than this before Qwen decision (0 disables).",
+    )
+    parser.add_argument(
+        "--min-candidate-camera-count",
+        type=int,
+        default=1,
+        help="Drop candidates seen by fewer cameras than this before Qwen decision.",
+    )
+    parser.add_argument(
+        "--min-candidate-sam-score",
+        type=float,
+        default=0.0,
+        help="Drop candidates whose fused sam_score is below this threshold (0 disables).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Build and save the decision input payload without loading/running Qwen3-VL.",
@@ -135,9 +159,62 @@ def _compact_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _filter_candidates(
+    candidates: Sequence[Mapping[str, Any]],
+    args: argparse.Namespace,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    kept = []
+    dropped = []
+    for candidate in candidates:
+        object_id = str(candidate.get("object_id"))
+        point_count = int(candidate.get("point_count") or 0)
+        camera_count = int(candidate.get("camera_count") or 0)
+        sam_score = float(candidate.get("sam_score") or 0.0)
+        reasons = []
+        if args.min_candidate_point_count > 0 and point_count < args.min_candidate_point_count:
+            reasons.append(f"point_count<{args.min_candidate_point_count}")
+        if args.min_candidate_camera_count > 1 and camera_count < args.min_candidate_camera_count:
+            reasons.append(f"camera_count<{args.min_candidate_camera_count}")
+        if args.min_candidate_sam_score > 0.0 and sam_score < args.min_candidate_sam_score:
+            reasons.append(f"sam_score<{args.min_candidate_sam_score}")
+        if reasons:
+            dropped.append({"object_id": object_id, "reasons": reasons})
+        else:
+            kept.append(dict(candidate))
+
+    if not kept:
+        # Safety fallback: never send an empty candidate set into the decision prompt.
+        kept = [dict(item) for item in candidates]
+
+    kept.sort(
+        key=lambda item: (
+            -int(item.get("camera_count") or 0),
+            -float(item.get("sam_score") or 0.0),
+            -int(item.get("point_count") or 0),
+            str(item.get("object_id") or ""),
+        )
+    )
+    if args.max_candidates_for_decision > 0:
+        kept = kept[: args.max_candidates_for_decision]
+
+    stats = {
+        "input_candidates": len(candidates),
+        "kept_candidates": len(kept),
+        "dropped_candidates": dropped,
+        "rules": {
+            "min_candidate_point_count": args.min_candidate_point_count,
+            "min_candidate_camera_count": args.min_candidate_camera_count,
+            "min_candidate_sam_score": args.min_candidate_sam_score,
+            "max_candidates_for_decision": args.max_candidates_for_decision,
+        },
+    }
+    return kept, stats
+
+
 def _build_prompt_payload(
     summary: Mapping[str, Any],
     frame_input: Mapping[str, Any],
+    object_track_context: Mapping[str, Any],
 ) -> str:
     payload = {
         "instruction_prior": summary.get("instruction_prior"),
@@ -145,6 +222,7 @@ def _build_prompt_payload(
         "decision_frame_id": frame_input.get("frame_id"),
         "decision_frame_index": frame_input.get("frame_index"),
         "candidate_objects": [_compact_candidate(item) for item in frame_input.get("candidate_objects", [])],
+        "object_track_context": object_track_context,
         "pairwise_relations": frame_input.get("pairwise_relations", []),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
@@ -217,10 +295,33 @@ def main() -> None:
     frame_input = _pick_decision_frame(frame_inputs, args.decision_frame, args.decision_frame_id)
 
     candidates = list(frame_input.get("candidate_objects", []))
+    candidates, filter_stats = _filter_candidates(candidates, args)
+    frame_input = dict(frame_input)
+    frame_input["candidate_objects"] = candidates
+
+    track_map = {
+        str(item.get("object_id")): {
+            "role": item.get("role"),
+            "lifespan_frames": item.get("lifespan_frames"),
+            "camera_set": item.get("camera_set"),
+            "camera_count_stats": item.get("camera_count_stats"),
+            "point_count_stats": item.get("point_count_stats"),
+            "sam_score_stats": item.get("sam_score_stats"),
+            "bbox_diagonal_m_stats": item.get("bbox_diagonal_m_stats"),
+            "motion_path_length_m": item.get("motion_path_length_m"),
+        }
+        for item in summary.get("object_tracks", [])
+    }
+    object_track_context = {
+        str(item.get("object_id")): track_map[str(item.get("object_id"))]
+        for item in candidates
+        if str(item.get("object_id")) in track_map
+    }
+
     candidate_ids = {str(item.get("object_id")) for item in candidates if item.get("object_id") is not None}
 
     representative_images = _collect_representative_images(candidates, args.max_candidate_images)
-    payload_json = _build_prompt_payload(summary, frame_input)
+    payload_json = _build_prompt_payload(summary, frame_input, object_track_context)
     prompt_text = _decision_prompt(payload_json, representative_images)
 
     content: list[dict[str, Any]] = []
@@ -245,6 +346,7 @@ def main() -> None:
             "instruction_prior": summary.get("instruction_prior"),
             "role_spec_prior": summary.get("role_spec_prior"),
             "candidate_ids": sorted(candidate_ids),
+            "candidate_filter_stats": filter_stats,
             "representative_images": representative_images,
             "messages": [{"role": "user", "content": content}],
             "dry_run": True,
@@ -282,6 +384,7 @@ def main() -> None:
         "instruction_prior": summary.get("instruction_prior"),
         "role_spec_prior": summary.get("role_spec_prior"),
         "candidate_ids": sorted(candidate_ids),
+        "candidate_filter_stats": filter_stats,
         "representative_images": representative_images,
         "decision": {
             "target_object_id": result.get("target_object_id"),
