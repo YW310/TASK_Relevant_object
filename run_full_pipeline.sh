@@ -3,6 +3,7 @@
 #   1) qwen_role_sam3_candidate_episode.py  -> outputs/<episode>/episode_candidates.json
 #   2) multiview_candidate_fusion.py        -> outputs/<episode>/frame_fused_candidates.json
 #   3) visualize_fused_candidates.py        -> outputs/<episode>/viz/*
+#   4) qwen3vl_object_role_decision.py      -> outputs/<episode>/object_predictions.json (optional)
 #
 # Configure via environment variables (required ones must be set):
 #   EPISODE_DIR (required)        RLBench episode directory, e.g. data/.../episode0
@@ -25,6 +26,12 @@
 #   MIN_BBOX_DIAGONAL_M (default: 0.0)      Drop fused objects with a smaller 3D bbox diagonal than this (0=off).
 #   SAVE_OBJECT_SUMMARY (default: 0)        Set to 1 to export object_summary.json for downstream Qwen3-VL role decisions.
 #   OBJECT_SUMMARY_JSON                      Optional explicit object summary output path.
+#   SKIP_DECISION (default: 1)              Set to 0 to run stage 4 object-level target/reference decision.
+#   DECISION_MODEL_PATH                      Qwen3-VL model path for stage 4 (default: MODEL_PATH or script default).
+#   DECISION_FRAME (default: last)          first|last decision frame from object_summary.
+#   DECISION_FRAME_ID                        Optional explicit frame_id for decision.
+#   DECISION_OUTPUT_JSON                     Optional explicit output path for object_predictions.json.
+#   MAX_CANDIDATE_IMAGES (default: 8)       Max representative object images attached to decision prompt.
 #   CAMERA_PARAMS_JSON                      Optional explicit camera params (fusion + viz stages).
 #   INVERT_RLBENCH_EXTRINSICS (default: 0)  Set to 1 to pass --invert-rlbench-extrinsics.
 #   SKIP_CANDIDATES (default: 0)            Set to 1 to skip stage 1 (reuse existing episode_candidates.json).
@@ -64,6 +71,12 @@ MIN_FUSED_POINTS="${MIN_FUSED_POINTS:-0}"
 MIN_BBOX_DIAGONAL_M="${MIN_BBOX_DIAGONAL_M:-0.0}"
 SAVE_OBJECT_SUMMARY="${SAVE_OBJECT_SUMMARY:-0}"
 OBJECT_SUMMARY_JSON="${OBJECT_SUMMARY_JSON:-}"
+SKIP_DECISION="${SKIP_DECISION:-1}"
+DECISION_MODEL_PATH="${DECISION_MODEL_PATH:-${MODEL_PATH:-}}"
+DECISION_FRAME="${DECISION_FRAME:-last}"
+DECISION_FRAME_ID="${DECISION_FRAME_ID:-}"
+DECISION_OUTPUT_JSON="${DECISION_OUTPUT_JSON:-}"
+MAX_CANDIDATE_IMAGES="${MAX_CANDIDATE_IMAGES:-8}"
 CAMERA_PARAMS_JSON="${CAMERA_PARAMS_JSON:-}"
 INVERT_RLBENCH_EXTRINSICS="${INVERT_RLBENCH_EXTRINSICS:-0}"
 SKIP_CANDIDATES="${SKIP_CANDIDATES:-0}"
@@ -87,6 +100,8 @@ fi
 CANDIDATES_JSON="${OUTPUT_DIR}/episode_candidates.json"
 FUSED_JSON="${OUTPUT_DIR}/frame_fused_candidates.json"
 VIZ_DIR="${OUTPUT_DIR}/viz"
+OBJECT_SUMMARY_PATH_DEFAULT="${OUTPUT_DIR}/object_summary.json"
+OBJECT_PREDICTIONS_PATH_DEFAULT="${OUTPUT_DIR}/object_predictions.json"
 
 echo "=========================================="
 echo "Episode:    ${EPISODE_DIR}"
@@ -134,12 +149,32 @@ else
     --min-fused-points "${MIN_FUSED_POINTS}"
     --min-bbox-diagonal-m "${MIN_BBOX_DIAGONAL_M}"
   )
-  [[ "${SAVE_OBJECT_SUMMARY}" == "1" ]] && STAGE2_ARGS+=(--save-object-summary)
+  # Stage 4 depends on object_summary; auto-enable summary export when decision is requested.
+  [[ "${SAVE_OBJECT_SUMMARY}" == "1" || "${SKIP_DECISION}" == "0" ]] && STAGE2_ARGS+=(--save-object-summary)
   [[ -n "${OBJECT_SUMMARY_JSON}" ]] && STAGE2_ARGS+=(--object-summary-json "${OBJECT_SUMMARY_JSON}")
   [[ -n "${CAMERAS}" ]] && STAGE2_ARGS+=(--cameras "${CAMERAS}")
   [[ -n "${CAMERA_PARAMS_JSON}" ]] && STAGE2_ARGS+=(--camera-params-json "${CAMERA_PARAMS_JSON}")
   [[ "${INVERT_RLBENCH_EXTRINSICS}" == "1" ]] && STAGE2_ARGS+=(--invert-rlbench-extrinsics)
   "${PYTHON}" "${SCRIPT_DIR}/multiview_candidate_fusion.py" "${STAGE2_ARGS[@]}"
+fi
+
+# ---------------------------------------------------------------------------
+# Stage 4: Qwen3-VL object-level role decision (optional)
+# ---------------------------------------------------------------------------
+if [[ "${SKIP_DECISION}" == "1" ]]; then
+  echo "[stage 4/4] Skipping object-level decision (SKIP_DECISION=1)."
+else
+  echo "[stage 4/4] Running Qwen3-VL object-level target/reference decision..."
+  SUMMARY_INPUT="${OBJECT_SUMMARY_JSON:-${OBJECT_SUMMARY_PATH_DEFAULT}}"
+  STAGE4_ARGS=(
+    --object-summary-json "${SUMMARY_INPUT}"
+    --decision-frame "${DECISION_FRAME}"
+    --max-candidate-images "${MAX_CANDIDATE_IMAGES}"
+  )
+  [[ -n "${DECISION_MODEL_PATH}" ]] && STAGE4_ARGS+=(--model-path "${DECISION_MODEL_PATH}")
+  [[ -n "${DECISION_FRAME_ID}" ]] && STAGE4_ARGS+=(--decision-frame-id "${DECISION_FRAME_ID}")
+  [[ -n "${DECISION_OUTPUT_JSON}" ]] && STAGE4_ARGS+=(--output-json "${DECISION_OUTPUT_JSON}")
+  "${PYTHON}" "${SCRIPT_DIR}/qwen3vl_object_role_decision.py" "${STAGE4_ARGS[@]}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -164,4 +199,10 @@ echo "Done. Outputs under: ${OUTPUT_DIR}"
 echo "  Candidates: ${CANDIDATES_JSON}"
 echo "  Fused:      ${FUSED_JSON}"
 echo "  Viz:        ${VIZ_DIR}"
+if [[ "${SAVE_OBJECT_SUMMARY}" == "1" || "${SKIP_DECISION}" == "0" ]]; then
+  echo "  ObjSummary: ${OBJECT_SUMMARY_JSON:-${OBJECT_SUMMARY_PATH_DEFAULT}}"
+fi
+if [[ "${SKIP_DECISION}" == "0" ]]; then
+  echo "  Decision:   ${DECISION_OUTPUT_JSON:-${OBJECT_PREDICTIONS_PATH_DEFAULT}}"
+fi
 echo "=========================================="
