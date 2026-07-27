@@ -18,7 +18,10 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import numpy as np
+
 from qwen3vl_rlbench_episode_grounding import Qwen3VLRLBenchGrounder, atomic_json_dump
+from multiview_candidate_fusion import load_rlbench_observations
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -78,6 +81,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Drop candidates whose fused sam_score is below this threshold (0 disables).",
     )
     parser.add_argument(
+        "--decision-window-frames",
+        type=int,
+        default=3,
+        help=(
+            "Number of recent frames (ending at the decision frame) to include as temporal context. "
+            "Set to 1 for single-frame behavior."
+        ),
+    )
+    parser.add_argument(
+        "--max-ee-distance-m",
+        type=float,
+        default=None,
+        help=(
+            "Optional end-effector distance filter: drop candidates whose minimum distance to "
+            "the end-effector across the temporal decision window exceeds this threshold."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Build and save the decision input payload without loading/running Qwen3-VL.",
@@ -107,6 +128,10 @@ def _pick_decision_frame(
     if decision_frame == "first":
         return ordered[0]
     return ordered[-1]
+
+
+def _ordered_frames(frame_inputs: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    return sorted(frame_inputs, key=_frame_sort_key)
 
 
 def _best_observation_image(obs: Mapping[str, Any]) -> str | None:
@@ -162,7 +187,9 @@ def _compact_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
 def _filter_candidates(
     candidates: Sequence[Mapping[str, Any]],
     args: argparse.Namespace,
+    temporal_context_by_object: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    temporal_context_by_object = temporal_context_by_object or {}
     kept = []
     dropped = []
     for candidate in candidates:
@@ -170,6 +197,8 @@ def _filter_candidates(
         point_count = int(candidate.get("point_count") or 0)
         camera_count = int(candidate.get("camera_count") or 0)
         sam_score = float(candidate.get("sam_score") or 0.0)
+        ee_stats = temporal_context_by_object.get(object_id, {}).get("end_effector_distance_m", {})
+        ee_min = ee_stats.get("min")
         reasons = []
         if args.min_candidate_point_count > 0 and point_count < args.min_candidate_point_count:
             reasons.append(f"point_count<{args.min_candidate_point_count}")
@@ -177,6 +206,8 @@ def _filter_candidates(
             reasons.append(f"camera_count<{args.min_candidate_camera_count}")
         if args.min_candidate_sam_score > 0.0 and sam_score < args.min_candidate_sam_score:
             reasons.append(f"sam_score<{args.min_candidate_sam_score}")
+        if args.max_ee_distance_m is not None and ee_min is not None and float(ee_min) > args.max_ee_distance_m:
+            reasons.append(f"ee_distance_min>{args.max_ee_distance_m}")
         if reasons:
             dropped.append({"object_id": object_id, "reasons": reasons})
         else:
@@ -190,6 +221,7 @@ def _filter_candidates(
         key=lambda item: (
             -int(item.get("camera_count") or 0),
             -float(item.get("sam_score") or 0.0),
+            float((temporal_context_by_object.get(str(item.get("object_id")), {}).get("end_effector_distance_m", {}).get("mean") or 1e9)),
             -int(item.get("point_count") or 0),
             str(item.get("object_id") or ""),
         )
@@ -205,22 +237,152 @@ def _filter_candidates(
             "min_candidate_point_count": args.min_candidate_point_count,
             "min_candidate_camera_count": args.min_candidate_camera_count,
             "min_candidate_sam_score": args.min_candidate_sam_score,
+            "max_ee_distance_m": args.max_ee_distance_m,
             "max_candidates_for_decision": args.max_candidates_for_decision,
         },
     }
     return kept, stats
 
 
+def _extract_end_effector_position(observation: Any) -> np.ndarray | None:
+    pose = getattr(observation, "gripper_pose", None)
+    if pose is None and isinstance(observation, Mapping):
+        pose = observation.get("gripper_pose")
+    if pose is None:
+        misc = getattr(observation, "misc", None)
+        if isinstance(misc, Mapping):
+            pose = misc.get("gripper_pose")
+    if pose is None:
+        return None
+    arr = np.asarray(pose, dtype=np.float64).reshape(-1)
+    if arr.size < 3:
+        return None
+    return arr[:3]
+
+
+def _resolve_temporal_frames(
+    frame_inputs: Sequence[Mapping[str, Any]],
+    anchor_frame: Mapping[str, Any],
+    window_frames: int,
+) -> list[Mapping[str, Any]]:
+    ordered = sorted(frame_inputs, key=_frame_sort_key)
+    anchor_id = str(anchor_frame.get("frame_id"))
+    anchor_idx = next((i for i, item in enumerate(ordered) if str(item.get("frame_id")) == anchor_id), None)
+    if anchor_idx is None:
+        return [anchor_frame]
+    w = max(1, int(window_frames))
+    start = max(0, anchor_idx - w + 1)
+    return ordered[start : anchor_idx + 1]
+
+
+def _values_stats(values: Sequence[float]) -> dict[str, float | None]:
+    if not values:
+        return {"min": None, "max": None, "mean": None, "last": None}
+    arr = np.asarray(values, dtype=np.float64)
+    return {
+        "min": float(arr.min()),
+        "max": float(arr.max()),
+        "mean": float(arr.mean()),
+        "last": float(arr[-1]),
+    }
+
+
+def _build_temporal_object_context(
+    summary: Mapping[str, Any],
+    selected_frames: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    episode_dir = summary.get("episode_dir")
+    if not episode_dir:
+        ee_by_frame_index: dict[int, np.ndarray] = {}
+    else:
+        observations = load_rlbench_observations(Path(str(episode_dir)).expanduser().resolve(), None)
+        ee_by_frame_index = {}
+        for frame in selected_frames:
+            frame_index = frame.get("frame_index")
+            if frame_index is None:
+                continue
+            try:
+                idx = int(frame_index)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= idx < len(observations):
+                ee = _extract_end_effector_position(observations[idx])
+                if ee is not None:
+                    ee_by_frame_index[idx] = ee
+
+    frame_ids = {str(frame.get("frame_id")) for frame in selected_frames}
+    frame_indices = {
+        int(frame.get("frame_index"))
+        for frame in selected_frames
+        if frame.get("frame_index") is not None and str(frame.get("frame_index")).isdigit()
+    }
+
+    context_by_object: dict[str, Any] = {}
+    for track in summary.get("object_tracks", []):
+        object_id = str(track.get("object_id"))
+        trajectory = list(track.get("trajectory", []))
+        samples = [
+            item
+            for item in trajectory
+            if str(item.get("frame_id")) in frame_ids
+        ]
+        if not samples:
+            continue
+
+        ee_distances = []
+        for item in sorted(samples, key=lambda it: (it.get("frame_index") is None, it.get("frame_index"), str(it.get("frame_id")))):
+            frame_index = item.get("frame_index")
+            if frame_index is None:
+                continue
+            try:
+                idx = int(frame_index)
+            except (TypeError, ValueError):
+                continue
+            if idx not in ee_by_frame_index:
+                continue
+            centroid = np.asarray(item.get("centroid_world", [0.0, 0.0, 0.0]), dtype=np.float64)
+            ee_distances.append(float(np.linalg.norm(centroid - ee_by_frame_index[idx])))
+
+        context_by_object[object_id] = {
+            "frames_seen_in_window": len(samples),
+            "window_camera_count_stats": _values_stats([float(item.get("camera_count") or 0.0) for item in samples]),
+            "window_sam_score_stats": _values_stats([float(item.get("sam_score") or 0.0) for item in samples]),
+            "window_point_count_stats": _values_stats([float(item.get("point_count") or 0.0) for item in samples]),
+            "end_effector_distance_m": _values_stats(ee_distances),
+            "window_samples": [
+                {
+                    "frame_id": item.get("frame_id"),
+                    "frame_index": item.get("frame_index"),
+                    "centroid_world": item.get("centroid_world"),
+                    "camera_count": item.get("camera_count"),
+                    "sam_score": item.get("sam_score"),
+                    "point_count": item.get("point_count"),
+                }
+                for item in samples
+            ],
+        }
+
+    window_meta = {
+        "decision_window_frames": len(selected_frames),
+        "frame_ids": [str(frame.get("frame_id")) for frame in selected_frames],
+        "frame_indices": sorted(frame_indices),
+        "end_effector_available_frames": sorted(ee_by_frame_index),
+    }
+    return context_by_object, window_meta
+
+
 def _build_prompt_payload(
     summary: Mapping[str, Any],
     frame_input: Mapping[str, Any],
     object_track_context: Mapping[str, Any],
+    temporal_window: Mapping[str, Any],
 ) -> str:
     payload = {
         "instruction_prior": summary.get("instruction_prior"),
         "role_spec_prior": summary.get("role_spec_prior"),
         "decision_frame_id": frame_input.get("frame_id"),
         "decision_frame_index": frame_input.get("frame_index"),
+        "temporal_window": temporal_window,
         "candidate_objects": [_compact_candidate(item) for item in frame_input.get("candidate_objects", [])],
         "object_track_context": object_track_context,
         "pairwise_relations": frame_input.get("pairwise_relations", []),
@@ -243,8 +405,11 @@ def _decision_prompt(payload_json: str, representative_images: Sequence[Mapping[
         "You are deciding current RLBench object roles from fused object evidence.\n\n"
         "Goal:\n"
         "- Select one current target_object_id and one current reference_object_id from candidate_objects.\n"
-        "- Use not only instruction text, but also geometric relations, camera visibility,"
+        "- Use not only instruction text, but also geometric relations, temporal evidence, camera visibility,"
         " mask/point quality, and representative object images.\n"
+        "- This is an online decision: the current frame must be judged together with previous frames in the temporal window.\n"
+        "- Consider end-effector distance as a soft cue: targets are often near the active end-effector, "
+        "but do not force this if other evidence is stronger.\n"
         "- If uncertain, set uncertain=true with explicit reason.\n\n"
         "Input evidence JSON:\n"
         f"{payload_json}\n\n"
@@ -281,21 +446,37 @@ def _validate_decision_ids(result: dict[str, Any], valid_ids: set[str]) -> None:
             raise ValueError(f"{key}={value!r} is not in candidate object ids: {sorted(valid_ids)}")
 
 
-def main() -> None:
-    args = build_parser().parse_args()
-    summary_path = Path(args.object_summary_json).expanduser().resolve()
-    output_path = (
-        Path(args.output_json).expanduser().resolve()
-        if args.output_json
-        else summary_path.with_name("object_predictions.json")
-    )
+def _summarize_previous_decisions(frame_decisions: Sequence[Mapping[str, Any]], max_items: int = 5) -> list[dict[str, Any]]:
+    if max_items <= 0:
+        return []
+    selected = list(frame_decisions[-max_items:])
+    return [
+        {
+            "frame_id": item.get("frame_id"),
+            "frame_index": item.get("frame_index"),
+            "target_object_id": item.get("decision", {}).get("target_object_id"),
+            "reference_object_id": item.get("decision", {}).get("reference_object_id"),
+            "confidence": item.get("decision", {}).get("confidence"),
+            "uncertain": item.get("decision", {}).get("uncertain"),
+        }
+        for item in selected
+    ]
 
-    summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    frame_inputs = list(summary.get("frame_decision_inputs", []))
-    frame_input = _pick_decision_frame(frame_inputs, args.decision_frame, args.decision_frame_id)
+
+def _run_decision_for_frame(
+    summary: Mapping[str, Any],
+    frame_inputs: Sequence[Mapping[str, Any]],
+    frame_input: Mapping[str, Any],
+    args: argparse.Namespace,
+    grounder: Qwen3VLRLBenchGrounder | None,
+    previous_frame_decisions: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    ordered = _ordered_frames(frame_inputs)
+    temporal_frames = _resolve_temporal_frames(ordered, frame_input, args.decision_window_frames)
+    temporal_context_by_object, temporal_window_meta = _build_temporal_object_context(summary, temporal_frames)
 
     candidates = list(frame_input.get("candidate_objects", []))
-    candidates, filter_stats = _filter_candidates(candidates, args)
+    candidates, filter_stats = _filter_candidates(candidates, args, temporal_context_by_object)
     frame_input = dict(frame_input)
     frame_input["candidate_objects"] = candidates
 
@@ -309,6 +490,7 @@ def main() -> None:
             "sam_score_stats": item.get("sam_score_stats"),
             "bbox_diagonal_m_stats": item.get("bbox_diagonal_m_stats"),
             "motion_path_length_m": item.get("motion_path_length_m"),
+            "window_context": temporal_context_by_object.get(str(item.get("object_id"))),
         }
         for item in summary.get("object_tracks", [])
     }
@@ -319,9 +501,13 @@ def main() -> None:
     }
 
     candidate_ids = {str(item.get("object_id")) for item in candidates if item.get("object_id") is not None}
-
     representative_images = _collect_representative_images(candidates, args.max_candidate_images)
-    payload_json = _build_prompt_payload(summary, frame_input, object_track_context)
+    payload_json = _build_prompt_payload(summary, frame_input, object_track_context, temporal_window_meta)
+    previous_summary = _summarize_previous_decisions(previous_frame_decisions)
+    if previous_summary:
+        payload = json.loads(payload_json)
+        payload["online_history"] = previous_summary
+        payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
     prompt_text = _decision_prompt(payload_json, representative_images)
 
     content: list[dict[str, Any]] = []
@@ -340,52 +526,35 @@ def main() -> None:
 
     if args.dry_run:
         output = {
-            "object_summary_json": str(summary_path),
-            "decision_frame_id": frame_input.get("frame_id"),
-            "decision_frame_index": frame_input.get("frame_index"),
-            "instruction_prior": summary.get("instruction_prior"),
-            "role_spec_prior": summary.get("role_spec_prior"),
+            "frame_id": frame_input.get("frame_id"),
+            "frame_index": frame_input.get("frame_index"),
             "candidate_ids": sorted(candidate_ids),
             "candidate_filter_stats": filter_stats,
+            "temporal_window": temporal_window_meta,
             "representative_images": representative_images,
+            "online_history": previous_summary,
             "messages": [{"role": "user", "content": content}],
             "dry_run": True,
         }
-        atomic_json_dump(output, output_path)
-        print(
-            json.dumps(
-                {
-                    "output_json": str(output_path),
-                    "decision_frame_id": frame_input.get("frame_id"),
-                    "candidate_count": len(candidate_ids),
-                    "image_count": len(representative_images),
-                    "dry_run": True,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
-        return
+        if grounder is None:
+            return output
+        return output
 
-    grounder = Qwen3VLRLBenchGrounder(
-        model_path=args.model_path,
-        grounding_min_side=args.grounding_min_side,
-        max_retries=args.max_retries,
-    )
+    if grounder is None:
+        raise ValueError("grounder is required for non-dry-run decisions")
 
     messages = [{"role": "user", "content": content}]
     result, raw_text = grounder.generate_json(messages, max_new_tokens=args.max_new_tokens)
     _validate_decision_ids(result, candidate_ids)
 
-    output = {
-        "object_summary_json": str(summary_path),
-        "decision_frame_id": frame_input.get("frame_id"),
-        "decision_frame_index": frame_input.get("frame_index"),
-        "instruction_prior": summary.get("instruction_prior"),
-        "role_spec_prior": summary.get("role_spec_prior"),
+    return {
+        "frame_id": frame_input.get("frame_id"),
+        "frame_index": frame_input.get("frame_index"),
         "candidate_ids": sorted(candidate_ids),
         "candidate_filter_stats": filter_stats,
+        "temporal_window": temporal_window_meta,
         "representative_images": representative_images,
+        "online_history": previous_summary,
         "decision": {
             "target_object_id": result.get("target_object_id"),
             "reference_object_id": result.get("reference_object_id"),
@@ -399,14 +568,96 @@ def main() -> None:
         },
         "raw_text": raw_text,
     }
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    summary_path = Path(args.object_summary_json).expanduser().resolve()
+    output_path = (
+        Path(args.output_json).expanduser().resolve()
+        if args.output_json
+        else summary_path.with_name("object_predictions.json")
+    )
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    frame_inputs = _ordered_frames(list(summary.get("frame_decision_inputs", [])))
+    if not frame_inputs:
+        raise ValueError("object_summary contains no frame_decision_inputs")
+
+    if args.decision_frame_id is not None or args.decision_frame != "last":
+        target_frame = _pick_decision_frame(frame_inputs, args.decision_frame, args.decision_frame_id)
+        selected_frames = [target_frame]
+    else:
+        selected_frames = frame_inputs
+
+    frame_decisions: list[dict[str, Any]] = []
+    grounder = None if args.dry_run else Qwen3VLRLBenchGrounder(
+        model_path=args.model_path,
+        grounding_min_side=args.grounding_min_side,
+        max_retries=args.max_retries,
+    )
+
+    for index, frame_input in enumerate(selected_frames):
+        frame_decision = _run_decision_for_frame(
+            summary=summary,
+            frame_inputs=frame_inputs,
+            frame_input=frame_input,
+            args=args,
+            grounder=grounder,
+            previous_frame_decisions=frame_decisions,
+        )
+        frame_decision["online_step"] = index
+        frame_decisions.append(frame_decision)
+
+    final_decision_entry = frame_decisions[-1]
+    final_candidate_ids = final_decision_entry.get("candidate_ids", [])
+    final_frame_id = final_decision_entry.get("frame_id")
+    final_frame_index = final_decision_entry.get("frame_index")
+
+    if args.dry_run:
+        output = {
+            "object_summary_json": str(summary_path),
+            "decision_frame_id": final_frame_id,
+            "decision_frame_index": final_frame_index,
+            "instruction_prior": summary.get("instruction_prior"),
+            "role_spec_prior": summary.get("role_spec_prior"),
+            "candidate_ids": final_candidate_ids,
+            "frame_decisions": frame_decisions,
+            "dry_run": True,
+        }
+        atomic_json_dump(output, output_path)
+        print(
+            json.dumps(
+                {
+                    "output_json": str(output_path),
+                    "decision_frame_id": final_frame_id,
+                    "frame_count": len(frame_decisions),
+                    "dry_run": True,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+
+    output = {
+        "object_summary_json": str(summary_path),
+        "decision_frame_id": final_frame_id,
+        "decision_frame_index": final_frame_index,
+        "instruction_prior": summary.get("instruction_prior"),
+        "role_spec_prior": summary.get("role_spec_prior"),
+        "candidate_ids": final_candidate_ids,
+        "frame_decisions": frame_decisions,
+        "decision": final_decision_entry.get("decision"),
+        "raw_text": final_decision_entry.get("raw_text"),
+    }
     atomic_json_dump(output, output_path)
     print(
         json.dumps(
             {
                 "output_json": str(output_path),
-                "decision_frame_id": frame_input.get("frame_id"),
-                "candidate_count": len(candidate_ids),
-                "image_count": len(representative_images),
+                "decision_frame_id": final_frame_id,
+                "frame_count": len(frame_decisions),
             },
             ensure_ascii=False,
             indent=2,

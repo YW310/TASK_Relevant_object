@@ -2,7 +2,7 @@
 """Visualize stage-4 target/reference decisions on reprojection overlays.
 
 Reads object_predictions.json + frame_fused_candidates.json and draws highlighted
-TARGET / REFERENCE overlays for the decision frame onto per-camera images.
+TARGET / REFERENCE overlays for every frame decision onto per-camera images.
 
 By default it writes images to:
   outputs/<episode>/viz_decision/
@@ -71,6 +71,42 @@ def _resolve_frame(
         if str(frame.get("frame_id")) == str(frame_id):
             return frame
     raise ValueError(f"frame_id={frame_id!r} not found in fused JSON")
+
+
+def _frame_decision_entries(pred: Mapping[str, Any]) -> list[dict[str, Any]]:
+    frame_decisions = pred.get("frame_decisions")
+    if isinstance(frame_decisions, list) and frame_decisions:
+        entries: list[dict[str, Any]] = []
+        for item in frame_decisions:
+            if not isinstance(item, Mapping):
+                continue
+            decision = item.get("decision")
+            if not isinstance(decision, Mapping):
+                decision = {
+                    "target_object_id": pred.get("decision", {}).get("target_object_id"),
+                    "reference_object_id": pred.get("decision", {}).get("reference_object_id"),
+                }
+            entries.append(
+                {
+                    "frame_id": str(item.get("frame_id")),
+                    "frame_index": item.get("frame_index"),
+                    "decision": dict(decision),
+                }
+            )
+        if entries:
+            return entries
+
+    legacy_decision = pred.get("decision", {})
+    frame_id = pred.get("decision_frame_id")
+    if frame_id is None:
+        raise ValueError("object_predictions.json missing frame_decisions and decision_frame_id")
+    return [
+        {
+            "frame_id": str(frame_id),
+            "frame_index": pred.get("decision_frame_index"),
+            "decision": dict(legacy_decision) if isinstance(legacy_decision, Mapping) else {},
+        }
+    ]
 
 
 def _draw_decision_overlay(
@@ -156,6 +192,12 @@ def _background_image(
     return None, ""
 
 
+def _blank_background_size(intrinsics: np.ndarray) -> tuple[int, int]:
+    width = int(round(float(intrinsics[0, 2]) * 2))
+    height = int(round(float(intrinsics[1, 2]) * 2))
+    return max(1, width), max(1, height)
+
+
 def main() -> None:
     args = build_parser().parse_args()
 
@@ -167,82 +209,104 @@ def main() -> None:
     pred = _load_json(pred_path)
     fused = _load_json(fused_path)
 
-    frame_id = str(pred.get("decision_frame_id"))
-    if not frame_id:
-        raise ValueError("object_predictions.json missing decision_frame_id")
-
-    decision = pred.get("decision", {})
-    target_id = decision.get("target_object_id")
-    reference_id = decision.get("reference_object_id")
-    decisions: list[tuple[str, str]] = []
-    if target_id is not None:
-        decisions.append(("target", str(target_id)))
-    if reference_id is not None:
-        decisions.append(("reference", str(reference_id)))
-    if not decisions:
-        raise ValueError("decision has neither target_object_id nor reference_object_id")
-
-    frame = _resolve_frame(fused, frame_id)
-    frame_index = frame.get("frame_index")
-    objects = frame.get("objects", [])
-    objects_by_id = {str(item.get("id")): item for item in objects}
-
-    missing_ids = [object_id for _, object_id in decisions if object_id not in objects_by_id]
-    if missing_ids:
-        raise ValueError(f"Decision object ids not found in fused frame {frame_id}: {missing_ids}")
-
     episode_dir = Path(args.episode_dir).expanduser().resolve() if args.episode_dir else Path(str(fused.get("episode_dir"))).expanduser().resolve()
     camera_params = load_camera_params(Path(args.camera_params_json).expanduser().resolve() if args.camera_params_json else None)
     rlbench_override = Path(args.rlbench_low_dim_obs).expanduser().resolve() if args.rlbench_low_dim_obs else None
     rlbench_observations = load_rlbench_observations(episode_dir, rlbench_override)
 
     camera_filter = parse_csv(args.cameras)
-    decision_cameras = sorted({c for _, object_id in decisions for c in objects_by_id[object_id].get("visible_camera", [])})
-    if not decision_cameras:
-        decision_cameras = sorted({c for obj in objects for c in obj.get("visible_camera", [])})
-    target_cameras = [c for c in decision_cameras if camera_filter is None or c in camera_filter]
 
     output_dir.mkdir(parents=True, exist_ok=True)
     rendered = []
-    for camera in target_cameras:
-        background, background_path = _background_image(viz_dir, episode_dir, camera, frame_id)
-        if background is None:
-            print(f"[warn] frame_id={frame_id} camera={camera}: no background image found in viz or RGB folders; skipping.", file=sys.stderr)
-            continue
-        params = resolve_camera_param_for_frame(
-            camera,
-            frame_index,
-            frame_id,
-            camera_params,
-            rlbench_observations,
-            episode_dir,
-            invert_rlbench_extrinsics=args.invert_rlbench_extrinsics,
-        )
-        if params is None:
-            print(f"[warn] frame_id={frame_id} camera={camera}: no camera intrinsics/extrinsics found; skipping.", file=sys.stderr)
+
+    for entry in _frame_decision_entries(pred):
+        frame_id = str(entry.get("frame_id"))
+        decision = entry.get("decision", {})
+        target_id = decision.get("target_object_id")
+        reference_id = decision.get("reference_object_id")
+        decisions: list[tuple[str, str]] = []
+        if target_id is not None:
+            decisions.append(("target", str(target_id)))
+        if reference_id is not None:
+            decisions.append(("reference", str(reference_id)))
+        if not decisions:
+            print(f"[warn] frame_id={frame_id}: decision has neither target_object_id nor reference_object_id; skipping.", file=sys.stderr)
             continue
 
-        image = _draw_decision_overlay(
-            background,
-            objects_by_id,
-            decisions,
-            params["intrinsics"],
-            params["extrinsics"],
-            args.point_stride,
-            args.point_radius,
-            args.mask_alpha,
-        )
-        out_path = output_dir / f"{frame_id}_{camera}_decision.png"
-        image.convert("RGB").save(out_path)
-        rendered.append({"camera": camera, "output_path": str(out_path), "background_path": background_path})
+        frame = _resolve_frame(fused, frame_id)
+        frame_index = frame.get("frame_index")
+        objects = frame.get("objects", [])
+        objects_by_id = {str(item.get("id")): item for item in objects}
+
+        missing_ids = [object_id for _, object_id in decisions if object_id not in objects_by_id]
+        if missing_ids:
+            raise ValueError(f"Decision object ids not found in fused frame {frame_id}: {missing_ids}")
+
+        decision_cameras = sorted({c for _, object_id in decisions for c in objects_by_id[object_id].get("visible_camera", [])})
+        if not decision_cameras:
+            decision_cameras = sorted({c for obj in objects for c in obj.get("visible_camera", [])})
+        target_cameras = [c for c in decision_cameras if camera_filter is None or c in camera_filter]
+
+        for camera in target_cameras:
+            background, background_path = _background_image(viz_dir, episode_dir, camera, frame_id)
+            params = resolve_camera_param_for_frame(
+                camera,
+                frame_index,
+                frame_id,
+                camera_params,
+                rlbench_observations,
+                episode_dir,
+                invert_rlbench_extrinsics=args.invert_rlbench_extrinsics,
+            )
+            if params is None:
+                print(f"[warn] frame_id={frame_id} camera={camera}: no camera intrinsics/extrinsics found; skipping.", file=sys.stderr)
+                continue
+            if background is None:
+                width, height = _blank_background_size(params["intrinsics"])
+                background = Image.new("RGBA", (width, height), (248, 248, 248, 255))
+                background_path = ""
+                print(f"[warn] frame_id={frame_id} camera={camera}: no background image found; rendering on blank canvas.", file=sys.stderr)
+
+            image = _draw_decision_overlay(
+                background,
+                objects_by_id,
+                decisions,
+                params["intrinsics"],
+                params["extrinsics"],
+                args.point_stride,
+                args.point_radius,
+                args.mask_alpha,
+            )
+            out_path = output_dir / f"{frame_id}_{camera}_decision.png"
+            image.convert("RGB").save(out_path)
+            rendered.append(
+                {
+                    "frame_id": frame_id,
+                    "frame_index": frame_index,
+                    "camera": camera,
+                    "target_object_id": target_id,
+                    "reference_object_id": reference_id,
+                    "output_path": str(out_path),
+                    "background_path": background_path,
+                }
+            )
 
     metadata = {
         "object_predictions_json": str(pred_path),
         "source_fused_json": str(fused_path),
-        "decision_frame_id": frame_id,
-        "decision_frame_index": frame_index,
-        "target_object_id": target_id,
-        "reference_object_id": reference_id,
+        "decision_frame_id": pred.get("decision_frame_id"),
+        "decision_frame_index": pred.get("decision_frame_index"),
+        "target_object_id": pred.get("decision", {}).get("target_object_id"),
+        "reference_object_id": pred.get("decision", {}).get("reference_object_id"),
+        "frame_decisions": [
+            {
+                "frame_id": item.get("frame_id"),
+                "frame_index": item.get("frame_index"),
+                "target_object_id": item.get("decision", {}).get("target_object_id"),
+                "reference_object_id": item.get("decision", {}).get("reference_object_id"),
+            }
+            for item in _frame_decision_entries(pred)
+        ],
         "rendered": rendered,
     }
     meta_path = output_dir / "decision_visualization.json"

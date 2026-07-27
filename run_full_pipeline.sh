@@ -31,12 +31,14 @@
 #   DECISION_MODEL_PATH                      Qwen3-VL model path for stage 4 (default: MODEL_PATH or script default).
 #   DECISION_FRAME (default: last)          first|last decision frame from object_summary.
 #   DECISION_FRAME_ID                        Optional explicit frame_id for decision.
+#   DECISION_WINDOW_FRAMES (default: 3)     Temporal window size (recent frames) for stage-4 decision.
 #   DECISION_OUTPUT_JSON                     Optional explicit output path for object_predictions.json.
 #   MAX_CANDIDATE_IMAGES (default: 8)       Max representative object images attached to decision prompt.
 #   MAX_CANDIDATES_FOR_DECISION (default: 12) Max candidates kept for stage-4 prompt after filtering.
 #   MIN_CANDIDATE_POINT_COUNT (default: 0)   Drop tiny candidates by point count before stage-4 decision.
 #   MIN_CANDIDATE_CAMERA_COUNT (default: 1)  Require at least this many supporting cameras.
 #   MIN_CANDIDATE_SAM_SCORE (default: 0.0)   Drop low-score candidates before stage-4 decision.
+#   MAX_EE_DISTANCE_M                         Optional filter by min end-effector distance across the temporal window.
 #   SKIP_DECISION_VIZ (default: 0)          Set to 1 to skip Stage 5 decision visualization.
 #   DECISION_VIZ_OUTPUT_DIR                  Optional explicit output dir for decision overlays.
 #   CAMERA_PARAMS_JSON                      Optional explicit camera params (fusion + viz stages).
@@ -86,12 +88,14 @@ SKIP_DECISION="${SKIP_DECISION:-1}"
 DECISION_MODEL_PATH="${DECISION_MODEL_PATH:-${MODEL_PATH:-}}"
 DECISION_FRAME="${DECISION_FRAME:-last}"
 DECISION_FRAME_ID="${DECISION_FRAME_ID:-}"
+DECISION_WINDOW_FRAMES="${DECISION_WINDOW_FRAMES:-3}"
 DECISION_OUTPUT_JSON="${DECISION_OUTPUT_JSON:-}"
 MAX_CANDIDATE_IMAGES="${MAX_CANDIDATE_IMAGES:-8}"
 MAX_CANDIDATES_FOR_DECISION="${MAX_CANDIDATES_FOR_DECISION:-12}"
 MIN_CANDIDATE_POINT_COUNT="${MIN_CANDIDATE_POINT_COUNT:-0}"
 MIN_CANDIDATE_CAMERA_COUNT="${MIN_CANDIDATE_CAMERA_COUNT:-1}"
 MIN_CANDIDATE_SAM_SCORE="${MIN_CANDIDATE_SAM_SCORE:-0.0}"
+MAX_EE_DISTANCE_M="${MAX_EE_DISTANCE_M:-}"
 SKIP_DECISION_VIZ="${SKIP_DECISION_VIZ:-0}"
 DECISION_VIZ_OUTPUT_DIR="${DECISION_VIZ_OUTPUT_DIR:-}"
 CAMERA_PARAMS_JSON="${CAMERA_PARAMS_JSON:-}"
@@ -187,12 +191,14 @@ else
   STAGE4_ARGS=(
     --object-summary-json "${SUMMARY_INPUT}"
     --decision-frame "${DECISION_FRAME}"
+    --decision-window-frames "${DECISION_WINDOW_FRAMES}"
     --max-candidate-images "${MAX_CANDIDATE_IMAGES}"
     --max-candidates-for-decision "${MAX_CANDIDATES_FOR_DECISION}"
     --min-candidate-point-count "${MIN_CANDIDATE_POINT_COUNT}"
     --min-candidate-camera-count "${MIN_CANDIDATE_CAMERA_COUNT}"
     --min-candidate-sam-score "${MIN_CANDIDATE_SAM_SCORE}"
   )
+  [[ -n "${MAX_EE_DISTANCE_M}" ]] && STAGE4_ARGS+=(--max-ee-distance-m "${MAX_EE_DISTANCE_M}")
   [[ -n "${DECISION_MODEL_PATH}" ]] && STAGE4_ARGS+=(--model-path "${DECISION_MODEL_PATH}")
   [[ -n "${DECISION_FRAME_ID}" ]] && STAGE4_ARGS+=(--decision-frame-id "${DECISION_FRAME_ID}")
   [[ -n "${DECISION_OUTPUT_JSON}" ]] && STAGE4_ARGS+=(--output-json "${DECISION_OUTPUT_JSON}")
