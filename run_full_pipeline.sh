@@ -4,6 +4,7 @@
 #   2) multiview_candidate_fusion.py        -> outputs/<episode>/frame_fused_candidates.json
 #   3) visualize_fused_candidates.py        -> outputs/<episode>/viz/*
 #   4) qwen3vl_object_role_decision.py      -> outputs/<episode>/object_predictions.json (optional)
+#   5) stage4_visualize_decision.py         -> outputs/<episode>/viz_decision/* (optional)
 #
 # Configure via environment variables (required ones must be set):
 #   EPISODE_DIR (required)        RLBench episode directory, e.g. data/.../episode0
@@ -32,6 +33,8 @@
 #   DECISION_FRAME_ID                        Optional explicit frame_id for decision.
 #   DECISION_OUTPUT_JSON                     Optional explicit output path for object_predictions.json.
 #   MAX_CANDIDATE_IMAGES (default: 8)       Max representative object images attached to decision prompt.
+#   SKIP_DECISION_VIZ (default: 0)          Set to 1 to skip Stage 5 decision visualization.
+#   DECISION_VIZ_OUTPUT_DIR                  Optional explicit output dir for decision overlays.
 #   CAMERA_PARAMS_JSON                      Optional explicit camera params (fusion + viz stages).
 #   INVERT_RLBENCH_EXTRINSICS (default: 0)  Set to 1 to pass --invert-rlbench-extrinsics.
 #   SKIP_CANDIDATES (default: 0)            Set to 1 to skip stage 1 (reuse existing episode_candidates.json).
@@ -77,6 +80,8 @@ DECISION_FRAME="${DECISION_FRAME:-last}"
 DECISION_FRAME_ID="${DECISION_FRAME_ID:-}"
 DECISION_OUTPUT_JSON="${DECISION_OUTPUT_JSON:-}"
 MAX_CANDIDATE_IMAGES="${MAX_CANDIDATE_IMAGES:-8}"
+SKIP_DECISION_VIZ="${SKIP_DECISION_VIZ:-0}"
+DECISION_VIZ_OUTPUT_DIR="${DECISION_VIZ_OUTPUT_DIR:-}"
 CAMERA_PARAMS_JSON="${CAMERA_PARAMS_JSON:-}"
 INVERT_RLBENCH_EXTRINSICS="${INVERT_RLBENCH_EXTRINSICS:-0}"
 SKIP_CANDIDATES="${SKIP_CANDIDATES:-0}"
@@ -102,6 +107,7 @@ FUSED_JSON="${OUTPUT_DIR}/frame_fused_candidates.json"
 VIZ_DIR="${OUTPUT_DIR}/viz"
 OBJECT_SUMMARY_PATH_DEFAULT="${OUTPUT_DIR}/object_summary.json"
 OBJECT_PREDICTIONS_PATH_DEFAULT="${OUTPUT_DIR}/object_predictions.json"
+DECISION_VIZ_DIR_DEFAULT="${OUTPUT_DIR}/viz_decision"
 
 echo "=========================================="
 echo "Episode:    ${EPISODE_DIR}"
@@ -194,6 +200,27 @@ else
   "${PYTHON}" "${SCRIPT_DIR}/visualize_fused_candidates.py" "${STAGE3_ARGS[@]}"
 fi
 
+# ---------------------------------------------------------------------------
+# Stage 5: Visualize stage-4 decision on reprojection overlays (optional)
+# ---------------------------------------------------------------------------
+if [[ "${SKIP_DECISION}" == "1" ]]; then
+  echo "[stage 5/5] Skipping decision visualization (Stage 4 disabled)."
+elif [[ "${SKIP_DECISION_VIZ}" == "1" ]]; then
+  echo "[stage 5/5] Skipping decision visualization (SKIP_DECISION_VIZ=1)."
+else
+  echo "[stage 5/5] Rendering decision overlays (target/reference highlights)..."
+  STAGE5_ARGS=(
+    --object-predictions-json "${DECISION_OUTPUT_JSON:-${OBJECT_PREDICTIONS_PATH_DEFAULT}}"
+    --fused-json "${FUSED_JSON}"
+    --viz-dir "${VIZ_DIR}"
+  )
+  [[ -n "${DECISION_VIZ_OUTPUT_DIR}" ]] && STAGE5_ARGS+=(--output-dir "${DECISION_VIZ_OUTPUT_DIR}")
+  [[ -n "${CAMERAS}" ]] && STAGE5_ARGS+=(--cameras "${CAMERAS}")
+  [[ -n "${CAMERA_PARAMS_JSON}" ]] && STAGE5_ARGS+=(--camera-params-json "${CAMERA_PARAMS_JSON}")
+  [[ "${INVERT_RLBENCH_EXTRINSICS}" == "1" ]] && STAGE5_ARGS+=(--invert-rlbench-extrinsics)
+  "${PYTHON}" "${SCRIPT_DIR}/stage4_visualize_decision.py" "${STAGE5_ARGS[@]}"
+fi
+
 echo "=========================================="
 echo "Done. Outputs under: ${OUTPUT_DIR}"
 echo "  Candidates: ${CANDIDATES_JSON}"
@@ -204,5 +231,8 @@ if [[ "${SAVE_OBJECT_SUMMARY}" == "1" || "${SKIP_DECISION}" == "0" ]]; then
 fi
 if [[ "${SKIP_DECISION}" == "0" ]]; then
   echo "  Decision:   ${DECISION_OUTPUT_JSON:-${OBJECT_PREDICTIONS_PATH_DEFAULT}}"
+fi
+if [[ "${SKIP_DECISION}" == "0" && "${SKIP_DECISION_VIZ}" != "1" ]]; then
+  echo "  DecisionViz:${DECISION_VIZ_OUTPUT_DIR:-${DECISION_VIZ_DIR_DEFAULT}}"
 fi
 echo "=========================================="
