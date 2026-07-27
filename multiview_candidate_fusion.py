@@ -551,27 +551,41 @@ def assign_object_ids(
         prefix = ROLE_OBJECT_PREFIX.get(role, f"{role}_obj")
         prev_tracks = prev_tracks_by_role.get(role, [])
         next_index = next_index_by_role.get(role, 0)
-        role_clusters_list = sorted(
-            role_clusters[role],
-            key=lambda c: float(np.concatenate([o.points_world for o in c], axis=0).mean(axis=0)[0]),
-        )
-        assigned_tracks: list[dict[str, Any]] = []
-        used_prev: set[int] = set()
-        for cluster in role_clusters_list:
-            all_points = np.concatenate([obs.points_world for obs in cluster], axis=0)
-            centroid = all_points.mean(axis=0)
-            best_prev_index = None
-            best_dist = None
+        role_clusters_list = role_clusters[role]
+        centroids = [
+            np.concatenate([obs.points_world for obs in cluster], axis=0).mean(axis=0)
+            for cluster in role_clusters_list
+        ]
+
+        # Greedily assign the globally closest (cluster, previous track) pairs first,
+        # instead of walking clusters in an arbitrary order and grabbing whichever
+        # previous track is merely close enough. Processing in x-sorted (or any other
+        # fixed) order can hand a previous track to a cluster that is a mediocre match
+        # while a genuinely better match for that track is processed later and finds
+        # it already taken, minting a spurious extra id for what is really the same
+        # tracked object.
+        candidate_pairs: list[tuple[float, int, int]] = []
+        for cluster_index, centroid in enumerate(centroids):
             for prev_index, track in enumerate(prev_tracks):
-                if prev_index in used_prev:
-                    continue
                 dist = float(np.linalg.norm(centroid - np.array(track["centroid"])))
-                if dist <= args.track_distance_m and (best_dist is None or dist < best_dist):
-                    best_prev_index = prev_index
-                    best_dist = dist
-            if best_prev_index is not None:
-                used_prev.add(best_prev_index)
-                index = prev_tracks[best_prev_index]["index"]
+                if dist <= args.track_distance_m:
+                    candidate_pairs.append((dist, cluster_index, prev_index))
+        candidate_pairs.sort(key=lambda item: item[0])
+
+        assigned_index_by_cluster: dict[int, int] = {}
+        used_prev: set[int] = set()
+        for _dist, cluster_index, prev_index in candidate_pairs:
+            if cluster_index in assigned_index_by_cluster or prev_index in used_prev:
+                continue
+            assigned_index_by_cluster[cluster_index] = prev_tracks[prev_index]["index"]
+            used_prev.add(prev_index)
+
+        assigned_tracks: list[dict[str, Any]] = []
+        for cluster_index, cluster in enumerate(role_clusters_list):
+            all_points = np.concatenate([obs.points_world for obs in cluster], axis=0)
+            centroid = centroids[cluster_index]
+            if cluster_index in assigned_index_by_cluster:
+                index = assigned_index_by_cluster[cluster_index]
             else:
                 next_index += 1
                 index = next_index
