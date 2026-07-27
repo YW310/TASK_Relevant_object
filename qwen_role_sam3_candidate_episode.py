@@ -103,6 +103,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-bf16", action="store_true")
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--threshold", type=float, default=0.25)
+    parser.add_argument(
+        "--camera-threshold-overrides",
+        default=None,
+        help=(
+            "Optional per-camera confidence threshold overrides, e.g. "
+            "'left_shoulder=0.15,right_shoulder=0.15'. Cameras with steeper viewing "
+            "angles/more arm occlusion (commonly the shoulder cameras) often need a "
+            "lower threshold than --threshold to avoid missing real objects entirely."
+        ),
+    )
     parser.add_argument("--top-k-per-role", type=int, default=8)
     parser.add_argument(
         "--candidate-pool-size",
@@ -293,8 +303,8 @@ def save_crop_sets(image: Image.Image, mask: np.ndarray, bbox: Sequence[int], st
     return str(mask_path), str(crop_path), str(masked_path)
 
 
-def run_text_prompt(processor: Any, image: Image.Image, prompt: str, args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
-    processor.set_confidence_threshold(args.threshold)
+def run_text_prompt(processor: Any, image: Image.Image, prompt: str, args: argparse.Namespace, threshold: float) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    processor.set_confidence_threshold(threshold)
     with autocast_context(args.device, args.no_bf16):
         state = processor.set_image(image)
         output = processor.set_text_prompt(prompt=prompt, state=state)
@@ -367,6 +377,28 @@ def save_visuals(
     grid.save(out_dir / "candidate_grid.png")
 
 
+def parse_camera_overrides(value: str | None) -> dict[str, float]:
+    """Parse 'camera=value,camera=value' into {camera: float}. Empty/None -> {}."""
+    if not value:
+        return {}
+    overrides: dict[str, float] = {}
+    for chunk in value.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        camera, _, raw_value = chunk.partition("=")
+        if not raw_value:
+            raise ValueError(f"Invalid camera override '{chunk}'; expected camera=value.")
+        overrides[camera.strip()] = float(raw_value)
+    return overrides
+
+
+def resolve_camera_threshold(camera: str | None, overrides: Mapping[str, float], default_threshold: float) -> float:
+    if camera is not None and camera in overrides:
+        return overrides[camera]
+    return default_threshold
+
+
 def process_camera(
     processor: Any,
     image_path: Path,
@@ -374,6 +406,8 @@ def process_camera(
     out_dir: Path,
     args: argparse.Namespace,
     progress_label: str | None = None,
+    camera: str | None = None,
+    camera_threshold_overrides: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     resume_files = (
         out_dir / "candidates.json",
@@ -386,8 +420,9 @@ def process_camera(
         return json.loads((out_dir / "candidates.json").read_text(encoding="utf-8"))
     out_dir.mkdir(parents=True, exist_ok=True)
     image = Image.open(image_path).convert("RGB")
+    threshold = resolve_camera_threshold(camera, camera_threshold_overrides or {}, args.threshold)
     if args.progress and progress_label:
-        print(f"SAM3 progress {progress_label}: start {image_path}", flush=True)
+        print(f"SAM3 progress {progress_label}: start {image_path} (threshold={threshold})", flush=True)
     candidates: list[dict[str, Any]] = []
     prompt_attempts: list[dict[str, Any]] = []
     for role in ROLE_ORDER:
@@ -397,7 +432,7 @@ def process_camera(
         prefix = ROLE_PREFIX[role]
         role_candidates: list[dict[str, Any]] = []
         for prompt_index, prompt in enumerate(prompts):
-            masks, scores, boxes = run_text_prompt(processor, image, prompt, args)
+            masks, scores, boxes = run_text_prompt(processor, image, prompt, args, threshold)
             prompt_attempts.append(
                 {
                     "role": role,
@@ -566,6 +601,9 @@ def main() -> None:
         compile=args.compile,
     )
     processor = Sam3Processor(model=model, device=args.device, confidence_threshold=args.threshold)
+    camera_threshold_overrides = parse_camera_overrides(args.camera_threshold_overrides)
+    if camera_threshold_overrides:
+        print(f"Per-camera confidence threshold overrides: {camera_threshold_overrides}")
 
     frames_summary: list[dict[str, Any]] = []
     for frame_index, frame_id in enumerate(selected_frame_ids):
@@ -586,6 +624,8 @@ def main() -> None:
                 out,
                 args,
                 progress_label=progress_label,
+                camera=camera,
+                camera_threshold_overrides=camera_threshold_overrides,
             )
             camera_overlays[camera] = out / "numbered_candidates.png"
             frame_entry["views"][camera] = {

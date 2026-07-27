@@ -57,3 +57,4 @@ tokenizers/*
 *.tar*
 *.pyc
 *.zip
+*.venv
