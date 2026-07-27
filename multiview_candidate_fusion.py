@@ -66,8 +66,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-points-per-candidate", type=int, default=4096)
     parser.add_argument("--cluster-distance-m", type=float, default=0.03, help="Centroid threshold, e.g. 0.02-0.05 m.")
-    parser.add_argument("--bbox-iou-threshold", type=float, default=0.0, help="Optional 3D bbox IoU threshold for merging.")
-    parser.add_argument("--nearest-distance-m", type=float, default=None, help="Optional point-cloud nearest-distance threshold for merging.")
+    parser.add_argument(
+        "--bbox-iou-threshold",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional 3D bbox IoU threshold. When > 0, two same-role observations also merge "
+            "whenever their bbox IoU meets this threshold, even if their centroids are farther "
+            "apart than --cluster-distance-m (this is an OR with the centroid check, not an AND: "
+            "it is meant to catch the same physical object whose centroid estimate drifted, e.g. "
+            "because of noisy depth or a partial mask, not to make merging stricter)."
+        ),
+    )
+    parser.add_argument(
+        "--nearest-distance-m",
+        type=float,
+        default=None,
+        help=(
+            "Optional point-cloud nearest-distance threshold. When set, two same-role "
+            "observations also merge whenever their point clouds come within this distance, "
+            "even if their centroids are farther apart than --cluster-distance-m (OR with the "
+            "centroid check, same rationale as --bbox-iou-threshold)."
+        ),
+    )
     parser.add_argument(
         "--track-distance-m",
         type=float,
@@ -401,9 +422,12 @@ def pairwise_should_merge(a: Observation3D, b: Observation3D, args: argparse.Nam
     if a.role != b.role:
         return False
     centroid_ok = np.linalg.norm(a.centroid_world - b.centroid_world) <= args.cluster_distance_m
-    iou_ok = args.bbox_iou_threshold <= 0 or bbox_iou_3d(a.bbox3d_world, b.bbox3d_world) >= args.bbox_iou_threshold
-    nearest_ok = args.nearest_distance_m is None or nearest_mean_distance(a.points_world, b.points_world) <= args.nearest_distance_m
-    return centroid_ok and iou_ok and nearest_ok
+    iou_ok = args.bbox_iou_threshold > 0 and bbox_iou_3d(a.bbox3d_world, b.bbox3d_world) >= args.bbox_iou_threshold
+    nearest_ok = args.nearest_distance_m is not None and nearest_mean_distance(a.points_world, b.points_world) <= args.nearest_distance_m
+    # OR, not AND: --bbox-iou-threshold / --nearest-distance-m are additional ways to detect the
+    # same physical object (e.g. when its centroid estimate drifts due to noisy depth or a
+    # partial mask), not extra requirements layered on top of the centroid check.
+    return centroid_ok or iou_ok or nearest_ok
 
 
 def cluster_observations(observations: Sequence[Observation3D], args: argparse.Namespace) -> list[list[Observation3D]]:
@@ -441,7 +465,37 @@ def cluster_observations(observations: Sequence[Observation3D], args: argparse.N
     groups: dict[int, list[Observation3D]] = {}
     for i, obs in enumerate(observations):
         groups.setdefault(find(i), []).append(obs)
-    return list(groups.values())
+    clusters = list(groups.values())
+    warn_near_miss_unmerged_clusters(clusters, args)
+    return clusters
+
+
+def warn_near_miss_unmerged_clusters(clusters: list[list[Observation3D]], args: argparse.Namespace) -> None:
+    """Print a diagnostic when two same-role clusters stay separate despite being
+    suspiciously close, so duplicate/overlapping boxes on one physical object (a
+    real fragmentation failure mode, not a rendering bug) are easy to spot from
+    the fusion script's own output instead of only being noticed later in a
+    visualization overlay.
+    """
+    diagnostic_radius_m = max(args.cluster_distance_m * 5, 0.10)
+    for i in range(len(clusters)):
+        for j in range(i + 1, len(clusters)):
+            a, b = clusters[i][0], clusters[j][0]
+            if a.role != b.role:
+                continue
+            centroid_a = np.mean([obs.centroid_world for obs in clusters[i]], axis=0)
+            centroid_b = np.mean([obs.centroid_world for obs in clusters[j]], axis=0)
+            dist = float(np.linalg.norm(centroid_a - centroid_b))
+            if dist <= diagnostic_radius_m:
+                cams_a = sorted({obs.camera for obs in clusters[i]})
+                cams_b = sorted({obs.camera for obs in clusters[j]})
+                print(
+                    f"[warn] two '{a.role}' clusters stayed separate but are only {dist:.3f}m apart "
+                    f"(cameras {cams_a} vs {cams_b}); this often means the same physical object got "
+                    "fragmented into duplicate/overlapping boxes. Consider raising --cluster-distance-m "
+                    "or setting --nearest-distance-m/--bbox-iou-threshold to also catch this case.",
+                    file=sys.stderr,
+                )
 
 
 def observation_to_json(obs: Observation3D) -> dict[str, Any]:
