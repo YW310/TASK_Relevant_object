@@ -2,6 +2,58 @@
 
 `qwen_role_sam3_candidate_episode.py` is an episode-level entrypoint for RLBench/RLBench-exported episode folders. It expects the common RLBench saved-image convention (`front_rgb`, `left_shoulder_rgb`, `right_shoulder_rgb`, optionally `wrist_rgb` / `overhead_rgb`) and resolves the task language from standard RLBench variation description files when `--instruction` is not supplied. It first resolves bbox-free semantic roles with Qwen3-VL, then runs SAM3 text prompts on every selected frame and camera to generate segmentation candidates.
 
+## End-to-end pipeline summary (run_full_pipeline.sh)
+
+Use [run_full_pipeline.sh](run_full_pipeline.sh) when you want one command for the full episode workflow.
+
+### Stage overview
+
+1. Stage 1 (Qwen role spec + SAM3 candidates)
+- Script: [qwen_role_sam3_candidate_episode.py](qwen_role_sam3_candidate_episode.py)
+- Input: RLBench episode directory with RGB folders and task instruction.
+- Output: role_spec.json, raw_role_spec_output.json, episode_candidates.json, and per-frame/per-camera candidate artifacts.
+
+2. Stage 2 (multi-view 3D fusion)
+- Script: [multiview_candidate_fusion.py](multiview_candidate_fusion.py)
+- Input: episode_candidates.json, depth maps, camera intrinsics/extrinsics.
+- Output: frame_fused_candidates.json containing fused object ids, point clouds, centroids, 3D boxes, visibility, and per-observation evidence.
+- Optional: object_summary.json (enable with SAVE_OBJECT_SUMMARY=1, or auto-enabled when Stage 4 runs).
+
+3. Stage 3 (visual sanity check)
+- Script: [visualize_fused_candidates.py](visualize_fused_candidates.py)
+- Input: frame_fused_candidates.json.
+- Output: reprojection visualization PNGs under outputs/<episode>/viz.
+
+4. Stage 4 (optional object-level target/reference decision)
+- Script: [qwen3vl_object_role_decision.py](qwen3vl_object_role_decision.py)
+- Input: object_summary.json from Stage 2.
+- Output: object_predictions.json with current target/reference object ids, confidence, uncertainty, and evidence.
+- Default is disabled (SKIP_DECISION=1).
+
+### Default execution behavior
+
+- By default, Stages 1-3 run and Stage 4 is skipped.
+- If SKIP_DECISION=0, Stage 4 runs and Stage 2 automatically exports object_summary.json.
+- Existing behavior is preserved if new decision-related flags are not enabled.
+
+### Typical command
+
+```bash
+EPISODE_DIR=/path/to/rlbench/.../episode0 \
+SAM_MODEL_DIR=/common-data-32t/.cache/facebook/sam3 \
+MODEL_PATH=/new-common-data/new-common-data/huggingface/Qwen3-VL-8B-Instruct \
+SKIP_DECISION=0 \
+SAVE_OBJECT_SUMMARY=1 \
+./run_full_pipeline.sh
+```
+
+### Key knobs
+
+- Sampling and coverage: FRAME_INTERVAL, MAX_FRAMES, CAMERAS
+- SAM3 recall/precision: THRESHOLD, CAMERA_THRESHOLD_OVERRIDES
+- 3D fusion strictness: CLUSTER_DISTANCE_M, MIN_FUSED_POINTS, MIN_BBOX_DIAGONAL_M
+- Decision stage: SKIP_DECISION, DECISION_FRAME, DECISION_FRAME_ID, MAX_CANDIDATE_IMAGES
+
 ## What it produces
 
 By default, outputs are written under:
