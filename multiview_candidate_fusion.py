@@ -125,6 +125,23 @@ def build_parser() -> argparse.ArgumentParser:
             "points crammed into a tiny volume (e.g. a thin sliver mask)."
         ),
     )
+    parser.add_argument(
+        "--save-object-summary",
+        action="store_true",
+        help=(
+            "Save an object-level summary JSON (track/trajectory and per-frame candidate "
+            "decision inputs) for downstream reasoning, e.g. Qwen3-VL target/reference "
+            "selection that should use visual/geometric evidence beyond instruction text."
+        ),
+    )
+    parser.add_argument(
+        "--object-summary-json",
+        default=None,
+        help=(
+            "Optional output path for the object-level summary JSON. Default when "
+            "--save-object-summary is set: <output-json dir>/object_summary.json."
+        ),
+    )
     return parser
 
 
@@ -630,6 +647,211 @@ def observation_to_json(obs: Observation3D) -> dict[str, Any]:
     }
 
 
+def stats_from_values(values: list[float]) -> dict[str, float | None]:
+    if not values:
+        return {"min": None, "max": None, "mean": None, "std": None}
+    arr = np.asarray(values, dtype=np.float64)
+    return {
+        "min": float(arr.min()),
+        "max": float(arr.max()),
+        "mean": float(arr.mean()),
+        "std": float(arr.std()),
+    }
+
+
+def relation_label(delta: np.ndarray) -> list[str]:
+    labels = []
+    if delta[0] > 0:
+        labels.append("right_of")
+    elif delta[0] < 0:
+        labels.append("left_of")
+    if delta[1] > 0:
+        labels.append("front_of")
+    elif delta[1] < 0:
+        labels.append("behind")
+    if delta[2] > 0:
+        labels.append("above")
+    elif delta[2] < 0:
+        labels.append("below")
+    return labels
+
+
+def build_object_summary(
+    frames: Sequence[Mapping[str, Any]],
+    result: Mapping[str, Any],
+    candidates_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    by_object_id: dict[str, dict[str, Any]] = {}
+
+    for frame in frames:
+        frame_id = str(frame.get("frame_id"))
+        frame_index = frame.get("frame_index")
+        for obj in frame.get("objects", []):
+            object_id = str(obj["id"])
+            role = str(obj["role"])
+            track = by_object_id.setdefault(
+                object_id,
+                {
+                    "object_id": object_id,
+                    "role": role,
+                    "frames": [],
+                },
+            )
+            track["frames"].append(
+                {
+                    "frame_id": frame_id,
+                    "frame_index": frame_index,
+                    "centroid_world": obj["centroid_world"],
+                    "bbox3d_world": obj["bbox3d_world"],
+                    "point_count": len(obj.get("points_world", [])),
+                    "visible_camera": obj.get("visible_camera", []),
+                    "camera_count": len(obj.get("visible_camera", [])),
+                    "mask_area": int(obj.get("mask_area", 0)),
+                    "sam_score": float(obj.get("sam_score", 0.0)),
+                    "observation_count": len(obj.get("observations", [])),
+                    "observations": [
+                        {
+                            "camera": obs.get("camera"),
+                            "candidate_id": obs.get("candidate_id"),
+                            "mask_path": obs.get("mask_path"),
+                            "mask_area": obs.get("mask_area"),
+                            "sam_score": obs.get("sam_score"),
+                            "mask_bbox_xyxy": obs.get("mask_bbox_xyxy"),
+                        }
+                        for obs in obj.get("observations", [])
+                    ],
+                }
+            )
+
+    object_tracks = []
+    for object_id in sorted(by_object_id):
+        track = by_object_id[object_id]
+        role = str(track["role"])
+        frames_sorted = sorted(track["frames"], key=lambda item: (item["frame_index"] is None, item["frame_index"], item["frame_id"]))
+        centroids = [np.asarray(item["centroid_world"], dtype=np.float64) for item in frames_sorted]
+        motion_path_length_m = float(
+            sum(np.linalg.norm(centroids[i] - centroids[i - 1]) for i in range(1, len(centroids)))
+        ) if len(centroids) >= 2 else 0.0
+
+        bbox_diagonals = []
+        bbox_sizes = []
+        for item in frames_sorted:
+            bbox = np.asarray(item["bbox3d_world"], dtype=np.float64)
+            size = bbox[1] - bbox[0]
+            bbox_sizes.append(size)
+            bbox_diagonals.append(float(np.linalg.norm(size)))
+
+        camera_histogram: dict[str, int] = {}
+        for item in frames_sorted:
+            for camera in item.get("visible_camera", []):
+                camera_histogram[camera] = camera_histogram.get(camera, 0) + 1
+
+        object_tracks.append(
+            {
+                "object_id": object_id,
+                "role": role,
+                "first_frame_id": frames_sorted[0]["frame_id"],
+                "last_frame_id": frames_sorted[-1]["frame_id"],
+                "first_frame_index": frames_sorted[0]["frame_index"],
+                "last_frame_index": frames_sorted[-1]["frame_index"],
+                "lifespan_frames": len(frames_sorted),
+                "frames_visible": [item["frame_id"] for item in frames_sorted],
+                "camera_set": sorted(camera_histogram),
+                "camera_histogram": camera_histogram,
+                "centroid_mean_world": np.mean(np.stack(centroids, axis=0), axis=0).tolist(),
+                "motion_path_length_m": motion_path_length_m,
+                "point_count_stats": stats_from_values([float(item["point_count"]) for item in frames_sorted]),
+                "mask_area_stats": stats_from_values([float(item["mask_area"]) for item in frames_sorted]),
+                "sam_score_stats": stats_from_values([float(item["sam_score"]) for item in frames_sorted]),
+                "camera_count_stats": stats_from_values([float(item["camera_count"]) for item in frames_sorted]),
+                "bbox_diagonal_m_stats": stats_from_values(bbox_diagonals),
+                "bbox_size_xyz_mean": np.mean(np.stack(bbox_sizes, axis=0), axis=0).tolist() if bbox_sizes else None,
+                "trajectory": frames_sorted,
+            }
+        )
+
+    frame_decision_inputs = []
+    for frame in frames:
+        frame_id = str(frame.get("frame_id"))
+        frame_index = frame.get("frame_index")
+        objects = list(frame.get("objects", []))
+        candidates = []
+        for obj in objects:
+            candidates.append(
+                {
+                    "object_id": obj.get("id"),
+                    "role_prior": obj.get("role"),
+                    "centroid_world": obj.get("centroid_world"),
+                    "bbox3d_world": obj.get("bbox3d_world"),
+                    "visible_camera": obj.get("visible_camera", []),
+                    "camera_count": len(obj.get("visible_camera", [])),
+                    "point_count": len(obj.get("points_world", [])),
+                    "mask_area": obj.get("mask_area"),
+                    "sam_score": obj.get("sam_score"),
+                    "observation_count": len(obj.get("observations", [])),
+                    "observations": [
+                        {
+                            "camera": obs.get("camera"),
+                            "candidate_id": obs.get("candidate_id"),
+                            "mask_path": obs.get("mask_path"),
+                            "mask_area": obs.get("mask_area"),
+                            "sam_score": obs.get("sam_score"),
+                            "mask_bbox_xyxy": obs.get("mask_bbox_xyxy"),
+                        }
+                        for obs in obj.get("observations", [])
+                    ],
+                }
+            )
+
+        pairwise_relations = []
+        for i in range(len(objects)):
+            for j in range(i + 1, len(objects)):
+                src = objects[i]
+                dst = objects[j]
+                c_src = np.asarray(src.get("centroid_world", [0.0, 0.0, 0.0]), dtype=np.float64)
+                c_dst = np.asarray(dst.get("centroid_world", [0.0, 0.0, 0.0]), dtype=np.float64)
+                delta = c_dst - c_src
+                pairwise_relations.append(
+                    {
+                        "source_object_id": src.get("id"),
+                        "target_object_id": dst.get("id"),
+                        "distance_m": float(np.linalg.norm(delta)),
+                        "delta_world": delta.tolist(),
+                        "source_to_target_labels": relation_label(delta),
+                        "target_to_source_labels": relation_label(-delta),
+                    }
+                )
+
+        frame_decision_inputs.append(
+            {
+                "frame_id": frame_id,
+                "frame_index": frame_index,
+                "instruction_prior": candidates_summary.get("instruction"),
+                "role_spec_prior": candidates_summary.get("role_spec"),
+                "candidate_objects": candidates,
+                "pairwise_relations": pairwise_relations,
+            }
+        )
+
+    return {
+        "episode_dir": result.get("episode_dir"),
+        "source_candidates_json": result.get("source_candidates_json"),
+        "source_fused_json": None,
+        "instruction_prior": candidates_summary.get("instruction"),
+        "role_spec_prior": candidates_summary.get("role_spec"),
+        "fusion_params": {
+            "cluster_distance_m": result.get("cluster_distance_m"),
+            "bbox_iou_threshold": result.get("bbox_iou_threshold"),
+            "nearest_distance_m": result.get("nearest_distance_m"),
+            "track_distance_m": result.get("track_distance_m"),
+            "min_fused_points": result.get("min_fused_points"),
+            "min_bbox_diagonal_m": result.get("min_bbox_diagonal_m"),
+        },
+        "object_tracks": object_tracks,
+        "frame_decision_inputs": frame_decision_inputs,
+    }
+
+
 def assign_object_ids(
     clusters: list[list[Observation3D]],
     track_state: dict[str, Any],
@@ -819,6 +1041,7 @@ def main() -> None:
         "cluster_distance_m": args.cluster_distance_m,
         "bbox_iou_threshold": args.bbox_iou_threshold,
         "nearest_distance_m": args.nearest_distance_m,
+        "track_distance_m": args.track_distance_m,
         "min_fused_points": args.min_fused_points,
         "min_bbox_diagonal_m": args.min_bbox_diagonal_m,
         "rlbench_low_dim_obs": str(rlbench_low_dim_path) if rlbench_observations else None,
@@ -826,7 +1049,20 @@ def main() -> None:
         "frames": frames,
     }
     atomic_json_dump(result, output_path)
-    print(json.dumps({"output_json": str(output_path), "frames": len(frames)}, ensure_ascii=False, indent=2))
+
+    outputs = {"output_json": str(output_path), "frames": len(frames)}
+    if args.save_object_summary or args.object_summary_json:
+        object_summary_path = (
+            Path(args.object_summary_json).expanduser().resolve()
+            if args.object_summary_json
+            else output_path.with_name("object_summary.json")
+        )
+        object_summary = build_object_summary(frames, result, summary)
+        object_summary["source_fused_json"] = str(output_path)
+        atomic_json_dump(object_summary, object_summary_path)
+        outputs["object_summary_json"] = str(object_summary_path)
+
+    print(json.dumps(outputs, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
