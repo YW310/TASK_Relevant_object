@@ -384,16 +384,51 @@ def nearest_mean_distance(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.sqrt(d2.min(axis=1)).mean())
 
 
-def should_merge(obs: Observation3D, cluster: Sequence[Observation3D], args: argparse.Namespace) -> bool:
-    for other in cluster:
-        if obs.role != other.role:
-            continue
-        centroid_ok = np.linalg.norm(obs.centroid_world - other.centroid_world) <= args.cluster_distance_m
-        iou_ok = args.bbox_iou_threshold <= 0 or bbox_iou_3d(obs.bbox3d_world, other.bbox3d_world) >= args.bbox_iou_threshold
-        nearest_ok = args.nearest_distance_m is None or nearest_mean_distance(obs.points_world, other.points_world) <= args.nearest_distance_m
-        if centroid_ok and iou_ok and nearest_ok:
-            return True
-    return False
+def pairwise_should_merge(a: Observation3D, b: Observation3D, args: argparse.Namespace) -> bool:
+    if a.role != b.role:
+        return False
+    centroid_ok = np.linalg.norm(a.centroid_world - b.centroid_world) <= args.cluster_distance_m
+    iou_ok = args.bbox_iou_threshold <= 0 or bbox_iou_3d(a.bbox3d_world, b.bbox3d_world) >= args.bbox_iou_threshold
+    nearest_ok = args.nearest_distance_m is None or nearest_mean_distance(a.points_world, b.points_world) <= args.nearest_distance_m
+    return centroid_ok and iou_ok and nearest_ok
+
+
+def cluster_observations(observations: Sequence[Observation3D], args: argparse.Namespace) -> list[list[Observation3D]]:
+    """Group observations into connected components under ``pairwise_should_merge``.
+
+    A single greedy pass (assign each new observation to the first existing
+    cluster it matches, never revisiting earlier clusters) is order-dependent:
+    two clusters that should ultimately be joined by a later "bridging"
+    observation can be left permanently separate if that observation happens
+    to match an earlier cluster first. That fragments one real-world object
+    into multiple fused objects of different point counts/sizes, which show
+    up as overlapping, differently-scaled boxes on the same physical object.
+    Union-find over all pairwise matches guarantees a single connected
+    component regardless of processing order.
+    """
+    n = len(observations)
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x: int, y: int) -> None:
+        root_x, root_y = find(x), find(y)
+        if root_x != root_y:
+            parent[root_x] = root_y
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if pairwise_should_merge(observations[i], observations[j], args):
+                union(i, j)
+
+    groups: dict[int, list[Observation3D]] = {}
+    for i, obs in enumerate(observations):
+        groups.setdefault(find(i), []).append(obs)
+    return list(groups.values())
 
 
 def observation_to_json(obs: Observation3D) -> dict[str, Any]:
@@ -456,14 +491,7 @@ def fuse_frame(
             bbox = np.stack([points_world.min(axis=0), points_world.max(axis=0)])
             observations.append(Observation3D(str(cand["role"]), camera, cand, points_world, centroid, bbox))
 
-    clusters: list[list[Observation3D]] = []
-    for obs in observations:
-        for cluster in clusters:
-            if should_merge(obs, cluster, args):
-                cluster.append(obs)
-                break
-        else:
-            clusters.append([obs])
+    clusters = cluster_observations(observations, args)
 
     role_counts = {role: 0 for role in ROLE_OBJECT_PREFIX}
     objects = []
