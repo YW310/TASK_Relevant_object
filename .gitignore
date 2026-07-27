@@ -58,3 +58,4 @@ tokenizers/*
 *.pyc
 *.zip
 *.venv
+vis_target*
