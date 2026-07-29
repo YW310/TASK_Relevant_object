@@ -318,7 +318,12 @@ used options include:
 | `MAX_FRAMES` | unset | Limit the number of processed frames |
 | `DEVICE` | `cuda` | Model device |
 | `THRESHOLD` | `0.25` | SAM3 proposal threshold |
+| `MASK_NMS_IOU` | `0.80` | Stage-1 same-role NMS and cross-role canonical mask IoU |
+| `CANONICAL_CONTAINMENT` | `0.90` | Stage-1 smaller-mask coverage for canonical observations |
+| `CANONICAL_BBOX_IOU` | `0.0` | Optional Stage-1 bbox IoU support; `0` disables it |
 | `CLUSTER_DISTANCE_M` | `0.03` | Maximum centroid distance for 3D fusion |
+| `LEGACY_CANONICAL_IOU` | `0.35` | Stage-2 mask IoU for canonicalizing legacy candidate JSON |
+| `LEGACY_CANONICAL_CONTAINMENT` | `0.50` | Stage-2 smaller-mask coverage for legacy candidate JSON |
 | `SKIP_CANDIDATES` | `0` | Reuse an existing `episode_candidates.json` |
 | `SKIP_FUSION` | `0` | Reuse an existing `frame_fused_candidates.json` |
 | `SKIP_VIZ` | `0` | Disable fusion visualizations |
@@ -328,6 +333,13 @@ used options include:
 
 See the documented variables at the top of `run_full_pipeline.sh` for the full
 set of filtering, camera, model, and output options.
+
+Every tunable option of the six downstream stage CLIs has an environment-variable
+counterpart in `run_full_pipeline.sh`, including less-common model, sampling,
+canonicalization, depth, geometry, rendering, and montage controls. Paths that
+the pipeline normally derives can also be overridden with `CANDIDATES_JSON`,
+`FUSED_JSON`, `VIZ_DIR`, `OBJECT_SUMMARY_JSON`, `DECISION_OUTPUT_JSON`, and the
+stage-specific output variables documented in the script header.
 
 ## Reusing intermediate results
 

@@ -574,7 +574,12 @@ def _hypothesis_is_valid(cluster: Sequence[Observation3D], args: argparse.Namesp
         return False
     for i, a in enumerate(cluster):
         for b in cluster[i + 1:]:
-            if np.linalg.norm(a.centroid_world - b.centroid_world) > args.cluster_distance_m:
+            # The three spatial cues are alternatives, matching
+            # ``pairwise_should_merge`` and the CLI contract.  Previously this
+            # validation required centroid, bbox, and nearest-distance checks
+            # simultaneously, which rejected the same object across cameras
+            # whenever viewpoint-dependent partial masks shifted its centroid.
+            if not pairwise_should_merge(a, b, args):
                 return False
             sizes_a = np.maximum(a.bbox3d_world[1] - a.bbox3d_world[0], 1e-6)
             sizes_b = np.maximum(b.bbox3d_world[1] - b.bbox3d_world[0], 1e-6)
@@ -582,30 +587,39 @@ def _hypothesis_is_valid(cluster: Sequence[Observation3D], args: argparse.Namesp
             valid_axes = np.maximum(sizes_a, sizes_b) >= 1e-3
             if np.any(np.maximum(sizes_a[valid_axes] / sizes_b[valid_axes], sizes_b[valid_axes] / sizes_a[valid_axes]) > args.max_size_ratio):
                 return False
-            if args.bbox_iou_threshold > 0 and bbox_iou_3d(a.bbox3d_world, b.bbox3d_world) < args.bbox_iou_threshold:
-                return False
-            if args.nearest_distance_m is not None and symmetric_percentile_nearest_distance(a.points_world, b.points_world) > args.nearest_distance_m:
-                return False
     points = np.concatenate([obs.points_world for obs in cluster])
     robust_extent = np.percentile(points, 99, axis=0) - np.percentile(points, 1, axis=0)
     return args.max_hypothesis_diameter_m <= 0 or np.linalg.norm(robust_extent) <= args.max_hypothesis_diameter_m
 
 
 def _association_cost(obs: Observation3D, cluster: Sequence[Observation3D], args: argparse.Namespace) -> float | None:
-    if not any(pairwise_should_merge(obs, other, args) for other in cluster):
+    compatible = [other for other in cluster if pairwise_should_merge(obs, other, args)]
+    if not compatible:
         return None  # pairwise_should_merge is only a cheap compatibility gate.
     proposed = [*cluster, obs]
     if not _hypothesis_is_valid(proposed, args):
         return None
     anchor = cluster[0]
-    centroid = float(np.linalg.norm(obs.centroid_world - np.median([x.centroid_world for x in cluster], axis=0)))
+    cue_costs = []
+    for other in compatible:
+        centroid_distance = float(np.linalg.norm(obs.centroid_world - other.centroid_world))
+        if centroid_distance <= args.cluster_distance_m:
+            cue_costs.append(centroid_distance / max(args.cluster_distance_m, 1e-9))
+        bbox_iou = bbox_iou_3d(obs.bbox3d_world, other.bbox3d_world)
+        if args.bbox_iou_threshold > 0 and bbox_iou >= args.bbox_iou_threshold:
+            cue_costs.append(1.0 - bbox_iou)
+        if args.nearest_distance_m is not None:
+            nearest = nearest_mean_distance(obs.points_world, other.points_world)
+            if nearest <= args.nearest_distance_m:
+                cue_costs.append(nearest / max(args.nearest_distance_m, 1e-9))
+    proximity_cost = min(cue_costs)
     sizes_a = np.maximum(obs.bbox3d_world[1] - obs.bbox3d_world[0], 1e-6)
     sizes_b = np.maximum(anchor.bbox3d_world[1] - anchor.bbox3d_world[0], 1e-6)
     size_residual = float(np.mean(np.abs(np.log(sizes_a / sizes_b))))
     overlap_penalty = 1.0 - bbox_iou_3d(obs.bbox3d_world, anchor.bbox3d_world)
     surface = symmetric_percentile_nearest_distance(obs.points_world, anchor.points_world)
-    surface_term = surface / max(args.cluster_distance_m, 1e-9) if np.isfinite(surface) else 1.0
-    return centroid / max(args.cluster_distance_m, 1e-9) + 0.35 * size_residual + 0.25 * overlap_penalty + 0.25 * surface_term
+    surface_term = min(1.0, surface / max(args.cluster_distance_m, 1e-9)) if np.isfinite(surface) else 1.0
+    return proximity_cost + 0.35 * size_residual + 0.25 * overlap_penalty + 0.25 * surface_term
 
 
 def legacy_union_find_clusters(observations: Sequence[Observation3D], args: argparse.Namespace) -> list[list[Observation3D]]:
