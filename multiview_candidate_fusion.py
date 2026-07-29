@@ -218,6 +218,63 @@ def load_mask(path: Path) -> np.ndarray:
     return np.asarray(Image.open(path).convert("L")) > 127
 
 
+def canonicalize_legacy_candidates(candidates: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Defensive adapter for old one-role-per-mask candidate artifacts.
+
+    Legacy rows are grouped only at IoU >= .80 or smaller-mask coverage >= .90;
+    touching/adjacent instances therefore remain distinct. The best scoring
+    mask is retained and role evidence is noisy-OR aggregated with raw audit
+    values preserved.
+    """
+    if all(candidate.get("canonical_observation_id") for candidate in candidates):
+        return [dict(candidate) for candidate in candidates], []
+    groups: list[list[tuple[Mapping[str, Any], np.ndarray]]] = []
+    suppressed: list[dict[str, Any]] = []
+    loaded = [(candidate, load_mask(Path(str(candidate["mask_path"])))) for candidate in candidates]
+    for candidate, mask in sorted(loaded, key=lambda pair: float(pair[0].get("score", 0.0)), reverse=True):
+        match = None
+        match_metrics = (0.0, 0.0)
+        for index, group in enumerate(groups):
+            other = group[0][1]
+            inter = int(np.logical_and(mask, other).sum())
+            union = int(np.logical_or(mask, other).sum())
+            smaller = min(int(mask.sum()), int(other.sum()))
+            iou = inter / union if union else 0.0
+            coverage = inter / smaller if smaller else 0.0
+            if iou >= 0.80 or coverage >= 0.90:
+                if match is not None:  # ambiguous bridge: conservatively keep separate
+                    match = None
+                    break
+                match, match_metrics = index, (iou, coverage)
+        if match is None:
+            groups.append([(candidate, mask)])
+        else:
+            groups[match].append((candidate, mask))
+            suppressed.append({"candidate_id": candidate.get("id"), "reason": "legacy_overlap_or_containment",
+                               "mask_iou": match_metrics[0], "coverage": match_metrics[1]})
+    output = []
+    for index, group in enumerate(groups, 1):
+        representative = dict(group[0][0])
+        canonical_id = f"legacy-C{index}"
+        role_scores: dict[str, dict[str, Any]] = {}
+        provenance = []
+        for candidate, mask in group:
+            role, score = str(candidate.get("role", "")), float(candidate.get("score", 0.0))
+            entry = role_scores.setdefault(role, {"aggregation": "noisy_or", "raw_scores": [], "score": 0.0})
+            entry["raw_scores"].append(score)
+            entry["score"] = 1.0 - (1.0 - entry["score"]) * (1.0 - score)
+            inter = int(np.logical_and(mask, group[0][1]).sum())
+            union = int(np.logical_or(mask, group[0][1]).sum())
+            provenance.append({"role": role, "source_prompt": candidate.get("source_prompt") or candidate.get("text_prompt"),
+                               "prompt_index": candidate.get("prompt_index"), "sam_output_index": candidate.get("sam_output_index"),
+                               "original_candidate_id": candidate.get("id"), "score": score,
+                               "mask_area": int(mask.sum()), "overlap_with_canonical_mask": inter / union if union else 0.0})
+        representative.update({"id": canonical_id, "canonical_observation_id": canonical_id,
+                               "role_scores": role_scores, "prompt_provenance": provenance})
+        output.append(representative)
+    return output, suppressed
+
+
 def normalize_intrinsics(value: Any) -> np.ndarray:
     arr = np.asarray(value, dtype=np.float64)
     if arr.shape == (3, 3):
@@ -464,41 +521,32 @@ def pairwise_should_merge(a: Observation3D, b: Observation3D, args: argparse.Nam
 
 
 def cluster_observations(observations: Sequence[Observation3D], args: argparse.Namespace) -> list[list[Observation3D]]:
-    """Group observations into connected components under ``pairwise_should_merge``.
+    """Cluster strongest-first while enforcing one camera slot per object.
 
-    A single greedy pass (assign each new observation to the first existing
-    cluster it matches, never revisiting earlier clusters) is order-dependent:
-    two clusters that should ultimately be joined by a later "bridging"
-    observation can be left permanently separate if that observation happens
-    to match an earlier cluster first. That fragments one real-world object
-    into multiple fused objects of different point counts/sizes, which show
-    up as overlapping, differently-scaled boxes on the same physical object.
-    Union-find over all pairwise matches guarantees a single connected
-    component regardless of processing order.
+    Unlike unconstrained connected components, this cannot transitively place
+    two observations from one camera in a hypothesis. Same-camera alternatives
+    compete by evidence strength and remain separate hypotheses.
     """
-    n = len(observations)
-    parent = list(range(n))
-
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(x: int, y: int) -> None:
-        root_x, root_y = find(x), find(y)
-        if root_x != root_y:
-            parent[root_x] = root_y
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            if pairwise_should_merge(observations[i], observations[j], args):
-                union(i, j)
-
-    groups: dict[int, list[Observation3D]] = {}
-    for i, obs in enumerate(observations):
-        groups.setdefault(find(i), []).append(obs)
-    clusters = list(groups.values())
+    diagnostics = getattr(args, "_same_camera_diagnostics", None)
+    clusters: list[list[Observation3D]] = []
+    # Strongest observations claim camera slots first. A later observation can
+    # form a competing hypothesis, but can never contribute a second copy of
+    # that camera to an existing physical-object hypothesis.
+    ordered = sorted(observations, key=lambda obs: max(obs.role_evidence.values(), default=0.0), reverse=True)
+    for obs in ordered:
+        compatible = [cluster for cluster in clusters if any(pairwise_should_merge(obs, other, args) for other in cluster)]
+        available = [cluster for cluster in compatible if all(other.camera != obs.camera for other in cluster)]
+        if available:
+            best = min(available, key=lambda cluster: min(float(np.linalg.norm(obs.centroid_world - other.centroid_world)) for other in cluster))
+            best.append(obs)
+        else:
+            if compatible:
+                event = {"camera": obs.camera, "observation_id": obs.observation_id,
+                         "competing_observation_ids": [other.observation_id for cluster in compatible for other in cluster if other.camera == obs.camera]}
+                if diagnostics is not None:
+                    diagnostics.append(event)
+                print(f"[warn] rejected same-camera cluster insertion: {event}", file=sys.stderr)
+            clusters.append([obs])
     warn_near_miss_unmerged_clusters(clusters, args)
     return clusters
 
@@ -688,15 +736,24 @@ def candidate_to_observation(
     centroid_world: np.ndarray,
     bbox3d_world: np.ndarray,
 ) -> Observation3D:
-    """Backward-compatibility adapter for legacy scalar-role candidates."""
+    """Adapt canonical and legacy scalar-role candidate records."""
     legacy_role = str(candidate.get("role", ""))
     prompt = candidate.get("source_prompt") or candidate.get("text_prompt")
     score = float(candidate.get("score", 0.0))
     candidate_id = str(candidate.get("id", "unknown"))
+    canonical_id = str(candidate.get("canonical_observation_id", candidate_id))
+    raw_role_scores = candidate.get("role_scores")
+    if isinstance(raw_role_scores, Mapping):
+        role_evidence = {role: float(raw_role_scores.get(role, {}).get("score", 0.0)) for role in ROLE_NAMES}
+        provenance: Mapping[str, Any] = {"prompt_provenance": candidate.get("prompt_provenance", []),
+                                        "canonical_observation_id": canonical_id}
+    else:
+        role_evidence = {role: score if role == legacy_role else 0.0 for role in ROLE_NAMES}
+        provenance = {"role": legacy_role, "prompt": prompt, "candidate_id": candidate_id}
     return Observation3D(
-        observation_id=f"{frame_id}:{camera}:{candidate_id}",
-        role_evidence={role: score if role == legacy_role else 0.0 for role in ROLE_NAMES},
-        provenance={"role": legacy_role, "prompt": prompt, "candidate_id": candidate_id},
+        observation_id=f"{frame_id}:{camera}:{canonical_id}",
+        role_evidence=role_evidence,
+        provenance=provenance,
         camera=camera,
         candidate=candidate,
         points_world=points_world,
@@ -979,6 +1036,7 @@ def fuse_frame(
     track_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     observations: list[Observation3D] = []
+    canonicalization_suppressed: list[dict[str, Any]] = []
     frame_id = str(frame["frame_id"])
     frame_index = frame_index_from_frame(frame)
     for camera, view in frame.get("views", {}).items():
@@ -1004,7 +1062,12 @@ def fuse_frame(
         near, far = depth_near_far if depth_near_far is not None else (None, None)
         depth = read_depth(resolve_depth_path(episode_dir, camera, frame_id), args.depth_scale, near=near, far=far, mode=args.depth_mode)
         data = json.loads(Path(view["candidates_json"]).read_text(encoding="utf-8"))
-        for cand in data.get("candidates", []):
+        canonical_candidates, legacy_suppressed = canonicalize_legacy_candidates(data.get("candidates", []))
+        canonicalization_suppressed.extend({"camera": camera, **item} for item in legacy_suppressed)
+        if legacy_suppressed:
+            print(f"[info] frame_id={frame_id} camera={camera}: legacy canonicalization suppressed "
+                  f"{len(legacy_suppressed)} duplicate candidates", file=sys.stderr)
+        for cand in canonical_candidates:
             mask = load_mask(Path(cand["mask_path"]))
             points_cam = backproject_mask(depth, mask, params["intrinsics"], args.max_points_per_candidate)
             points_world = transform_points(points_cam, params["extrinsics"])
@@ -1014,13 +1077,17 @@ def fuse_frame(
             bbox = np.stack([points_world.min(axis=0), points_world.max(axis=0)])
             observations.append(candidate_to_observation(cand, camera, frame_id, points_world, centroid, bbox))
 
+    same_camera_diagnostics: list[dict[str, Any]] = []
+    args._same_camera_diagnostics = same_camera_diagnostics
     clusters = cluster_observations(observations, args)
     clusters = filter_small_clusters(clusters, args)
     objects, updated_track_state = assign_object_ids(clusters, track_state or {}, args, frame_id)
     if track_state is not None:
         track_state.clear()
         track_state.update(updated_track_state)
-    return {"frame_index": frame.get("frame_index"), "frame_id": frame_id, "objects": objects}
+    return {"frame_index": frame.get("frame_index"), "frame_id": frame_id, "objects": objects,
+            "diagnostics": {"canonicalization_suppressed": canonicalization_suppressed,
+                            "attempted_same_camera_cluster_insertions": same_camera_diagnostics}}
 
 
 def main() -> None:

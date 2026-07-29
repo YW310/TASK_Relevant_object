@@ -141,6 +141,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.80,
         help="Mask IoU threshold for per-role NMS across all prompt variants.",
     )
+    parser.add_argument("--canonical-containment", type=float, default=0.90,
+                        help="Minimum smaller-mask coverage for canonicalizing partial/whole masks.")
+    parser.add_argument("--canonical-bbox-iou", type=float, default=0.0,
+                        help="Optional bbox IoU support threshold; 0 disables bbox-only support.")
     parser.add_argument("--mask-alpha", type=int, default=105)
     parser.add_argument(
         "--save-frame-contact-sheet",
@@ -261,6 +265,85 @@ def mask_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
         return 0.0
     union = int(np.logical_or(mask_a, mask_b).sum())
     return intersection / union if union else 0.0
+
+
+def mask_overlap_metrics(mask_a: np.ndarray, mask_b: np.ndarray) -> tuple[float, float]:
+    """Return IoU and coverage of the smaller mask (containment)."""
+    intersection = int(np.logical_and(mask_a, mask_b).sum())
+    area_a, area_b = int(mask_a.sum()), int(mask_b.sum())
+    union = area_a + area_b - intersection
+    return (intersection / union if union else 0.0,
+            intersection / min(area_a, area_b) if min(area_a, area_b) else 0.0)
+
+
+def bbox_iou_2d(a: Sequence[float] | None, b: Sequence[float] | None) -> float:
+    if not a or not b:
+        return 0.0
+    ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
+    ix1, iy1 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+    area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+    union = area_a + area_b - inter
+    return inter / union if union else 0.0
+
+
+def canonicalize_candidates(
+    candidates: Sequence[dict[str, Any]], iou_threshold: float,
+    containment_threshold: float, bbox_iou_threshold: float = 0.0,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Collapse prompt/role duplicates without joining merely adjacent objects.
+
+    The highest-scoring mask is the canonical mask. A candidate joins it only
+    with strong pixel IoU, smaller-mask containment, or (when explicitly
+    enabled) bbox overlap *and* non-zero pixel overlap. Role scores use noisy-OR
+    over raw SAM scores; ``prompt_provenance`` retains every input value.
+    """
+    groups: list[list[dict[str, Any]]] = []
+    for candidate in sorted(candidates, key=lambda c: float(c["score"]), reverse=True):
+        matches = []
+        for index, group in enumerate(groups):
+            representative = group[0]
+            iou, coverage = mask_overlap_metrics(candidate["mask"], representative["mask"])
+            biou = bbox_iou_2d(candidate.get("mask_bbox_xyxy"), representative.get("mask_bbox_xyxy"))
+            if (iou >= iou_threshold or coverage >= containment_threshold or
+                    (bbox_iou_threshold > 0 and biou >= bbox_iou_threshold and coverage >= 0.50)):
+                matches.append((index, iou, coverage, biou))
+        # Do not bridge two distinct objects through a broad/ambiguous mask.
+        if len(matches) == 1:
+            groups[matches[0][0]].append(candidate)
+        else:
+            groups.append([candidate])
+
+    canonical, suppressed = [], []
+    for canonical_index, group in enumerate(groups, 1):
+        representative = group[0]
+        canonical_id = f"C{canonical_index}"
+        role_scores: dict[str, Any] = {}
+        provenance = []
+        for item in group:
+            iou, coverage = mask_overlap_metrics(item["mask"], representative["mask"])
+            raw = float(item["score"])
+            role = str(item["role"])
+            entry = role_scores.setdefault(role, {"aggregation": "noisy_or", "raw_scores": [], "score": 0.0})
+            entry["raw_scores"].append(raw)
+            entry["score"] = 1.0 - (1.0 - float(entry["score"])) * (1.0 - raw)
+            provenance.append({
+                "role": role, "source_prompt": item.get("source_prompt"),
+                "prompt_index": item.get("prompt_index"), "sam_output_index": item.get("sam_output_index"),
+                "original_candidate_id": item["id"], "score": raw,
+                "mask_area": int(item["mask_area_pixels"]), "overlap_with_canonical_mask": iou,
+                "coverage_with_canonical_mask": coverage,
+            })
+            if item is not representative:
+                suppressed.append({"original_candidate_id": item["id"], "canonical_observation_id": canonical_id,
+                                   "reason": "overlap_or_containment", "mask_iou": iou, "coverage": coverage})
+        output = {key: value for key, value in representative.items() if key != "mask"}
+        output.update({"id": canonical_id, "canonical_observation_id": canonical_id,
+                       "role_scores": role_scores, "prompt_provenance": provenance,
+                       "mask": representative["mask"]})
+        canonical.append(output)
+    return canonical, suppressed
 
 
 def mask_iou_nms(candidates: Sequence[dict[str, Any]], iou_threshold: float, top_k: int) -> list[dict[str, Any]]:
@@ -423,7 +506,7 @@ def process_camera(
     threshold = resolve_camera_threshold(camera, camera_threshold_overrides or {}, args.threshold)
     if args.progress and progress_label:
         print(f"SAM3 progress {progress_label}: start {image_path} (threshold={threshold})", flush=True)
-    candidates: list[dict[str, Any]] = []
+    generated_candidates: list[dict[str, Any]] = []
     prompt_attempts: list[dict[str, Any]] = []
     for role in ROLE_ORDER:
         prompts = text_prompts_for_role(role_doc, role, args.prompt_variants)
@@ -473,26 +556,58 @@ def process_camera(
                     item["sam_box_xyxy"] = [float(v) for v in boxes[output_index]]
                 role_candidates.append(item)
 
-        kept_for_role = mask_iou_nms(role_candidates, args.mask_nms_iou, args.top_k_per_role)
-        for saved_index, item in enumerate(kept_for_role, start=1):
-            cid = f"{prefix}{saved_index}"
-            mask = item.pop("mask")
-            mask_path, crop_path, masked_path = save_crop_sets(
-                image, mask, item["mask_bbox_xyxy"], cid, out_dir
-            )
-            item.update(
-                {
-                    "id": cid,
-                    "mask_path": mask_path,
-                    "crop_path": crop_path,
-                    "masked_crop_path": masked_path,
-                }
-            )
-            candidates.append(item)
+        # IDs describe the raw role-prefixed SAM outputs. Canonical IDs below
+        # are the stable per-view identities consumed by fusion.
+        for saved_index, item in enumerate(role_candidates, start=1):
+            item["id"] = f"{prefix}{saved_index}"
+            generated_candidates.append(item)
+
+    canonical, suppressed = canonicalize_candidates(
+        generated_candidates, args.mask_nms_iou, args.canonical_containment,
+        args.canonical_bbox_iou,
+    )
+    # Preserve the old per-role top-k control without discarding provenance:
+    # retain a canonical object if it is in the top-k for at least one role.
+    if args.top_k_per_role > 0:
+        allowed = set()
+        for role in ROLE_ORDER:
+            ranked = sorted(canonical, key=lambda c: float(c.get("role_scores", {}).get(role, {}).get("score", 0.0)), reverse=True)
+            allowed.update(c["canonical_observation_id"] for c in ranked[: args.top_k_per_role]
+                           if role in c.get("role_scores", {}))
+        for item in canonical:
+            if item["canonical_observation_id"] not in allowed:
+                suppressed.append({"original_candidate_id": item["id"],
+                                   "canonical_observation_id": item["canonical_observation_id"],
+                                   "reason": "top_k_per_role"})
+        canonical = [item for item in canonical if item["canonical_observation_id"] in allowed]
+
+    candidates: list[dict[str, Any]] = []
+    for item in canonical:
+        cid = item["canonical_observation_id"]
+        mask = item.pop("mask")
+        mask_path, crop_path, masked_path = save_crop_sets(
+            image, mask, item["mask_bbox_xyxy"], cid, out_dir
+        )
+        item.update(
+            {
+                "id": cid,
+                "mask_path": mask_path,
+                "crop_path": crop_path,
+                "masked_crop_path": masked_path,
+            }
+        )
+        candidates.append(item)
     result = {
         "image_path": str(image_path),
         "candidates": candidates,
         "prompt_attempts": prompt_attempts,
+        "canonicalization": {
+            "aggregation": "noisy_or",
+            "input_candidates": len(generated_candidates),
+            "canonical_observations": len(candidates),
+            "suppressed_count": len(suppressed),
+            "suppressed_candidates": suppressed,
+        },
     }
     atomic_json_dump(result, out_dir / "candidates.json")
     save_visuals(image, candidates, out_dir, args.mask_alpha)
