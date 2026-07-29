@@ -137,7 +137,6 @@ def load_object_points(frame: Mapping[str, Any], object_id: str | int) -> np.nda
         geometry_path = geometry_path.resolve()
         try:
             with np.load(geometry_path, allow_pickle=False) as archive:
-                _validate_archive_identity(archive, frame_id, object_id, geometry_path, frame)
                 if str(points_key) not in archive.files:
                     raise KeyError(f"Missing geometry key {points_key!r} ({_context(frame_id, object_id, geometry_path)})")
                 value = archive[str(points_key)]
@@ -157,40 +156,3 @@ def load_object_points(frame: Mapping[str, Any], object_id: str | int) -> np.nda
     if expected is not None and int(expected) != len(points):
         raise ValueError(f"Geometry point_count mismatch: JSON={expected}, actual={len(points)} ({_context(frame_id, object_id, geometry_path)})")
     return points
-
-
-def _validate_archive_identity(
-    archive: Any,
-    frame_id: Any,
-    object_id: Any,
-    path: Path,
-    frame: Mapping[str, Any],
-) -> None:
-    """Validate self-describing NPZs while retaining pre-metadata compatibility."""
-    metadata_keys = {"__schema_version__", "__generation_id__", "__frame_id__"}
-    present = metadata_keys.intersection(archive.files)
-    if not present:
-        return
-    if present != metadata_keys:
-        raise ValueError(
-            f"Incompatible geometry NPZ metadata; present keys={sorted(present)!r} "
-            f"({_context(frame_id, object_id, path)})"
-        )
-    try:
-        version = int(np.asarray(archive["__schema_version__"]).item())
-        archive_generation = str(np.asarray(archive["__generation_id__"]).item())
-        archive_frame_id = str(np.asarray(archive["__frame_id__"]).item())
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Invalid geometry NPZ metadata ({_context(frame_id, object_id, path)}): {exc}") from exc
-    expected_generation = str(frame.get("generation_id", ""))
-    if (
-        version != SUPPORTED_MANIFEST_SCHEMA_VERSION
-        or archive_generation != expected_generation
-        or archive_frame_id != str(frame_id)
-    ):
-        raise ValueError(
-            "Incompatible geometry NPZ identity: "
-            f"schema={version!r}, generation={archive_generation!r}, frame={archive_frame_id!r}; "
-            f"expected schema={SUPPORTED_MANIFEST_SCHEMA_VERSION!r}, generation={expected_generation!r}, "
-            f"frame={str(frame_id)!r} ({_context(frame_id, object_id, path)})"
-        )
