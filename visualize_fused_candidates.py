@@ -34,6 +34,8 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PIL import Image, ImageDraw
 
+from geometry_loader import GeometryLoader
+
 from multiview_candidate_fusion import (
     load_camera_params,
     load_rlbench_observations,
@@ -100,6 +102,7 @@ def draw_overlay(
     point_radius: int,
     out_path: Path,
     mask_alpha: int = 80,
+    geometry_loader: GeometryLoader | None = None,
 ) -> None:
     image = Image.open(rgb_path).convert("RGBA")
     width, height = image.size
@@ -109,7 +112,7 @@ def draw_overlay(
 
     for index, obj in enumerate(objects):
         color = OBJECT_COLORS[index % len(OBJECT_COLORS)]
-        points = np.asarray(obj["points_world"], dtype=np.float64)
+        points = geometry_loader.load_points_world(obj) if geometry_loader else np.asarray(obj.get("points_world", []), dtype=np.float64)
         if len(points) == 0:
             continue
         if point_stride > 1:
@@ -172,7 +175,7 @@ def sanity_report_for_object(obj: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "id": obj["id"],
         "role_evidence": obj.get("role_evidence", {}),
-        "num_points": len(obj.get("points_world", [])),
+        "num_points": int(obj.get("point_count", len(obj.get("points_world", [])))),
         "centroid_world": obj["centroid_world"],
         "bbox_size_m": (bbox[1] - bbox[0]).tolist(),
         "visible_camera": obj.get("visible_camera"),
@@ -204,7 +207,7 @@ def set_axes_equal_3d(ax, points: np.ndarray) -> None:
         pass  # older matplotlib without set_box_aspect; limits above still help.
 
 
-def plot_pointcloud(objects: Sequence[Mapping[str, Any]], out_path: Path) -> None:
+def plot_pointcloud(objects: Sequence[Mapping[str, Any]], out_path: Path, geometry_loader: GeometryLoader | None = None) -> None:
     """Render the fused point cloud from several viewing angles into one PNG.
 
     A single default-angle 3D scatter is easy to misread (e.g. a flat object
@@ -219,7 +222,7 @@ def plot_pointcloud(objects: Sequence[Mapping[str, Any]], out_path: Path) -> Non
 
     all_points: list[np.ndarray] = []
     for obj in objects:
-        points = np.asarray(obj.get("points_world", []), dtype=np.float64)
+        points = geometry_loader.load_points_world(obj) if geometry_loader else np.asarray(obj.get("points_world", []), dtype=np.float64)
         if len(points) > 0:
             all_points.append(points)
     combined_points = np.concatenate(all_points, axis=0) if all_points else np.empty((0, 3))
@@ -239,7 +242,7 @@ def plot_pointcloud(objects: Sequence[Mapping[str, Any]], out_path: Path) -> Non
     for view_index, (title, elev, azim) in enumerate(views):
         ax = fig.add_subplot(rows, cols, view_index + 1, projection="3d")
         for index, obj in enumerate(objects):
-            points = np.asarray(obj.get("points_world", []), dtype=np.float64)
+            points = geometry_loader.load_points_world(obj) if geometry_loader else np.asarray(obj.get("points_world", []), dtype=np.float64)
             if len(points) == 0:
                 continue
             color = np.array(OBJECT_COLORS[index % len(OBJECT_COLORS)]) / 255.0
@@ -273,6 +276,7 @@ def main() -> None:
     args = build_parser().parse_args()
     fused_path = Path(args.fused_json).expanduser().resolve()
     data = json.loads(fused_path.read_text(encoding="utf-8"))
+    geometry_loader = GeometryLoader(fused_path)
 
     episode_dir = Path(args.episode_dir).expanduser().resolve() if args.episode_dir else Path(data["episode_dir"])
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else fused_path.with_name("viz")
@@ -328,11 +332,12 @@ def main() -> None:
                 args.point_radius,
                 out_path,
                 mask_alpha=args.mask_alpha,
+                geometry_loader=geometry_loader,
             )
 
         if not args.skip_pointcloud:
             try:
-                plot_pointcloud(objects, output_dir / f"{frame_id}_pointcloud.png")
+                plot_pointcloud(objects, output_dir / f"{frame_id}_pointcloud.png", geometry_loader)
             except ImportError:
                 print("[warn] matplotlib not installed; skipping 3D point cloud plot (pip install matplotlib to enable).", file=sys.stderr)
 
@@ -344,6 +349,7 @@ def main() -> None:
 
     report_path = output_dir / "sanity_report.json"
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    geometry_loader.close()
     print(json.dumps({"output_dir": str(output_dir), "sanity_report": str(report_path), "frames_rendered": len(report["frames"])}, ensure_ascii=False, indent=2))
 
 

@@ -14,7 +14,7 @@ Qwen3-VL can subsequently select the current target and reference objects.
 | Stage | Script | Result |
 | --- | --- | --- |
 | 1. Role parsing and proposals | `qwen_role_sam3_candidate_episode.py` | `role_spec.json`, per-view masks/crops, and `episode_candidates.json` |
-| 2. Multi-view fusion | `multiview_candidate_fusion.py` | `frame_fused_candidates.json` and, optionally, `object_summary.json` |
+| 2. Multi-view fusion | `multiview_candidate_fusion.py` | `frame_fused_candidates.json`, per-frame `fused_geometry.npz`, and, optionally, `object_summary.json` |
 | 3. Fusion visualization | `visualize_fused_candidates.py` | Per-camera reprojection overlays in `viz/` |
 | 4. Object role decision (optional) | `qwen3vl_object_role_decision.py` | `object_predictions.json` |
 | 5. Decision visualization (optional) | `stage4_visualize_decision.py` | Target/reference overlays in `viz_decision/` |
@@ -192,6 +192,12 @@ or camera selection. Rendering is controlled by `--point-stride` (default
 `--invert-rlbench-extrinsics` when Stage 2 used the same transform option.
 The pipeline exposes `DECISION_VIZ_OUTPUT_DIR` and
 `SKIP_DECISION_VIZ` for this stage.
+
+Stage 2 stores point clouds outside the JSON in compressed per-frame archives
+at `frames/<frame_key>/fused_geometry.npz`. Object and observation records
+contain `geometry_path`, `points_key`, and `point_count`; the visualization
+commands load those arrays lazily and remain compatible with older JSON files
+that embed `points_world` directly.
 
 ### Stage 6: compact comparison montage (optional)
 
