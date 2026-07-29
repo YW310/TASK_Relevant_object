@@ -5,7 +5,7 @@ The script consumes ``episode_candidates.json`` produced by
 ``qwen_role_sam3_candidate_episode.py`` plus per-camera ``candidates.json`` and
 mask PNG files. For each candidate, depth pixels inside the mask are
 back-projected with camera intrinsics, transformed by camera extrinsics, and
-clustered with same-role candidates from other views.
+clustered with geometrically compatible candidates from other views.
 """
 
 from __future__ import annotations
@@ -21,19 +21,14 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PIL import Image
 
-# Matches the per-camera candidate id prefixes (T/R/P) used by
-# qwen_role_sam3_candidate_episode.py, so fused object ids (e.g. "T1", "R1")
-# read consistently with the upstream per-view candidate ids.
-ROLE_OBJECT_PREFIX = {
-    "target": "T",
-    "reference": "R",
-    "interaction_part": "P",
-}
+ROLE_NAMES = ("target", "reference", "interaction_part")
 
 
 @dataclass
 class Observation3D:
-    role: str
+    observation_id: str
+    role_evidence: Mapping[str, float]
+    provenance: Mapping[str, Any]
     camera: str
     candidate: Mapping[str, Any]
     points_world: np.ndarray
@@ -71,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.0,
         help=(
-            "Optional 3D bbox IoU threshold. When > 0, two same-role observations also merge "
+            "Optional 3D bbox IoU threshold. When > 0, two observations also merge "
             "whenever their bbox IoU meets this threshold, even if their centroids are farther "
             "apart than --cluster-distance-m (this is an OR with the centroid check, not an AND: "
             "it is meant to catch the same physical object whose centroid estimate drifted, e.g. "
@@ -83,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help=(
-            "Optional point-cloud nearest-distance threshold. When set, two same-role "
+            "Optional point-cloud nearest-distance threshold. When set, two "
             "observations also merge whenever their point clouds come within this distance, "
             "even if their centroids are farther apart than --cluster-distance-m (OR with the "
             "centroid check, same rationale as --bbox-iou-threshold)."
@@ -95,11 +90,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.15,
         help=(
             "Max centroid displacement (meters) between consecutive processed frames for a "
-            "same-role fused object to keep its id (e.g. 'T1') across frames. Without this, ids "
+            "fused object to keep its id (e.g. 'O1') across frames. Without this, ids "
             "are re-derived from scratch every frame by sorting clusters, which can silently "
-            "flip which physical object is 'T1' vs 'T2' between frames whenever their sort order "
+            "flip which physical object is 'O1' vs 'O2' between frames whenever their sort order "
             "changes -- increase this if --frame-interval is large and objects move a lot between "
-            "selected frames, decrease it if unrelated objects of the same role are close together."
+            "selected frames, decrease it if unrelated objects are close together."
         ),
     )
     parser.add_argument(
@@ -459,8 +454,6 @@ def nearest_mean_distance(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def pairwise_should_merge(a: Observation3D, b: Observation3D, args: argparse.Namespace) -> bool:
-    if a.role != b.role:
-        return False
     centroid_ok = np.linalg.norm(a.centroid_world - b.centroid_world) <= args.cluster_distance_m
     iou_ok = args.bbox_iou_threshold > 0 and bbox_iou_3d(a.bbox3d_world, b.bbox3d_world) >= args.bbox_iou_threshold
     nearest_ok = args.nearest_distance_m is not None and nearest_mean_distance(a.points_world, b.points_world) <= args.nearest_distance_m
@@ -511,7 +504,7 @@ def cluster_observations(observations: Sequence[Observation3D], args: argparse.N
 
 
 def warn_near_miss_unmerged_clusters(clusters: list[list[Observation3D]], args: argparse.Namespace) -> None:
-    """Print a diagnostic when two same-role clusters stay separate despite being
+    """Print a diagnostic when two clusters stay separate despite being
     suspiciously close, so duplicate/overlapping boxes on one physical object (a
     real fragmentation failure mode, not a rendering bug) are easy to spot from
     the fusion script's own output instead of only being noticed later in a
@@ -521,8 +514,6 @@ def warn_near_miss_unmerged_clusters(clusters: list[list[Observation3D]], args: 
     for i in range(len(clusters)):
         for j in range(i + 1, len(clusters)):
             a, b = clusters[i][0], clusters[j][0]
-            if a.role != b.role:
-                continue
             centroid_a = np.mean([obs.centroid_world for obs in clusters[i]], axis=0)
             centroid_b = np.mean([obs.centroid_world for obs in clusters[j]], axis=0)
             dist = float(np.linalg.norm(centroid_a - centroid_b))
@@ -530,7 +521,7 @@ def warn_near_miss_unmerged_clusters(clusters: list[list[Observation3D]], args: 
                 cams_a = sorted({obs.camera for obs in clusters[i]})
                 cams_b = sorted({obs.camera for obs in clusters[j]})
                 print(
-                    f"[warn] two '{a.role}' clusters stayed separate but are only {dist:.3f}m apart "
+                    f"[warn] two observation clusters stayed separate but are only {dist:.3f}m apart "
                     f"(cameras {cams_a} vs {cams_b}); this often means the same physical object got "
                     "fragmented into duplicate/overlapping boxes. Consider raising --cluster-distance-m "
                     "or setting --nearest-distance-m/--bbox-iou-threshold to also catch this case.",
@@ -558,7 +549,7 @@ def filter_small_clusters(clusters: list[list[Observation3D]], args: argparse.Na
         all_points = np.concatenate([obs.points_world for obs in cluster], axis=0)
         if args.min_fused_points > 0 and len(all_points) < args.min_fused_points:
             print(
-                f"[info] dropping small '{cluster[0].role}' cluster (cameras "
+                f"[info] dropping small observation cluster (cameras "
                 f"{sorted({obs.camera for obs in cluster})}): {len(all_points)} points < "
                 f"--min-fused-points {args.min_fused_points}.",
                 file=sys.stderr,
@@ -567,7 +558,7 @@ def filter_small_clusters(clusters: list[list[Observation3D]], args: argparse.Na
         diagonal = float(np.linalg.norm(all_points.max(axis=0) - all_points.min(axis=0)))
         if args.min_bbox_diagonal_m > 0.0 and diagonal < args.min_bbox_diagonal_m:
             print(
-                f"[info] dropping small '{cluster[0].role}' cluster (cameras "
+                f"[info] dropping small observation cluster (cameras "
                 f"{sorted({obs.camera for obs in cluster})}): bbox diagonal {diagonal:.3f}m < "
                 f"--min-bbox-diagonal-m {args.min_bbox_diagonal_m}.",
                 file=sys.stderr,
@@ -636,7 +627,9 @@ def observation_to_json(obs: Observation3D) -> dict[str, Any]:
     return {
         "camera": obs.camera,
         "candidate_id": c.get("id"),
-        "role": obs.role,
+        "observation_id": obs.observation_id,
+        "role_evidence": dict(obs.role_evidence),
+        "provenance": dict(obs.provenance),
         "mask_path": c.get("mask_path"),
         "crop_path": c.get("crop_path"),
         "masked_crop_path": c.get("masked_crop_path"),
@@ -647,6 +640,69 @@ def observation_to_json(obs: Observation3D) -> dict[str, Any]:
         "centroid_world": obs.centroid_world.tolist(),
         "bbox3d_world": obs.bbox3d_world.tolist(),
     }
+
+
+def aggregate_role_evidence(observations: Sequence[Observation3D], frame_id: str | None = None) -> dict[str, Any]:
+    """Combine semantic evidence while leaving physical object identity untouched."""
+    evidence: dict[str, Any] = {}
+    total_mass = 0.0
+    for role in ROLE_NAMES:
+        supporting = [obs for obs in observations if float(obs.role_evidence.get(role, 0.0)) > 0.0]
+        mass = float(sum(float(obs.role_evidence.get(role, 0.0)) for obs in supporting))
+        total_mass += mass
+        evidence[role] = {
+            "score_mass": mass,
+            "supporting_prompts": sorted({str(obs.provenance.get("prompt")) for obs in supporting if obs.provenance.get("prompt")}),
+            "cameras": sorted({obs.camera for obs in supporting}),
+            "frames": [frame_id] if supporting and frame_id is not None else [],
+        }
+    for value in evidence.values():
+        value["probability"] = value["score_mass"] / total_mass if total_mass > 0 else 0.0
+    return evidence
+
+
+def aggregate_summary_role_evidence(frames: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Aggregate per-frame evidence for a tracked object without selecting a role."""
+    result: dict[str, Any] = {}
+    total_mass = 0.0
+    for role in ROLE_NAMES:
+        entries = [frame.get("role_evidence", {}).get(role, {}) for frame in frames]
+        mass = float(sum(float(entry.get("score_mass", 0.0)) for entry in entries))
+        total_mass += mass
+        result[role] = {
+            "score_mass": mass,
+            "supporting_prompts": sorted({prompt for entry in entries for prompt in entry.get("supporting_prompts", [])}),
+            "cameras": sorted({camera for entry in entries for camera in entry.get("cameras", [])}),
+            "frames": sorted({frame for entry in entries for frame in entry.get("frames", [])}),
+        }
+    for entry in result.values():
+        entry["probability"] = entry["score_mass"] / total_mass if total_mass > 0 else 0.0
+    return result
+
+
+def candidate_to_observation(
+    candidate: Mapping[str, Any],
+    camera: str,
+    frame_id: str,
+    points_world: np.ndarray,
+    centroid_world: np.ndarray,
+    bbox3d_world: np.ndarray,
+) -> Observation3D:
+    """Backward-compatibility adapter for legacy scalar-role candidates."""
+    legacy_role = str(candidate.get("role", ""))
+    prompt = candidate.get("source_prompt") or candidate.get("text_prompt")
+    score = float(candidate.get("score", 0.0))
+    candidate_id = str(candidate.get("id", "unknown"))
+    return Observation3D(
+        observation_id=f"{frame_id}:{camera}:{candidate_id}",
+        role_evidence={role: score if role == legacy_role else 0.0 for role in ROLE_NAMES},
+        provenance={"role": legacy_role, "prompt": prompt, "candidate_id": candidate_id},
+        camera=camera,
+        candidate=candidate,
+        points_world=points_world,
+        centroid_world=centroid_world,
+        bbox3d_world=bbox3d_world,
+    )
 
 
 def stats_from_values(values: list[float]) -> dict[str, float | None]:
@@ -690,14 +746,9 @@ def build_object_summary(
         frame_index = frame.get("frame_index")
         for obj in frame.get("objects", []):
             object_id = str(obj["id"])
-            role = str(obj["role"])
             track = by_object_id.setdefault(
                 object_id,
-                {
-                    "object_id": object_id,
-                    "role": role,
-                    "frames": [],
-                },
+                {"object_id": object_id, "frames": []},
             )
             track["frames"].append(
                 {
@@ -711,10 +762,14 @@ def build_object_summary(
                     "mask_area": int(obj.get("mask_area", 0)),
                     "sam_score": float(obj.get("sam_score", 0.0)),
                     "observation_count": len(obj.get("observations", [])),
+                    "role_evidence": obj.get("role_evidence", {}),
                     "observations": [
                         {
                             "camera": obs.get("camera"),
                             "candidate_id": obs.get("candidate_id"),
+                            "observation_id": obs.get("observation_id"),
+                            "role_evidence": obs.get("role_evidence", {}),
+                            "provenance": obs.get("provenance", {}),
                             "mask_path": obs.get("mask_path"),
                             "crop_path": obs.get("crop_path"),
                             "masked_crop_path": obs.get("masked_crop_path"),
@@ -730,7 +785,6 @@ def build_object_summary(
     object_tracks = []
     for object_id in sorted(by_object_id):
         track = by_object_id[object_id]
-        role = str(track["role"])
         frames_sorted = sorted(track["frames"], key=lambda item: (item["frame_index"] is None, item["frame_index"], item["frame_id"]))
         centroids = [np.asarray(item["centroid_world"], dtype=np.float64) for item in frames_sorted]
         motion_path_length_m = float(
@@ -753,7 +807,7 @@ def build_object_summary(
         object_tracks.append(
             {
                 "object_id": object_id,
-                "role": role,
+                "role_evidence": aggregate_summary_role_evidence(frames_sorted),
                 "first_frame_id": frames_sorted[0]["frame_id"],
                 "last_frame_id": frames_sorted[-1]["frame_id"],
                 "first_frame_index": frames_sorted[0]["frame_index"],
@@ -784,7 +838,7 @@ def build_object_summary(
             candidates.append(
                 {
                     "object_id": obj.get("id"),
-                    "role_prior": obj.get("role"),
+                    "role_evidence": obj.get("role_evidence", {}),
                     "centroid_world": obj.get("centroid_world"),
                     "bbox3d_world": obj.get("bbox3d_world"),
                     "visible_camera": obj.get("visible_camera", []),
@@ -797,6 +851,9 @@ def build_object_summary(
                         {
                             "camera": obs.get("camera"),
                             "candidate_id": obs.get("candidate_id"),
+                            "observation_id": obs.get("observation_id"),
+                            "role_evidence": obs.get("role_evidence", {}),
+                            "provenance": obs.get("provenance", {}),
                             "mask_path": obs.get("mask_path"),
                             "crop_path": obs.get("crop_path"),
                             "masked_crop_path": obs.get("masked_crop_path"),
@@ -862,113 +919,54 @@ def assign_object_ids(
     clusters: list[list[Observation3D]],
     track_state: dict[str, Any],
     args: argparse.Namespace,
+    frame_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Assign fused-object ids that stay consistent across frames.
+    """Track physical objects globally; semantic roles never partition identity."""
+    prev_tracks: list[dict[str, Any]] = list(track_state.get("tracks", []))
+    next_object_index = int(track_state.get("next_object_index", 0))
+    centroids = [np.concatenate([o.points_world for o in c]).mean(axis=0) for c in clusters]
+    assigned: dict[int, int] = {}
+    if clusters and prev_tracks:
+        nc, np_ = len(clusters), len(prev_tracks)
+        size = nc + np_
+        abstain = args.track_distance_m + 1e-6
+        cost = np.full((size, size), abstain * 1000.0 + 1e6)
+        for ci, centroid in enumerate(centroids):
+            for pi, track in enumerate(prev_tracks):
+                distance = float(np.linalg.norm(centroid - np.asarray(track["centroid"])))
+                if distance <= args.track_distance_m:
+                    cost[ci, pi] = distance
+            cost[ci, np_ + ci] = abstain
+        for pi in range(np_):
+            cost[nc + pi, pi] = abstain
+        cost[nc:, np_:] = 0.0
+        for row, col in solve_min_cost_assignment(cost):
+            if row < nc and col < np_:
+                assigned[row] = int(prev_tracks[col]["index"])
 
-    Re-deriving ids every frame from a fresh ``role_counts`` counter combined
-    with sorting clusters by x-coordinate is order-dependent across frames:
-    if two same-role objects' relative x-position (or which clusters exist at
-    all) changes between frames, the sort order changes and the same physical
-    object can flip from e.g. "T1" to "T2". Instead, match each frame's
-    clusters to the previous processed frame's tracked objects with a
-    globally optimal Hungarian-algorithm assignment (minimizing total centroid
-    distance, restricted to pairs within ``args.track_distance_m``; see
-    ``solve_min_cost_assignment``) and inherit that id; only assign a
-    brand-new id when no previous track is close enough.
-
-    ``track_state`` is ``{"tracks": {role: [{"index": int, "centroid": [...]},
-    ...]}, "next_index": {role: int}}`` from the previous frame and is not
-    mutated; the updated state to carry into the next frame is returned
-    alongside the objects. ``next_index`` is tracked separately from (and
-    monotonically, regardless of) the currently live tracks so a role's id
-    counter never gets reused after its tracks briefly disappear (e.g. one
-    frame of occlusion) and then reappear.
-    """
-    role_clusters: dict[str, list[list[Observation3D]]] = {}
-    for cluster in clusters:
-        role_clusters.setdefault(cluster[0].role, []).append(cluster)
-
-    prev_tracks_by_role: dict[str, list[dict[str, Any]]] = track_state.get("tracks", {})
-    next_index_by_role: dict[str, int] = dict(track_state.get("next_index", {}))
-
-    objects: list[dict[str, Any]] = []
-    new_tracks_by_role: dict[str, list[dict[str, Any]]] = {}
-    for role in sorted(role_clusters):
-        prefix = ROLE_OBJECT_PREFIX.get(role, f"{role}_obj")
-        prev_tracks = prev_tracks_by_role.get(role, [])
-        next_index = next_index_by_role.get(role, 0)
-        role_clusters_list = role_clusters[role]
-        centroids = [
-            np.concatenate([obs.points_world for obs in cluster], axis=0).mean(axis=0)
-            for cluster in role_clusters_list
-        ]
-
-        # Solve the globally optimal (cluster, previous track) matching with the
-        # Hungarian algorithm, rather than a greedy walk that can settle for a
-        # locally-available match and leave a genuinely closer pairing unmatched
-        # elsewhere. Matching is framed as a square assignment problem: real
-        # (cluster, track) pairs cost their centroid distance if within
-        # ``args.track_distance_m`` (else a large forbidden cost), and each
-        # cluster/track also gets an "abstain" dummy costing just over
-        # ``args.track_distance_m`` -- strictly more than any allowed real
-        # match, so the solver always prefers a real match when one exists,
-        # but nothing is forced into a bad match just to complete the
-        # assignment (crucially the abstain cost must NOT be 0: an all-dummy
-        # "everyone stays unmatched" solution would otherwise always beat any
-        # real match, since every real distance is >= 0).
-        n_clusters = len(role_clusters_list)
-        n_prev = len(prev_tracks)
-        assigned_index_by_cluster: dict[int, int] = {}
-        if n_clusters and n_prev:
-            size = n_clusters + n_prev
-            abstain_cost = args.track_distance_m + 1e-6
-            forbidden_cost = abstain_cost * 1000.0 + 1e6
-            cost = np.full((size, size), forbidden_cost, dtype=float)
-            for cluster_index, centroid in enumerate(centroids):
-                for prev_index, track in enumerate(prev_tracks):
-                    dist = float(np.linalg.norm(centroid - np.array(track["centroid"])))
-                    if dist <= args.track_distance_m:
-                        cost[cluster_index, prev_index] = dist
-            # Each cluster may abstain (stay unmatched) via its own dummy column.
-            for cluster_index in range(n_clusters):
-                cost[cluster_index, n_prev + cluster_index] = abstain_cost
-            # Each previous track may abstain (stay unmatched) via its own dummy row.
-            for prev_index in range(n_prev):
-                cost[n_clusters + prev_index, prev_index] = abstain_cost
-            # Dummy-vs-dummy padding cells only complete the permutation; they carry
-            # no real meaning, so they're free.
-            cost[n_clusters:, n_prev:] = 0.0
-
-            for row, col in solve_min_cost_assignment(cost):
-                if row < n_clusters and col < n_prev:
-                    assigned_index_by_cluster[row] = prev_tracks[col]["index"]
-
-        assigned_tracks: list[dict[str, Any]] = []
-        for cluster_index, cluster in enumerate(role_clusters_list):
-            all_points = np.concatenate([obs.points_world for obs in cluster], axis=0)
-            centroid = centroids[cluster_index]
-            if cluster_index in assigned_index_by_cluster:
-                index = assigned_index_by_cluster[cluster_index]
-            else:
-                next_index += 1
-                index = next_index
-            objects.append({
-                "id": f"{prefix}{index}",
-                "role": role,
-                "points_world": all_points.tolist(),
-                "centroid_world": centroid.tolist(),
-                "bbox3d_world": np.stack([all_points.min(axis=0), all_points.max(axis=0)]).tolist(),
-                "visible_camera": sorted({obs.camera for obs in cluster}),
-                "mask_area": int(sum(int(obs.candidate.get("mask_area_pixels", 0)) for obs in cluster)),
-                "sam_score": float(np.mean([float(obs.candidate.get("score", 0.0)) for obs in cluster])),
-                "observations": [observation_to_json(obs) for obs in cluster],
-            })
-            assigned_tracks.append({"index": index, "centroid": centroid.tolist()})
-        new_tracks_by_role[role] = assigned_tracks
-        next_index_by_role[role] = next_index
-    objects.sort(key=lambda obj: (obj["role"], obj["id"].__len__(), obj["id"]))
-    new_track_state = {"tracks": new_tracks_by_role, "next_index": next_index_by_role}
-    return objects, new_track_state
+    objects, tracks = [], []
+    for ci, cluster in enumerate(clusters):
+        all_points = np.concatenate([o.points_world for o in cluster])
+        centroid = centroids[ci]
+        if ci in assigned:
+            index = assigned[ci]
+        else:
+            next_object_index += 1
+            index = next_object_index
+        objects.append({
+            "id": f"O{index}",
+            "role_evidence": aggregate_role_evidence(cluster, frame_id),
+            "points_world": all_points.tolist(),
+            "centroid_world": centroid.tolist(),
+            "bbox3d_world": np.stack([all_points.min(axis=0), all_points.max(axis=0)]).tolist(),
+            "visible_camera": sorted({o.camera for o in cluster}),
+            "mask_area": int(sum(int(o.candidate.get("mask_area_pixels", 0)) for o in cluster)),
+            "sam_score": float(np.mean([float(o.candidate.get("score", 0.0)) for o in cluster])),
+            "observations": [observation_to_json(o) for o in cluster],
+        })
+        tracks.append({"index": index, "centroid": centroid.tolist()})
+    objects.sort(key=lambda obj: int(str(obj["id"])[1:]))
+    return objects, {"tracks": tracks, "next_object_index": next_object_index}
 
 
 def fuse_frame(
@@ -1014,11 +1012,11 @@ def fuse_frame(
                 continue
             centroid = points_world.mean(axis=0)
             bbox = np.stack([points_world.min(axis=0), points_world.max(axis=0)])
-            observations.append(Observation3D(str(cand["role"]), camera, cand, points_world, centroid, bbox))
+            observations.append(candidate_to_observation(cand, camera, frame_id, points_world, centroid, bbox))
 
     clusters = cluster_observations(observations, args)
     clusters = filter_small_clusters(clusters, args)
-    objects, updated_track_state = assign_object_ids(clusters, track_state or {}, args)
+    objects, updated_track_state = assign_object_ids(clusters, track_state or {}, args, frame_id)
     if track_state is not None:
         track_state.clear()
         track_state.update(updated_track_state)
