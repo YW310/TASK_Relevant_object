@@ -171,7 +171,7 @@ def sanity_report_for_object(obj: Mapping[str, Any]) -> dict[str, Any]:
     bbox = np.asarray(obj["bbox3d_world"], dtype=np.float64)
     return {
         "id": obj["id"],
-        "role": obj["role"],
+        "role_evidence": obj.get("role_evidence", {}),
         "num_points": len(obj.get("points_world", [])),
         "centroid_world": obj["centroid_world"],
         "bbox_size_m": (bbox[1] - bbox[0]).tolist(),
@@ -243,7 +243,10 @@ def plot_pointcloud(objects: Sequence[Mapping[str, Any]], out_path: Path) -> Non
             if len(points) == 0:
                 continue
             color = np.array(OBJECT_COLORS[index % len(OBJECT_COLORS)]) / 255.0
-            ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=2, color=color, label=f'{obj["id"]} ({obj["role"]})')
+            evidence = obj.get("role_evidence", {})
+            top_role = max(evidence, key=lambda role: evidence[role].get("probability", 0.0)) if evidence else None
+            suffix = f" ({top_role} evidence)" if top_role else ""
+            ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=2, color=color, label=f'{obj["id"]}{suffix}')
             centroid = np.asarray(obj["centroid_world"], dtype=np.float64)
             ax.scatter([centroid[0]], [centroid[1]], [centroid[2]], s=90, marker="x", color=color)
         ax.set_xlabel("x (m)")

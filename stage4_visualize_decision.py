@@ -153,7 +153,9 @@ def _draw_decision_overlay(
 
         u_min, v_min = visible_uv.min(axis=0)
         u_max, v_max = visible_uv.max(axis=0)
-        label = f"{ROLE_TAG.get(role_name, role_name[:2].upper())}_{object_id}"
+        # Color conveys the selected role; the label remains the role-neutral
+        # physical identity (O1, O2, ...).
+        label = object_id
         boxes.append(((int(u_min), int(v_min), int(u_max), int(v_max)), color, label))
 
         centroid_uv, centroid_valid = project_points(np.asarray([obj.get("centroid_world", [0.0, 0.0, 0.0])], dtype=np.float64), intrinsics, extrinsics)

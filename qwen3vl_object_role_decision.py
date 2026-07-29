@@ -172,7 +172,7 @@ def _collect_representative_images(candidates: Sequence[Mapping[str, Any]], max_
 def _compact_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "object_id": candidate.get("object_id"),
-        "role_prior": candidate.get("role_prior"),
+        "role_evidence": candidate.get("role_evidence", {}),
         "centroid_world": candidate.get("centroid_world"),
         "bbox3d_world": candidate.get("bbox3d_world"),
         "visible_camera": candidate.get("visible_camera", []),
@@ -421,17 +421,17 @@ def _decision_prompt(payload_json: str, representative_images: Sequence[Mapping[
         "3. Keep the response strictly as one JSON object.\n\n"
         "Output schema:\n"
         "{\n"
-        "  \"target_object_id\": \"T1\" or null,\n"
-        "  \"reference_object_id\": \"R1\" or \"T2\" or null,\n"
+        "  \"target_object_id\": \"O1\" or null,\n"
+        "  \"reference_object_id\": \"O2\" or \"O3\" or null,\n"
         "  \"confidence\": 0.0 to 1.0,\n"
         "  \"uncertain\": false,\n"
         "  \"uncertain_reason\": null,\n"
         "  \"evidence\": [\n"
-        "    {\"object_id\": \"T1\", \"reason\": \"...\"},\n"
-        "    {\"object_id\": \"T2\", \"reason\": \"...\"}\n"
+        "    {\"object_id\": \"O1\", \"reason\": \"...\"},\n"
+        "    {\"object_id\": \"O2\", \"reason\": \"...\"}\n"
         "  ],\n"
         "  \"relation_reason\": \"short reasoning about target-reference relation\",\n"
-        "  \"reject_object_ids\": [\"T3\"],\n"
+        "  \"reject_object_ids\": [\"O3\"],\n"
         "  \"rejected_reason\": \"optional short reason\"\n"
         "}"
     )
@@ -482,7 +482,7 @@ def _run_decision_for_frame(
 
     track_map = {
         str(item.get("object_id")): {
-            "role": item.get("role"),
+            "role_evidence": item.get("role_evidence", {}),
             "lifespan_frames": item.get("lifespan_frames"),
             "camera_set": item.get("camera_set"),
             "camera_count_stats": item.get("camera_count_stats"),

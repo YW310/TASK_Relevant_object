@@ -367,5 +367,9 @@ python multiview_candidate_fusion.py \
   --bbox-iou-threshold 0.0
 ```
 
-Objects are clustered only within the same role. Stable IDs use role-specific
-prefixes such as `target_obj_000`, `reference_obj_000`, and `part_obj_000`.
+Objects are clustered by physical geometry across all role hypotheses. Stable,
+role-neutral IDs use one global monotonic sequence: `O1`, `O2`, `O3`, and so on.
+Each object reports `role_evidence` separately, with probabilities, score mass,
+supporting prompts, cameras, and frames for target, reference, and interaction-part
+evidence. The original candidate role and prompt remain available in observation
+provenance for backward compatibility.
