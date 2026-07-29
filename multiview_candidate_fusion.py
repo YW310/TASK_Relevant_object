@@ -1157,7 +1157,14 @@ def save_frame_geometry(frame: Mapping[str, Any], output_path: Path) -> None:
     frame_key = _geometry_segment(frame.get("frame_id", frame.get("frame_index", "frame")))
     relative_path = Path("frames") / frame_key / "fused_geometry.npz"
     archive_path = output_path.parent / relative_path
-    arrays: dict[str, np.ndarray] = {}
+    # Keep identity metadata inside the archive itself.  This makes the NPZ a
+    # self-describing artifact rather than an unversioned bag of arrays, and
+    # lets readers reject a stale archive copied from another frame/run.
+    arrays: dict[str, np.ndarray] = {
+        "__schema_version__": np.asarray(FUSED_MANIFEST_SCHEMA_VERSION, dtype=np.int64),
+        "__generation_id__": np.asarray(str(frame.get("generation_id", ""))),
+        "__frame_id__": np.asarray(str(frame.get("frame_id", ""))),
+    }
 
     for obj in frame.get("objects", []):
         object_id = _geometry_segment(obj.get("id"))
@@ -1190,7 +1197,11 @@ def save_frame_geometry(frame: Mapping[str, Any], output_path: Path) -> None:
             })
 
     archive_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(archive_path, **arrays)
+    # Do not leave a half-written/corrupt archive if the process is killed
+    # while replacing an existing frame output.
+    temporary_path = archive_path.with_name(archive_path.name + ".tmp.npz")
+    np.savez_compressed(temporary_path, **arrays)
+    temporary_path.replace(archive_path)
 
 
 def fuse_frame(
