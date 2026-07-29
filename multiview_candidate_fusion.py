@@ -5,7 +5,8 @@ The script consumes ``episode_candidates.json`` produced by
 ``qwen_role_sam3_candidate_episode.py`` plus per-camera ``candidates.json`` and
 mask PNG files. For each candidate, depth pixels inside the mask are
 back-projected with camera intrinsics, transformed by camera extrinsics, and
-clustered with geometrically compatible candidates from other views.
+fused by deterministic anchor-camera assignment with whole-hypothesis
+geometric validation. Pairwise compatibility is only an assignment gate.
 """
 
 from __future__ import annotations
@@ -84,6 +85,13 @@ def build_parser() -> argparse.ArgumentParser:
             "centroid check, same rationale as --bbox-iou-threshold)."
         ),
     )
+    parser.add_argument("--max-hypothesis-diameter-m", type=float, default=0.50,
+                        help="Maximum robust (1st--99th percentile) pooled point-cloud diameter after an insertion.")
+    parser.add_argument("--max-size-ratio", type=float, default=4.0,
+                        help=("Maximum relative axis-shape ratio after factoring out uniform bbox scale. "
+                              "Thus different-scale boxes for the same object are not rejected."))
+    parser.add_argument("--legacy-union-find", action="store_true",
+                        help="DEPRECATED compatibility/debug mode: use the old pairwise transitive union-find partition.")
     parser.add_argument(
         "--track-distance-m",
         type=float,
@@ -510,6 +518,16 @@ def nearest_mean_distance(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.sqrt(d2.min(axis=1)).mean())
 
 
+def symmetric_percentile_nearest_distance(a: np.ndarray, b: np.ndarray, percentile: float = 75.0) -> float:
+    """Robust symmetric surface distance, bounded to keep assignment inexpensive."""
+    if len(a) == 0 or len(b) == 0:
+        return float("inf")
+    aa, bb = a[::max(1, len(a) // 256)], b[::max(1, len(b) // 256)]
+    distances = np.sqrt(((aa[:, None, :] - bb[None, :, :]) ** 2).sum(axis=2))
+    directed = np.concatenate((distances.min(axis=1), distances.min(axis=0)))
+    return float(np.percentile(directed, percentile))
+
+
 def pairwise_should_merge(a: Observation3D, b: Observation3D, args: argparse.Namespace) -> bool:
     centroid_ok = np.linalg.norm(a.centroid_world - b.centroid_world) <= args.cluster_distance_m
     iou_ok = args.bbox_iou_threshold > 0 and bbox_iou_3d(a.bbox3d_world, b.bbox3d_world) >= args.bbox_iou_threshold
@@ -520,33 +538,120 @@ def pairwise_should_merge(a: Observation3D, b: Observation3D, args: argparse.Nam
     return centroid_ok or iou_ok or nearest_ok
 
 
-def cluster_observations(observations: Sequence[Observation3D], args: argparse.Namespace) -> list[list[Observation3D]]:
-    """Cluster strongest-first while enforcing one camera slot per object.
+def _confidence(obs: Observation3D) -> float:
+    return max(obs.role_evidence.values(), default=float(obs.candidate.get("score", 0.0)))
 
-    Unlike unconstrained connected components, this cannot transitively place
-    two observations from one camera in a hypothesis. Same-camera alternatives
-    compete by evidence strength and remain separate hypotheses.
+
+def bbox_shape_log_residual(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
+    """Return scale-invariant box-shape residual and estimated uniform scale.
+
+    Different views often reconstruct a tight box and a partial/loose box for
+    the same object.  Raw axis-size ratios would reject an otherwise identical
+    shape solely because one box is uniformly larger.  Centering log ratios by
+    their median separates that nuisance scale from axis-shape disagreement.
+    Degenerate axes are omitted because depth masks commonly produce flat boxes.
     """
-    diagnostics = getattr(args, "_same_camera_diagnostics", None)
-    clusters: list[list[Observation3D]] = []
-    # Strongest observations claim camera slots first. A later observation can
-    # form a competing hypothesis, but can never contribute a second copy of
-    # that camera to an existing physical-object hypothesis.
-    ordered = sorted(observations, key=lambda obs: max(obs.role_evidence.values(), default=0.0), reverse=True)
-    for obs in ordered:
-        compatible = [cluster for cluster in clusters if any(pairwise_should_merge(obs, other, args) for other in cluster)]
-        available = [cluster for cluster in compatible if all(other.camera != obs.camera for other in cluster)]
-        if available:
-            best = min(available, key=lambda cluster: min(float(np.linalg.norm(obs.centroid_world - other.centroid_world)) for other in cluster))
-            best.append(obs)
-        else:
-            if compatible:
-                event = {"camera": obs.camera, "observation_id": obs.observation_id,
-                         "competing_observation_ids": [other.observation_id for cluster in compatible for other in cluster if other.camera == obs.camera]}
-                if diagnostics is not None:
-                    diagnostics.append(event)
-                print(f"[warn] rejected same-camera cluster insertion: {event}", file=sys.stderr)
-            clusters.append([obs])
+    sizes_a = np.asarray(a[1] - a[0], dtype=np.float64)
+    sizes_b = np.asarray(b[1] - b[0], dtype=np.float64)
+    valid_axes = (sizes_a >= 1e-3) & (sizes_b >= 1e-3)
+    if not np.any(valid_axes):
+        return 0.0, 1.0
+    log_ratios = np.log(sizes_a[valid_axes] / sizes_b[valid_axes])
+    log_scale = float(np.median(log_ratios))
+    shape_residual = float(np.max(np.abs(log_ratios - log_scale)))
+    return shape_residual, float(np.exp(log_scale))
+
+
+def _hypothesis_is_valid(cluster: Sequence[Observation3D], args: argparse.Namespace) -> bool:
+    """Validate the *complete* proposed hypothesis, never merely one supporting edge."""
+    if len({obs.camera for obs in cluster}) != len(cluster):
+        return False
+    for i, a in enumerate(cluster):
+        for b in cluster[i + 1:]:
+            if np.linalg.norm(a.centroid_world - b.centroid_world) > args.cluster_distance_m:
+                return False
+            shape_residual, _ = bbox_shape_log_residual(a.bbox3d_world, b.bbox3d_world)
+            if shape_residual > np.log(args.max_size_ratio):
+                return False
+            if args.bbox_iou_threshold > 0 and bbox_iou_3d(a.bbox3d_world, b.bbox3d_world) < args.bbox_iou_threshold:
+                return False
+            if args.nearest_distance_m is not None and symmetric_percentile_nearest_distance(a.points_world, b.points_world) > args.nearest_distance_m:
+                return False
+    points = np.concatenate([obs.points_world for obs in cluster])
+    robust_extent = np.percentile(points, 99, axis=0) - np.percentile(points, 1, axis=0)
+    return args.max_hypothesis_diameter_m <= 0 or np.linalg.norm(robust_extent) <= args.max_hypothesis_diameter_m
+
+
+def _association_cost(obs: Observation3D, cluster: Sequence[Observation3D], args: argparse.Namespace) -> float | None:
+    if not any(pairwise_should_merge(obs, other, args) for other in cluster):
+        return None  # pairwise_should_merge is only a cheap compatibility gate.
+    proposed = [*cluster, obs]
+    if not _hypothesis_is_valid(proposed, args):
+        return None
+    anchor = cluster[0]
+    centroid = float(np.linalg.norm(obs.centroid_world - np.median([x.centroid_world for x in cluster], axis=0)))
+    size_residual, _ = bbox_shape_log_residual(obs.bbox3d_world, anchor.bbox3d_world)
+    overlap_penalty = 1.0 - bbox_iou_3d(obs.bbox3d_world, anchor.bbox3d_world)
+    surface = symmetric_percentile_nearest_distance(obs.points_world, anchor.points_world)
+    surface_term = surface / max(args.cluster_distance_m, 1e-9) if np.isfinite(surface) else 1.0
+    return centroid / max(args.cluster_distance_m, 1e-9) + 0.35 * size_residual + 0.25 * overlap_penalty + 0.25 * surface_term
+
+
+def legacy_union_find_clusters(observations: Sequence[Observation3D], args: argparse.Namespace) -> list[list[Observation3D]]:
+    """Deprecated reproduction of pairwise transitive connected components."""
+    parent = list(range(len(observations)))
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]; i = parent[i]
+        return i
+    for i in range(len(observations)):
+        for j in range(i + 1, len(observations)):
+            if observations[i].camera != observations[j].camera and pairwise_should_merge(observations[i], observations[j], args):
+                a, b = find(i), find(j)
+                if a != b: parent[b] = a
+    groups: dict[int, list[Observation3D]] = {}
+    for i, obs in enumerate(observations): groups.setdefault(find(i), []).append(obs)
+    return list(groups.values())
+
+
+def cluster_observations(observations: Sequence[Observation3D], args: argparse.Namespace) -> list[list[Observation3D]]:
+    """Assign one camera at a time to confidence-seeded object hypotheses."""
+    if getattr(args, "legacy_union_find", False):
+        print("[warn] --legacy-union-find is deprecated and may create inconsistent hypotheses", file=sys.stderr)
+        return legacy_union_find_clusters(observations, args)
+    by_camera: dict[str, list[Observation3D]] = {}
+    for obs in observations:
+        by_camera.setdefault(obs.camera, []).append(obs)
+    if not by_camera:
+        return []
+    # Deterministic policy: camera with the highest-confidence observation anchors;
+    # lexical camera name and observation id break ties. Remaining cameras follow
+    # the same descending-confidence/lexical policy.
+    camera_order = sorted(by_camera, key=lambda c: (-max(_confidence(o) for o in by_camera[c]), c))
+    for camera in camera_order:
+        by_camera[camera].sort(key=lambda o: (-_confidence(o), o.observation_id))
+    clusters: list[list[Observation3D]] = [[obs] for obs in by_camera[camera_order[0]]]
+    for camera in camera_order[1:]:
+        camera_obs, nh = by_camera[camera], len(clusters)
+        no = len(camera_obs)
+        n = no + nh
+        dummy_cost, blocked = 2.0, 1e6
+        cost = np.full((n, n), blocked, dtype=float)
+        for i, obs in enumerate(camera_obs):
+            for j, cluster in enumerate(clusters):
+                value = _association_cost(obs, cluster, args)
+                if value is not None:
+                    cost[i, j] = value
+            cost[i, nh + i] = dummy_cost  # explicit new-hypothesis assignment
+        for j in range(nh):
+            cost[no + j, j] = dummy_cost
+        cost[no:, nh:] = 0.0
+        for row, col in solve_min_cost_assignment(cost):
+            if row < no:
+                if col < nh and cost[row, col] < blocked:
+                    clusters[col].append(camera_obs[row])
+                else:
+                    clusters.append([camera_obs[row]])
     warn_near_miss_unmerged_clusters(clusters, args)
     return clusters
 
@@ -960,12 +1065,15 @@ def build_object_summary(
         "instruction_prior": candidates_summary.get("instruction"),
         "role_spec_prior": candidates_summary.get("role_spec"),
         "fusion_params": {
+            "fusion_algorithm": result.get("fusion_algorithm"),
             "cluster_distance_m": result.get("cluster_distance_m"),
             "bbox_iou_threshold": result.get("bbox_iou_threshold"),
             "nearest_distance_m": result.get("nearest_distance_m"),
             "track_distance_m": result.get("track_distance_m"),
             "min_fused_points": result.get("min_fused_points"),
             "min_bbox_diagonal_m": result.get("min_bbox_diagonal_m"),
+            "max_hypothesis_diameter_m": result.get("max_hypothesis_diameter_m"),
+            "max_size_ratio": result.get("max_size_ratio"),
         },
         "object_tracks": object_tracks,
         "frame_decision_inputs": frame_decision_inputs,
@@ -1115,6 +1223,9 @@ def main() -> None:
         "track_distance_m": args.track_distance_m,
         "min_fused_points": args.min_fused_points,
         "min_bbox_diagonal_m": args.min_bbox_diagonal_m,
+        "max_hypothesis_diameter_m": args.max_hypothesis_diameter_m,
+        "max_size_ratio": args.max_size_ratio,
+        "fusion_algorithm": "legacy_pairwise_union_find" if args.legacy_union_find else "anchor_gated_assignment_v1",
         "rlbench_low_dim_obs": str(rlbench_low_dim_path) if rlbench_observations else None,
         "invert_rlbench_extrinsics": bool(args.invert_rlbench_extrinsics),
         "frames": frames,
