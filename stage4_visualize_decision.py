@@ -26,6 +26,7 @@ from PIL import Image, ImageDraw
 from geometry_loader import GeometryLoader
 
 from multiview_candidate_fusion import (
+    iter_manifest_frames,
     load_camera_params,
     load_rlbench_observations,
     parse_csv,
@@ -221,9 +222,10 @@ def main() -> None:
 
     pred = _load_json(pred_path)
     fused = _load_json(fused_path)
+    fused = {**fused, "frames": list(iter_manifest_frames(fused, fused_path))}
     geometry_loader = GeometryLoader(fused_path)
 
-    episode_dir = Path(args.episode_dir).expanduser().resolve() if args.episode_dir else Path(str(fused.get("episode_dir"))).expanduser().resolve()
+    episode_dir = Path(args.episode_dir).expanduser().resolve() if args.episode_dir else Path(str(fused.get("episode_metadata", {}).get("episode_dir"))).expanduser().resolve()
     camera_params = load_camera_params(Path(args.camera_params_json).expanduser().resolve() if args.camera_params_json else None)
     rlbench_override = Path(args.rlbench_low_dim_obs).expanduser().resolve() if args.rlbench_low_dim_obs else None
     rlbench_observations = load_rlbench_observations(episode_dir, rlbench_override)

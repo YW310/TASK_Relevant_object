@@ -37,6 +37,7 @@ from PIL import Image, ImageDraw
 from geometry_loader import GeometryLoader
 
 from multiview_candidate_fusion import (
+    iter_manifest_frames,
     load_camera_params,
     load_rlbench_observations,
     parse_csv,
@@ -278,7 +279,7 @@ def main() -> None:
     data = json.loads(fused_path.read_text(encoding="utf-8"))
     geometry_loader = GeometryLoader(fused_path)
 
-    episode_dir = Path(args.episode_dir).expanduser().resolve() if args.episode_dir else Path(data["episode_dir"])
+    episode_dir = Path(args.episode_dir).expanduser().resolve() if args.episode_dir else Path(data["episode_metadata"]["episode_dir"])
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else fused_path.with_name("viz")
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -289,7 +290,7 @@ def main() -> None:
     frame_id_filter = parse_csv(args.frame_ids)
     cameras_filter = parse_csv(args.cameras)
 
-    frames = data.get("frames", [])
+    frames = list(iter_manifest_frames(data, fused_path))
     if frame_id_filter is not None:
         frames = [frame for frame in frames if str(frame["frame_id"]) in frame_id_filter]
     if args.max_frames is not None:

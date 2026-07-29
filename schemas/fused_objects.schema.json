@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fused_objects.schema.json",
+  "title": "One frame of fused objects",
+  "type": "object",
+  "required": ["schema_version", "generation_id", "frame_id", "objects", "diagnostics"],
+  "properties": {
+    "schema_version": {"const": 3},
+    "generation_id": {"type": "string", "format": "uuid"},
+    "frame_id": {"type": "string"}, "frame_index": {},
+    "objects": {"type": "array", "items": {"type": "object", "required": ["id", "observations"]}},
+    "diagnostics": {"type": "object"}
+  }
+}

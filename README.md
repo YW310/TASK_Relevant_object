@@ -14,7 +14,7 @@ Qwen3-VL can subsequently select the current target and reference objects.
 | Stage | Script | Result |
 | --- | --- | --- |
 | 1. Role parsing and proposals | `qwen_role_sam3_candidate_episode.py` | `role_spec.json`, per-view masks/crops, and `episode_candidates.json` |
-| 2. Multi-view fusion | `multiview_candidate_fusion.py` | `frame_fused_candidates.json`, per-frame `fused_geometry.npz`, and, optionally, `object_summary.json` |
+| 2. Multi-view fusion | `multiview_candidate_fusion.py` | Lightweight `frame_fused_candidates.json`, per-frame `fused_objects.json` / `fused_geometry.npz`, and optional `object_summary.json` |
 | 3. Fusion visualization | `visualize_fused_candidates.py` | Per-camera reprojection overlays in `viz/` |
 | 4. Object role decision (optional) | `qwen3vl_object_role_decision.py` | `object_predictions.json` |
 | 5. Decision visualization (optional) | `stage4_visualize_decision.py` | Target/reference overlays in `viz_decision/` |
@@ -120,6 +120,30 @@ one; consequently every hypothesis has at most one observation per camera.
 Appearance embeddings are intentionally not part of this geometry-only MVP.
 `object_summary.json` is generated
 automatically when Stage 4 is enabled.
+
+#### Three-layer Stage 2 output contract
+
+Stage 2 deliberately separates episode indexing, frame evidence, and temporal
+reasoning. The schemas live in `schemas/` and all three JSON layers carry the
+same integer `schema_version` (currently `3`) and UUID `generation_id`:
+
+1. **`frame_fused_candidates.json`** is a lightweight episode manifest. Its
+   frame entries contain status, object count, and a relative
+   `fused_objects_json` reference; it never stores objects or point clouds.
+2. **`frames/<frame_key>/fused_objects.json`** owns the current frame's
+   `objects`, their `observations`, and fusion `diagnostics`. Point arrays are
+   still external in the sibling `fused_geometry.npz` and referenced by key.
+3. **`object_summary.json`** contains cross-frame tracks, aggregate statistics,
+   decision-ready scalar metadata, and `frame_ref` links back to the per-frame
+   files. It does not duplicate complete point clouds or other full geometry.
+
+The summary builder consumes the referenced frame JSON files one at a time, so
+all frame artifacts need not coexist in memory. Readers validate both identity
+fields before joining artifacts; a schema mismatch or a `generation_id` from a
+different fusion run is an error rather than a silent mixed-run result. A
+compatible resumed run retains its generation ID, while a new run creates one.
+See `schemas/frame_fused_candidates.schema.json`,
+`schemas/fused_objects.schema.json`, and `schemas/object_summary.schema.json`.
 
 ### Stage 3: fused-object sanity visualization
 
