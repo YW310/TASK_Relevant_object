@@ -93,6 +93,24 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Maximum robust (1st--99th percentile) pooled point-cloud diameter after an insertion.")
     parser.add_argument("--max-size-ratio", type=float, default=4.0,
                         help="Maximum non-degenerate axis-wise 3D-box size ratio within a hypothesis.")
+    parser.add_argument(
+        "--legacy-canonical-iou",
+        type=float,
+        default=0.35,
+        help=(
+            "Mask IoU required to collapse duplicate rows in legacy, non-canonical candidate "
+            "artifacts. The default tolerates shifted masks while still requiring substantial overlap."
+        ),
+    )
+    parser.add_argument(
+        "--legacy-canonical-containment",
+        type=float,
+        default=0.50,
+        help=(
+            "Smaller-mask coverage required to collapse duplicate rows in legacy, "
+            "non-canonical candidate artifacts."
+        ),
+    )
     parser.add_argument("--legacy-union-find", action="store_true",
                         help="DEPRECATED compatibility/debug mode: use the old pairwise transitive union-find partition.")
     parser.add_argument(
@@ -229,13 +247,18 @@ def load_mask(path: Path) -> np.ndarray:
     return np.asarray(Image.open(path).convert("L")) > 127
 
 
-def canonicalize_legacy_candidates(candidates: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def canonicalize_legacy_candidates(
+    candidates: Sequence[Mapping[str, Any]],
+    iou_threshold: float = 0.35,
+    containment_threshold: float = 0.50,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Defensive adapter for old one-role-per-mask candidate artifacts.
 
-    Legacy rows are grouped only at IoU >= .80 or smaller-mask coverage >= .90;
-    touching/adjacent instances therefore remain distinct. The best scoring
-    mask is retained and role evidence is noisy-OR aggregated with raw audit
-    values preserved.
+    By default, legacy rows are grouped at IoU >= .35 or smaller-mask coverage
+    >= .50. This tolerates prompt-dependent mask drift while still requiring
+    substantial pixel overlap, so merely touching/adjacent instances remain
+    distinct. The best scoring mask is retained and role evidence is noisy-OR
+    aggregated with raw audit values preserved.
     """
     if all(candidate.get("canonical_observation_id") for candidate in candidates):
         return [dict(candidate) for candidate in candidates], []
@@ -252,7 +275,7 @@ def canonicalize_legacy_candidates(candidates: Sequence[Mapping[str, Any]]) -> t
             smaller = min(int(mask.sum()), int(other.sum()))
             iou = inter / union if union else 0.0
             coverage = inter / smaller if smaller else 0.0
-            if iou >= 0.80 or coverage >= 0.90:
+            if iou >= iou_threshold or coverage >= containment_threshold:
                 if match is not None:  # ambiguous bridge: conservatively keep separate
                     match = None
                     break
@@ -551,7 +574,12 @@ def _hypothesis_is_valid(cluster: Sequence[Observation3D], args: argparse.Namesp
         return False
     for i, a in enumerate(cluster):
         for b in cluster[i + 1:]:
-            if np.linalg.norm(a.centroid_world - b.centroid_world) > args.cluster_distance_m:
+            # The three spatial cues are alternatives, matching
+            # ``pairwise_should_merge`` and the CLI contract.  Previously this
+            # validation required centroid, bbox, and nearest-distance checks
+            # simultaneously, which rejected the same object across cameras
+            # whenever viewpoint-dependent partial masks shifted its centroid.
+            if not pairwise_should_merge(a, b, args):
                 return False
             sizes_a = np.maximum(a.bbox3d_world[1] - a.bbox3d_world[0], 1e-6)
             sizes_b = np.maximum(b.bbox3d_world[1] - b.bbox3d_world[0], 1e-6)
@@ -559,30 +587,39 @@ def _hypothesis_is_valid(cluster: Sequence[Observation3D], args: argparse.Namesp
             valid_axes = np.maximum(sizes_a, sizes_b) >= 1e-3
             if np.any(np.maximum(sizes_a[valid_axes] / sizes_b[valid_axes], sizes_b[valid_axes] / sizes_a[valid_axes]) > args.max_size_ratio):
                 return False
-            if args.bbox_iou_threshold > 0 and bbox_iou_3d(a.bbox3d_world, b.bbox3d_world) < args.bbox_iou_threshold:
-                return False
-            if args.nearest_distance_m is not None and symmetric_percentile_nearest_distance(a.points_world, b.points_world) > args.nearest_distance_m:
-                return False
     points = np.concatenate([obs.points_world for obs in cluster])
     robust_extent = np.percentile(points, 99, axis=0) - np.percentile(points, 1, axis=0)
     return args.max_hypothesis_diameter_m <= 0 or np.linalg.norm(robust_extent) <= args.max_hypothesis_diameter_m
 
 
 def _association_cost(obs: Observation3D, cluster: Sequence[Observation3D], args: argparse.Namespace) -> float | None:
-    if not any(pairwise_should_merge(obs, other, args) for other in cluster):
+    compatible = [other for other in cluster if pairwise_should_merge(obs, other, args)]
+    if not compatible:
         return None  # pairwise_should_merge is only a cheap compatibility gate.
     proposed = [*cluster, obs]
     if not _hypothesis_is_valid(proposed, args):
         return None
     anchor = cluster[0]
-    centroid = float(np.linalg.norm(obs.centroid_world - np.median([x.centroid_world for x in cluster], axis=0)))
+    cue_costs = []
+    for other in compatible:
+        centroid_distance = float(np.linalg.norm(obs.centroid_world - other.centroid_world))
+        if centroid_distance <= args.cluster_distance_m:
+            cue_costs.append(centroid_distance / max(args.cluster_distance_m, 1e-9))
+        bbox_iou = bbox_iou_3d(obs.bbox3d_world, other.bbox3d_world)
+        if args.bbox_iou_threshold > 0 and bbox_iou >= args.bbox_iou_threshold:
+            cue_costs.append(1.0 - bbox_iou)
+        if args.nearest_distance_m is not None:
+            nearest = nearest_mean_distance(obs.points_world, other.points_world)
+            if nearest <= args.nearest_distance_m:
+                cue_costs.append(nearest / max(args.nearest_distance_m, 1e-9))
+    proximity_cost = min(cue_costs)
     sizes_a = np.maximum(obs.bbox3d_world[1] - obs.bbox3d_world[0], 1e-6)
     sizes_b = np.maximum(anchor.bbox3d_world[1] - anchor.bbox3d_world[0], 1e-6)
     size_residual = float(np.mean(np.abs(np.log(sizes_a / sizes_b))))
     overlap_penalty = 1.0 - bbox_iou_3d(obs.bbox3d_world, anchor.bbox3d_world)
     surface = symmetric_percentile_nearest_distance(obs.points_world, anchor.points_world)
-    surface_term = surface / max(args.cluster_distance_m, 1e-9) if np.isfinite(surface) else 1.0
-    return centroid / max(args.cluster_distance_m, 1e-9) + 0.35 * size_residual + 0.25 * overlap_penalty + 0.25 * surface_term
+    surface_term = min(1.0, surface / max(args.cluster_distance_m, 1e-9)) if np.isfinite(surface) else 1.0
+    return proximity_cost + 0.35 * size_residual + 0.25 * overlap_penalty + 0.25 * surface_term
 
 
 def legacy_union_find_clusters(observations: Sequence[Observation3D], args: argparse.Namespace) -> list[list[Observation3D]]:
@@ -1192,7 +1229,11 @@ def fuse_frame(
         near, far = depth_near_far if depth_near_far is not None else (None, None)
         depth = read_depth(resolve_depth_path(episode_dir, camera, frame_id), args.depth_scale, near=near, far=far, mode=args.depth_mode)
         data = json.loads(Path(view["candidates_json"]).read_text(encoding="utf-8"))
-        canonical_candidates, legacy_suppressed = canonicalize_legacy_candidates(data.get("candidates", []))
+        canonical_candidates, legacy_suppressed = canonicalize_legacy_candidates(
+            data.get("candidates", []),
+            iou_threshold=args.legacy_canonical_iou,
+            containment_threshold=args.legacy_canonical_containment,
+        )
         canonicalization_suppressed.extend({"camera": camera, **item} for item in legacy_suppressed)
         if legacy_suppressed:
             print(f"[info] frame_id={frame_id} camera={camera}: legacy canonicalization suppressed "
@@ -1234,6 +1275,8 @@ def _fusion_parameters(args: argparse.Namespace, rlbench_low_dim_path: Path, has
         "min_bbox_diagonal_m": args.min_bbox_diagonal_m,
         "max_hypothesis_diameter_m": args.max_hypothesis_diameter_m,
         "max_size_ratio": args.max_size_ratio,
+        "legacy_canonical_iou": args.legacy_canonical_iou,
+        "legacy_canonical_containment": args.legacy_canonical_containment,
         "max_points_per_candidate": args.max_points_per_candidate,
         "depth_mode": args.depth_mode,
         "depth_scale": args.depth_scale,
