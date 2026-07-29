@@ -580,6 +580,19 @@ def main() -> None:
     )
 
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    source_manifest = Path(str(summary.get("source_fused_json", ""))).expanduser()
+    if not source_manifest.is_absolute():
+        source_manifest = (summary_path.parent / source_manifest).resolve()
+    try:
+        manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Cannot validate object_summary against its fused manifest: {source_manifest}") from exc
+    for field in ("schema_version", "generation_id"):
+        if summary.get(field) != manifest.get(field):
+            raise ValueError(
+                f"object_summary {field}={summary.get(field)!r} does not match "
+                f"manifest {field}={manifest.get(field)!r}"
+            )
     frame_inputs = _ordered_frames(list(summary.get("frame_decision_inputs", [])))
     if not frame_inputs:
         raise ValueError("object_summary contains no frame_decision_inputs")
