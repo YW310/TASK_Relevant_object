@@ -179,7 +179,10 @@ object.
 `stage4_visualize_decision.py` joins `object_predictions.json` with
 `frame_fused_candidates.json`, highlights selected target/reference points on
 the camera views, and writes `decision_visualization.json` plus images under
-`viz_decision/`.
+`viz_decision/`. Labels use role-specific IDs (`T1`, `T2`, … for targets and
+`R1`, `R2`, … for references) rather than internal fused IDs (`O1`, `O2`, …),
+and their boxes, backgrounds, text, and centroid marks are translucently
+composited so scene content remains visible.
 
 Its required inputs are `--object-predictions-json` and `--fused-json`.
 `--episode-dir`, `--output-dir`, `--viz-dir`, `--cameras`,

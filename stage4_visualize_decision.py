@@ -37,9 +37,15 @@ ROLE_COLORS = {
 }
 
 ROLE_TAG = {
-    "target": "TD",
-    "reference": "RD",
+    "target": "T",
+    "reference": "R",
 }
+
+
+def _decision_label(role_name: str, object_id: str) -> str:
+    """Render a role-specific id (T1/R2), never the internal fused O-id."""
+    suffix = object_id[1:] if object_id.startswith("O") and len(object_id) > 1 else object_id
+    return f"{ROLE_TAG[role_name]}{suffix}"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -153,9 +159,7 @@ def _draw_decision_overlay(
 
         u_min, v_min = visible_uv.min(axis=0)
         u_max, v_max = visible_uv.max(axis=0)
-        # Color conveys the selected role; the label remains the role-neutral
-        # physical identity (O1, O2, ...).
-        label = object_id
+        label = _decision_label(role_name, object_id)
         boxes.append(((int(u_min), int(v_min), int(u_max), int(v_max)), color, label))
 
         centroid_uv, centroid_valid = project_points(np.asarray([obj.get("centroid_world", [0.0, 0.0, 0.0])], dtype=np.float64), intrinsics, extrinsics)
@@ -166,17 +170,21 @@ def _draw_decision_overlay(
         labels.append((float(cu), float(cv), label, color))
 
     image = Image.alpha_composite(image, Image.fromarray(mask_layer, mode="RGBA"))
-    draw = ImageDraw.Draw(image, "RGBA")
+    # Draw annotations on a separate transparent layer and composite it. Merely
+    # drawing alpha-valued colors onto ``image`` before convert("RGB") would
+    # discard alpha instead of visually blending the label with the scene.
+    annotation_layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(annotation_layer, "RGBA")
     for (u_min, v_min, u_max, v_max), color, label in boxes:
         # Keep decision overlays translucent to preserve scene context under the highlight.
         draw.rectangle([u_min, v_min, u_max, v_max], outline=(*color, 170), width=3)
         text_w = max(80, 7 * len(label))
         draw.rectangle([u_min, max(0, v_min - 18), min(width - 1, u_min + text_w), v_min], fill=(*color, 130))
-        draw.text((u_min + 3, max(0, v_min - 16)), label, fill=(255, 255, 255, 255))
+        draw.text((u_min + 3, max(0, v_min - 16)), label, fill=(255, 255, 255, 210))
     for cu, cv, label, color in labels:
-        draw.ellipse([cu - 3, cv - 3, cu + 3, cv + 3], fill=(*color, 255), outline=(255, 255, 255, 255), width=1)
+        draw.ellipse([cu - 3, cv - 3, cu + 3, cv + 3], fill=(*color, 190), outline=(255, 255, 255, 210), width=1)
 
-    return image
+    return Image.alpha_composite(image, annotation_layer)
 
 
 def _background_image(
