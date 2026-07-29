@@ -93,6 +93,24 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Maximum robust (1st--99th percentile) pooled point-cloud diameter after an insertion.")
     parser.add_argument("--max-size-ratio", type=float, default=4.0,
                         help="Maximum non-degenerate axis-wise 3D-box size ratio within a hypothesis.")
+    parser.add_argument(
+        "--legacy-canonical-iou",
+        type=float,
+        default=0.35,
+        help=(
+            "Mask IoU required to collapse duplicate rows in legacy, non-canonical candidate "
+            "artifacts. The default tolerates shifted masks while still requiring substantial overlap."
+        ),
+    )
+    parser.add_argument(
+        "--legacy-canonical-containment",
+        type=float,
+        default=0.50,
+        help=(
+            "Smaller-mask coverage required to collapse duplicate rows in legacy, "
+            "non-canonical candidate artifacts."
+        ),
+    )
     parser.add_argument("--legacy-union-find", action="store_true",
                         help="DEPRECATED compatibility/debug mode: use the old pairwise transitive union-find partition.")
     parser.add_argument(
@@ -229,13 +247,18 @@ def load_mask(path: Path) -> np.ndarray:
     return np.asarray(Image.open(path).convert("L")) > 127
 
 
-def canonicalize_legacy_candidates(candidates: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def canonicalize_legacy_candidates(
+    candidates: Sequence[Mapping[str, Any]],
+    iou_threshold: float = 0.35,
+    containment_threshold: float = 0.50,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Defensive adapter for old one-role-per-mask candidate artifacts.
 
-    Legacy rows are grouped only at IoU >= .80 or smaller-mask coverage >= .90;
-    touching/adjacent instances therefore remain distinct. The best scoring
-    mask is retained and role evidence is noisy-OR aggregated with raw audit
-    values preserved.
+    By default, legacy rows are grouped at IoU >= .35 or smaller-mask coverage
+    >= .50. This tolerates prompt-dependent mask drift while still requiring
+    substantial pixel overlap, so merely touching/adjacent instances remain
+    distinct. The best scoring mask is retained and role evidence is noisy-OR
+    aggregated with raw audit values preserved.
     """
     if all(candidate.get("canonical_observation_id") for candidate in candidates):
         return [dict(candidate) for candidate in candidates], []
@@ -252,7 +275,7 @@ def canonicalize_legacy_candidates(candidates: Sequence[Mapping[str, Any]]) -> t
             smaller = min(int(mask.sum()), int(other.sum()))
             iou = inter / union if union else 0.0
             coverage = inter / smaller if smaller else 0.0
-            if iou >= 0.80 or coverage >= 0.90:
+            if iou >= iou_threshold or coverage >= containment_threshold:
                 if match is not None:  # ambiguous bridge: conservatively keep separate
                     match = None
                     break
@@ -1192,7 +1215,11 @@ def fuse_frame(
         near, far = depth_near_far if depth_near_far is not None else (None, None)
         depth = read_depth(resolve_depth_path(episode_dir, camera, frame_id), args.depth_scale, near=near, far=far, mode=args.depth_mode)
         data = json.loads(Path(view["candidates_json"]).read_text(encoding="utf-8"))
-        canonical_candidates, legacy_suppressed = canonicalize_legacy_candidates(data.get("candidates", []))
+        canonical_candidates, legacy_suppressed = canonicalize_legacy_candidates(
+            data.get("candidates", []),
+            iou_threshold=args.legacy_canonical_iou,
+            containment_threshold=args.legacy_canonical_containment,
+        )
         canonicalization_suppressed.extend({"camera": camera, **item} for item in legacy_suppressed)
         if legacy_suppressed:
             print(f"[info] frame_id={frame_id} camera={camera}: legacy canonicalization suppressed "
@@ -1234,6 +1261,8 @@ def _fusion_parameters(args: argparse.Namespace, rlbench_low_dim_path: Path, has
         "min_bbox_diagonal_m": args.min_bbox_diagonal_m,
         "max_hypothesis_diameter_m": args.max_hypothesis_diameter_m,
         "max_size_ratio": args.max_size_ratio,
+        "legacy_canonical_iou": args.legacy_canonical_iou,
+        "legacy_canonical_containment": args.legacy_canonical_containment,
         "max_points_per_candidate": args.max_points_per_candidate,
         "depth_mode": args.depth_mode,
         "depth_scale": args.depth_scale,

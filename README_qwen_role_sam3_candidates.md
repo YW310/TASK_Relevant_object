@@ -393,4 +393,9 @@ complete `prompt_provenance`, and per-role `role_scores`. Role scores use
 The `canonicalization.suppressed_candidates` diagnostic records collapsed and
 top-k-suppressed inputs. Multi-view fusion defensively canonicalizes legacy
 role-prefixed JSON and enforces a single observation per camera in every fused
-object; rejected same-camera insertions are recorded in frame diagnostics.
+object; rejected same-camera insertions are recorded in frame diagnostics. The
+legacy adapter defaults to 0.35 IoU or 0.50 smaller-mask coverage so shifted
+prompt masks for the same object are normally collapsed. Both thresholds remain
+configurable with `--legacy-canonical-iou` and
+`--legacy-canonical-containment`; inspect the suppressed-candidate diagnostics
+when tuning them further to avoid merging adjacent instances.
