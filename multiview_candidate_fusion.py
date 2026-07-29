@@ -24,6 +24,8 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 from PIL import Image
 
+from fused_candidate_io import iter_fused_frames, load_object_points
+
 ROLE_NAMES = ("target", "reference", "interaction_part")
 
 
@@ -915,7 +917,7 @@ def build_object_summary(
                     "frame_ref": frame.get("frame_ref"),
                     "centroid_world": obj["centroid_world"],
                     "bbox3d_world": obj["bbox3d_world"],
-                    "point_count": int(obj.get("point_count", len(obj.get("points_world", [])))),
+                    "point_count": int(len(load_object_points(frame, object_id))),
                     "visible_camera": obj.get("visible_camera", []),
                     "camera_count": len(obj.get("visible_camera", [])),
                     "mask_area": int(obj.get("mask_area", 0)),
@@ -944,7 +946,7 @@ def build_object_summary(
         objects = list(frame.get("objects", []))
         candidates = []
         for obj in objects:
-            candidates.append(_summary_object_record(obj))
+            candidates.append(_summary_object_record(frame, obj))
         pairwise_relations = []
         for i in range(len(objects)):
             for j in range(i + 1, len(objects)):
@@ -1036,14 +1038,14 @@ def build_object_summary(
     }
 
 
-def _summary_object_record(obj: Mapping[str, Any]) -> dict[str, Any]:
+def _summary_object_record(frame: Mapping[str, Any], obj: Mapping[str, Any]) -> dict[str, Any]:
     """Strip a frame object to decision metadata (never embedded geometry)."""
     return {
         "object_id": obj.get("id"), "role_evidence": obj.get("role_evidence", {}),
         "centroid_world": obj.get("centroid_world"), "bbox3d_world": obj.get("bbox3d_world"),
         "visible_camera": obj.get("visible_camera", []),
         "camera_count": len(obj.get("visible_camera", [])),
-        "point_count": int(obj.get("point_count", len(obj.get("points_world", [])))),
+        "point_count": int(len(load_object_points(frame, obj.get("id")))),
         "mask_area": obj.get("mask_area"), "sam_score": obj.get("sam_score"),
         "observation_count": len(obj.get("observations", [])),
         "observations": [{key: obs.get(key) for key in (
@@ -1276,22 +1278,6 @@ def _load_completed_frame(
     return frame
 
 
-def iter_manifest_frames(manifest: Mapping[str, Any], manifest_path: Path) -> Iterable[dict[str, Any]]:
-    """Lazily read and validate complete frame artifacts in manifest order."""
-    version = manifest.get("schema_version")
-    generation_id = manifest.get("generation_id")
-    if version != FUSED_MANIFEST_SCHEMA_VERSION or not isinstance(generation_id, str):
-        raise ValueError(f"Unsupported fused manifest schema/generation: {version!r}/{generation_id!r}")
-    for entry in manifest.get("frames", []):
-        if entry.get("status") != "complete":
-            continue
-        frame = _load_completed_frame(entry, manifest_path.parent, generation_id)
-        if frame is None:
-            raise ValueError(f"Frame artifact does not match manifest generation: {entry.get('fused_objects_json')}")
-        frame["frame_ref"] = entry.get("fused_objects_json")
-        yield frame
-
-
 def main() -> None:
     args = build_parser().parse_args()
     episode_dir = Path(args.episode_dir).expanduser().resolve()
@@ -1400,7 +1386,7 @@ def main() -> None:
             else output_path.with_name("object_summary.json")
         )
         object_summary = build_object_summary(
-            iter_manifest_frames(manifest, output_path), result, summary,
+            iter_fused_frames(output_path), result, summary,
             schema_version=FUSED_MANIFEST_SCHEMA_VERSION, generation_id=generation_id,
         )
         object_summary["source_fused_json"] = str(output_path)

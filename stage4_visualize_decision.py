@@ -23,10 +23,9 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PIL import Image, ImageDraw
 
-from geometry_loader import GeometryLoader
+from fused_candidate_io import load_fused_frame, load_fused_manifest, load_object_points
 
 from multiview_candidate_fusion import (
-    iter_manifest_frames,
     load_camera_params,
     load_rlbench_observations,
     parse_csv,
@@ -72,16 +71,6 @@ def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _resolve_frame(
-    fused: Mapping[str, Any],
-    frame_id: str,
-) -> Mapping[str, Any]:
-    for frame in fused.get("frames", []):
-        if str(frame.get("frame_id")) == str(frame_id):
-            return frame
-    raise ValueError(f"frame_id={frame_id!r} not found in fused JSON")
-
-
 def _frame_decision_entries(pred: Mapping[str, Any]) -> list[dict[str, Any]]:
     frame_decisions = pred.get("frame_decisions")
     if isinstance(frame_decisions, list) and frame_decisions:
@@ -120,6 +109,7 @@ def _frame_decision_entries(pred: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 def _draw_decision_overlay(
     background: Image.Image,
+    frame: Mapping[str, Any],
     objects_by_id: Mapping[str, Mapping[str, Any]],
     decisions: Sequence[tuple[str, str]],
     intrinsics: np.ndarray,
@@ -127,7 +117,6 @@ def _draw_decision_overlay(
     point_stride: int,
     point_radius: int,
     mask_alpha: int,
-    geometry_loader: GeometryLoader | None = None,
 ) -> Image.Image:
     image = background.convert("RGBA")
     width, height = image.size
@@ -140,7 +129,7 @@ def _draw_decision_overlay(
         if obj is None:
             continue
         color = ROLE_COLORS[role_name]
-        points = geometry_loader.load_points_world(obj) if geometry_loader else np.asarray(obj.get("points_world", []), dtype=np.float64)
+        points = load_object_points(frame, object_id)
         if len(points) == 0:
             continue
         if point_stride > 1:
@@ -221,9 +210,7 @@ def main() -> None:
     viz_dir = Path(args.viz_dir).expanduser().resolve() if args.viz_dir else fused_path.with_name("viz")
 
     pred = _load_json(pred_path)
-    fused = _load_json(fused_path)
-    fused = {**fused, "frames": list(iter_manifest_frames(fused, fused_path))}
-    geometry_loader = GeometryLoader(fused_path)
+    fused = load_fused_manifest(fused_path)
 
     episode_dir = Path(args.episode_dir).expanduser().resolve() if args.episode_dir else Path(str(fused.get("episode_metadata", {}).get("episode_dir"))).expanduser().resolve()
     camera_params = load_camera_params(Path(args.camera_params_json).expanduser().resolve() if args.camera_params_json else None)
@@ -249,7 +236,7 @@ def main() -> None:
             print(f"[warn] frame_id={frame_id}: decision has neither target_object_id nor reference_object_id; skipping.", file=sys.stderr)
             continue
 
-        frame = _resolve_frame(fused, frame_id)
+        frame = load_fused_frame(fused, frame_id)
         frame_index = frame.get("frame_index")
         objects = frame.get("objects", [])
         objects_by_id = {str(item.get("id")): item for item in objects}
@@ -285,6 +272,7 @@ def main() -> None:
 
             image = _draw_decision_overlay(
                 background,
+                frame,
                 objects_by_id,
                 decisions,
                 params["intrinsics"],
@@ -292,7 +280,6 @@ def main() -> None:
                 args.point_stride,
                 args.point_radius,
                 args.mask_alpha,
-                geometry_loader,
             )
             out_path = output_dir / f"{frame_id}_{camera}_decision.png"
             image.convert("RGB").save(out_path)
