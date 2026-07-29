@@ -88,8 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-hypothesis-diameter-m", type=float, default=0.50,
                         help="Maximum robust (1st--99th percentile) pooled point-cloud diameter after an insertion.")
     parser.add_argument("--max-size-ratio", type=float, default=4.0,
-                        help=("Maximum relative axis-shape ratio after factoring out uniform bbox scale. "
-                              "Thus different-scale boxes for the same object are not rejected."))
+                        help="Maximum non-degenerate axis-wise 3D-box size ratio within a hypothesis.")
     parser.add_argument("--legacy-union-find", action="store_true",
                         help="DEPRECATED compatibility/debug mode: use the old pairwise transitive union-find partition.")
     parser.add_argument(
@@ -542,26 +541,6 @@ def _confidence(obs: Observation3D) -> float:
     return max(obs.role_evidence.values(), default=float(obs.candidate.get("score", 0.0)))
 
 
-def bbox_shape_log_residual(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
-    """Return scale-invariant box-shape residual and estimated uniform scale.
-
-    Different views often reconstruct a tight box and a partial/loose box for
-    the same object.  Raw axis-size ratios would reject an otherwise identical
-    shape solely because one box is uniformly larger.  Centering log ratios by
-    their median separates that nuisance scale from axis-shape disagreement.
-    Degenerate axes are omitted because depth masks commonly produce flat boxes.
-    """
-    sizes_a = np.asarray(a[1] - a[0], dtype=np.float64)
-    sizes_b = np.asarray(b[1] - b[0], dtype=np.float64)
-    valid_axes = (sizes_a >= 1e-3) & (sizes_b >= 1e-3)
-    if not np.any(valid_axes):
-        return 0.0, 1.0
-    log_ratios = np.log(sizes_a[valid_axes] / sizes_b[valid_axes])
-    log_scale = float(np.median(log_ratios))
-    shape_residual = float(np.max(np.abs(log_ratios - log_scale)))
-    return shape_residual, float(np.exp(log_scale))
-
-
 def _hypothesis_is_valid(cluster: Sequence[Observation3D], args: argparse.Namespace) -> bool:
     """Validate the *complete* proposed hypothesis, never merely one supporting edge."""
     if len({obs.camera for obs in cluster}) != len(cluster):
@@ -570,8 +549,11 @@ def _hypothesis_is_valid(cluster: Sequence[Observation3D], args: argparse.Namesp
         for b in cluster[i + 1:]:
             if np.linalg.norm(a.centroid_world - b.centroid_world) > args.cluster_distance_m:
                 return False
-            shape_residual, _ = bbox_shape_log_residual(a.bbox3d_world, b.bbox3d_world)
-            if shape_residual > np.log(args.max_size_ratio):
+            sizes_a = np.maximum(a.bbox3d_world[1] - a.bbox3d_world[0], 1e-6)
+            sizes_b = np.maximum(b.bbox3d_world[1] - b.bbox3d_world[0], 1e-6)
+            # Ignore sub-millimetre axes (flat/partial masks make their ratios meaningless).
+            valid_axes = np.maximum(sizes_a, sizes_b) >= 1e-3
+            if np.any(np.maximum(sizes_a[valid_axes] / sizes_b[valid_axes], sizes_b[valid_axes] / sizes_a[valid_axes]) > args.max_size_ratio):
                 return False
             if args.bbox_iou_threshold > 0 and bbox_iou_3d(a.bbox3d_world, b.bbox3d_world) < args.bbox_iou_threshold:
                 return False
@@ -590,7 +572,9 @@ def _association_cost(obs: Observation3D, cluster: Sequence[Observation3D], args
         return None
     anchor = cluster[0]
     centroid = float(np.linalg.norm(obs.centroid_world - np.median([x.centroid_world for x in cluster], axis=0)))
-    size_residual, _ = bbox_shape_log_residual(obs.bbox3d_world, anchor.bbox3d_world)
+    sizes_a = np.maximum(obs.bbox3d_world[1] - obs.bbox3d_world[0], 1e-6)
+    sizes_b = np.maximum(anchor.bbox3d_world[1] - anchor.bbox3d_world[0], 1e-6)
+    size_residual = float(np.mean(np.abs(np.log(sizes_a / sizes_b))))
     overlap_penalty = 1.0 - bbox_iou_3d(obs.bbox3d_world, anchor.bbox3d_world)
     surface = symmetric_percentile_nearest_distance(obs.points_world, anchor.points_world)
     surface_term = surface / max(args.cluster_distance_m, 1e-9) if np.isfinite(surface) else 1.0

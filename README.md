@@ -102,7 +102,7 @@ ties); remaining cameras use the same confidence-first, name-tiebroken order.
 | `--bbox-iou-threshold` | — | `0.0` (off) | Optional minimum pairwise 3D bbox IoU during full validation. |
 | `--nearest-distance-m` | — | unset | Optional maximum robust symmetric surface distance during validation. |
 | `--max-hypothesis-diameter-m` | — | `0.50` m | Maximum robust pooled point-cloud diameter. |
-| `--max-size-ratio` | — | `4.0` | Maximum axis-shape ratio after removing uniform bbox scale. |
+| `--max-size-ratio` | — | `4.0` | Maximum axis-wise box-size ratio. |
 | `--legacy-union-find` | — | off | Deprecated one-release debug path for old transitive pairwise clustering. |
 | `--track-distance-m` | — | `0.15` m | Maximum inter-frame centroid movement for retaining an object ID. |
 | `--min-fused-points` | `MIN_FUSED_POINTS` | `0` (off) | Drop fused objects with too few total points. |
@@ -118,9 +118,6 @@ per-camera Hungarian assignment includes explicit dummy columns, so an
 incompatible observation creates a new hypothesis instead of being forced into
 one; consequently every hypothesis has at most one observation per camera.
 Appearance embeddings are intentionally not part of this geometry-only MVP.
-Box-size consistency is scale-invariant: the validator subtracts the median
-log-size offset before comparing axes, so tight and loose bboxes for the same
-object can associate while genuinely incompatible box shapes are still gated.
 `object_summary.json` is generated
 automatically when Stage 4 is enabled.
 
