@@ -373,3 +373,21 @@ Each object reports `role_evidence` separately, with probabilities, score mass,
 supporting prompts, cameras, and frames for target, reference, and interaction-part
 evidence. The original candidate role and prompt remain available in observation
 provenance for backward compatibility.
+
+### Canonical per-view observations
+
+SAM outputs are still generated independently for every role and prompt
+variant, but are canonicalized before `candidates.json` is written. Masks are
+associated across roles using strong mask IoU (`--mask-nms-iou`), smaller-mask
+coverage (`--canonical-containment`), and optionally bbox overlap
+(`--canonical-bbox-iou`). Bbox overlap is never sufficient without at least
+50% smaller-mask coverage, so adjacent instances are not merged. Ambiguous masks that would
+bridge two observations remain separate.
+
+Each output row has one `canonical_observation_id`, one representative mask,
+complete `prompt_provenance`, and per-role `role_scores`. Role scores use
+**noisy-OR** (`1 - product(1 - score)`) and retain `raw_scores` for auditing.
+The `canonicalization.suppressed_candidates` diagnostic records collapsed and
+top-k-suppressed inputs. Multi-view fusion defensively canonicalizes legacy
+role-prefixed JSON and enforces a single observation per camera in every fused
+object; rejected same-camera insertions are recorded in frame diagnostics.
