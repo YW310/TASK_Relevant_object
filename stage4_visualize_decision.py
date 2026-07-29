@@ -23,6 +23,8 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PIL import Image, ImageDraw
 
+from geometry_loader import GeometryLoader
+
 from multiview_candidate_fusion import (
     load_camera_params,
     load_rlbench_observations,
@@ -124,6 +126,7 @@ def _draw_decision_overlay(
     point_stride: int,
     point_radius: int,
     mask_alpha: int,
+    geometry_loader: GeometryLoader | None = None,
 ) -> Image.Image:
     image = background.convert("RGBA")
     width, height = image.size
@@ -136,7 +139,7 @@ def _draw_decision_overlay(
         if obj is None:
             continue
         color = ROLE_COLORS[role_name]
-        points = np.asarray(obj.get("points_world", []), dtype=np.float64)
+        points = geometry_loader.load_points_world(obj) if geometry_loader else np.asarray(obj.get("points_world", []), dtype=np.float64)
         if len(points) == 0:
             continue
         if point_stride > 1:
@@ -218,6 +221,7 @@ def main() -> None:
 
     pred = _load_json(pred_path)
     fused = _load_json(fused_path)
+    geometry_loader = GeometryLoader(fused_path)
 
     episode_dir = Path(args.episode_dir).expanduser().resolve() if args.episode_dir else Path(str(fused.get("episode_dir"))).expanduser().resolve()
     camera_params = load_camera_params(Path(args.camera_params_json).expanduser().resolve() if args.camera_params_json else None)
@@ -286,6 +290,7 @@ def main() -> None:
                 args.point_stride,
                 args.point_radius,
                 args.mask_alpha,
+                geometry_loader,
             )
             out_path = output_dir / f"{frame_id}_{camera}_decision.png"
             image.convert("RGB").save(out_path)
@@ -321,6 +326,7 @@ def main() -> None:
     }
     meta_path = output_dir / "decision_visualization.json"
     meta_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    geometry_loader.close()
     print(
         json.dumps(
             {

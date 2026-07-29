@@ -773,7 +773,7 @@ def observation_to_json(obs: Observation3D) -> dict[str, Any]:
         "mask_area": int(c.get("mask_area_pixels", 0)),
         "sam_score": c.get("score"),
         "mask_bbox_xyxy": c.get("mask_bbox_xyxy"),
-        "points_world": obs.points_world.tolist(),
+        "_points_world": obs.points_world,
         "centroid_world": obs.centroid_world.tolist(),
         "bbox3d_world": obs.bbox3d_world.tolist(),
     }
@@ -902,7 +902,7 @@ def build_object_summary(
                     "frame_index": frame_index,
                     "centroid_world": obj["centroid_world"],
                     "bbox3d_world": obj["bbox3d_world"],
-                    "point_count": len(obj.get("points_world", [])),
+                    "point_count": int(obj.get("point_count", len(obj.get("points_world", [])))),
                     "visible_camera": obj.get("visible_camera", []),
                     "camera_count": len(obj.get("visible_camera", [])),
                     "mask_area": int(obj.get("mask_area", 0)),
@@ -989,7 +989,7 @@ def build_object_summary(
                     "bbox3d_world": obj.get("bbox3d_world"),
                     "visible_camera": obj.get("visible_camera", []),
                     "camera_count": len(obj.get("visible_camera", [])),
-                    "point_count": len(obj.get("points_world", [])),
+                    "point_count": int(obj.get("point_count", len(obj.get("points_world", [])))),
                     "mask_area": obj.get("mask_area"),
                     "sam_score": obj.get("sam_score"),
                     "observation_count": len(obj.get("observations", [])),
@@ -1105,7 +1105,7 @@ def assign_object_ids(
         objects.append({
             "id": f"O{index}",
             "role_evidence": aggregate_role_evidence(cluster, frame_id),
-            "points_world": all_points.tolist(),
+            "_points_world": all_points,
             "centroid_world": centroid.tolist(),
             "bbox3d_world": np.stack([all_points.min(axis=0), all_points.max(axis=0)]).tolist(),
             "visible_camera": sorted({o.camera for o in cluster}),
@@ -1116,6 +1116,53 @@ def assign_object_ids(
         tracks.append({"index": index, "centroid": centroid.tolist()})
     objects.sort(key=lambda obj: int(str(obj["id"])[1:]))
     return objects, {"tracks": tracks, "next_object_index": next_object_index}
+
+
+def _geometry_segment(value: Any) -> str:
+    """Make one stable, filesystem/key-safe geometry path segment."""
+    text = str(value) if value is not None else "unknown"
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in text) or "unknown"
+
+
+def save_frame_geometry(frame: Mapping[str, Any], output_path: Path) -> None:
+    """Move transient point arrays from a fused frame into a compressed NPZ."""
+    frame_key = _geometry_segment(frame.get("frame_id", frame.get("frame_index", "frame")))
+    relative_path = Path("frames") / frame_key / "fused_geometry.npz"
+    archive_path = output_path.parent / relative_path
+    arrays: dict[str, np.ndarray] = {}
+
+    for obj in frame.get("objects", []):
+        object_id = _geometry_segment(obj.get("id"))
+        object_key = f"{object_id}/points_world"
+        points = np.asarray(obj.pop("_points_world"), dtype=np.float32)
+        arrays[object_key] = points
+        obj.update({
+            "geometry_path": relative_path.as_posix(),
+            "points_key": object_key,
+            "point_count": int(len(points)),
+        })
+        used_keys: set[str] = set()
+        for observation_index, obs in enumerate(obj.get("observations", []), start=1):
+            camera = _geometry_segment(obs.get("camera"))
+            candidate = _geometry_segment(obs.get("candidate_id") or obs.get("observation_id") or f"obs{observation_index}")
+            stem = f"{object_id}/{camera}/{candidate}"
+            unique_stem = stem
+            suffix = 2
+            while unique_stem in used_keys:
+                unique_stem = f"{stem}_{suffix}"
+                suffix += 1
+            used_keys.add(unique_stem)
+            points_key = f"{unique_stem}/points_world"
+            obs_points = np.asarray(obs.pop("_points_world"), dtype=np.float32)
+            arrays[points_key] = obs_points
+            obs.update({
+                "geometry_path": relative_path.as_posix(),
+                "points_key": points_key,
+                "point_count": int(len(obs_points)),
+            })
+
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(archive_path, **arrays)
 
 
 def fuse_frame(
@@ -1198,6 +1245,8 @@ def main() -> None:
         fuse_frame(frame, episode_dir, camera_params, rlbench_observations, cameras, args, track_state=track_state)
         for frame in summary.get("frames", [])
     ]
+    for frame in frames:
+        save_frame_geometry(frame, output_path)
     result = {
         "episode_dir": str(episode_dir),
         "source_candidates_json": str(candidates_path),
