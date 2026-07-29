@@ -34,10 +34,9 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PIL import Image, ImageDraw
 
-from geometry_loader import GeometryLoader
+from fused_candidate_io import iter_fused_frames, load_fused_manifest, load_object_points
 
 from multiview_candidate_fusion import (
-    iter_manifest_frames,
     load_camera_params,
     load_rlbench_observations,
     parse_csv,
@@ -96,6 +95,7 @@ def project_points(points_world: np.ndarray, intrinsics: np.ndarray, extrinsics:
 
 def draw_overlay(
     rgb_path: Path,
+    frame: Mapping[str, Any],
     objects: Sequence[Mapping[str, Any]],
     intrinsics: np.ndarray,
     extrinsics: np.ndarray,
@@ -103,7 +103,6 @@ def draw_overlay(
     point_radius: int,
     out_path: Path,
     mask_alpha: int = 80,
-    geometry_loader: GeometryLoader | None = None,
 ) -> None:
     image = Image.open(rgb_path).convert("RGBA")
     width, height = image.size
@@ -113,7 +112,7 @@ def draw_overlay(
 
     for index, obj in enumerate(objects):
         color = OBJECT_COLORS[index % len(OBJECT_COLORS)]
-        points = geometry_loader.load_points_world(obj) if geometry_loader else np.asarray(obj.get("points_world", []), dtype=np.float64)
+        points = load_object_points(frame, obj["id"])
         if len(points) == 0:
             continue
         if point_stride > 1:
@@ -159,7 +158,7 @@ def draw_overlay(
     image.convert("RGB").save(out_path)
 
 
-def sanity_report_for_object(obj: Mapping[str, Any]) -> dict[str, Any]:
+def sanity_report_for_object(frame: Mapping[str, Any], obj: Mapping[str, Any]) -> dict[str, Any]:
     per_camera_centroids: dict[str, list[np.ndarray]] = {}
     for obs in obj.get("observations", []):
         per_camera_centroids.setdefault(obs["camera"], []).append(np.asarray(obs["centroid_world"], dtype=np.float64))
@@ -176,7 +175,7 @@ def sanity_report_for_object(obj: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "id": obj["id"],
         "role_evidence": obj.get("role_evidence", {}),
-        "num_points": int(obj.get("point_count", len(obj.get("points_world", [])))),
+        "num_points": int(len(load_object_points(frame, obj["id"]))),
         "centroid_world": obj["centroid_world"],
         "bbox_size_m": (bbox[1] - bbox[0]).tolist(),
         "visible_camera": obj.get("visible_camera"),
@@ -208,7 +207,7 @@ def set_axes_equal_3d(ax, points: np.ndarray) -> None:
         pass  # older matplotlib without set_box_aspect; limits above still help.
 
 
-def plot_pointcloud(objects: Sequence[Mapping[str, Any]], out_path: Path, geometry_loader: GeometryLoader | None = None) -> None:
+def plot_pointcloud(frame: Mapping[str, Any], objects: Sequence[Mapping[str, Any]], out_path: Path) -> None:
     """Render the fused point cloud from several viewing angles into one PNG.
 
     A single default-angle 3D scatter is easy to misread (e.g. a flat object
@@ -223,7 +222,7 @@ def plot_pointcloud(objects: Sequence[Mapping[str, Any]], out_path: Path, geomet
 
     all_points: list[np.ndarray] = []
     for obj in objects:
-        points = geometry_loader.load_points_world(obj) if geometry_loader else np.asarray(obj.get("points_world", []), dtype=np.float64)
+        points = load_object_points(frame, obj["id"])
         if len(points) > 0:
             all_points.append(points)
     combined_points = np.concatenate(all_points, axis=0) if all_points else np.empty((0, 3))
@@ -243,7 +242,7 @@ def plot_pointcloud(objects: Sequence[Mapping[str, Any]], out_path: Path, geomet
     for view_index, (title, elev, azim) in enumerate(views):
         ax = fig.add_subplot(rows, cols, view_index + 1, projection="3d")
         for index, obj in enumerate(objects):
-            points = geometry_loader.load_points_world(obj) if geometry_loader else np.asarray(obj.get("points_world", []), dtype=np.float64)
+            points = load_object_points(frame, obj["id"])
             if len(points) == 0:
                 continue
             color = np.array(OBJECT_COLORS[index % len(OBJECT_COLORS)]) / 255.0
@@ -276,8 +275,7 @@ def plot_pointcloud(objects: Sequence[Mapping[str, Any]], out_path: Path, geomet
 def main() -> None:
     args = build_parser().parse_args()
     fused_path = Path(args.fused_json).expanduser().resolve()
-    data = json.loads(fused_path.read_text(encoding="utf-8"))
-    geometry_loader = GeometryLoader(fused_path)
+    data = load_fused_manifest(fused_path)
 
     episode_dir = Path(args.episode_dir).expanduser().resolve() if args.episode_dir else Path(data["episode_metadata"]["episode_dir"])
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else fused_path.with_name("viz")
@@ -290,7 +288,7 @@ def main() -> None:
     frame_id_filter = parse_csv(args.frame_ids)
     cameras_filter = parse_csv(args.cameras)
 
-    frames = list(iter_manifest_frames(data, fused_path))
+    frames = list(iter_fused_frames(fused_path))
     if frame_id_filter is not None:
         frames = [frame for frame in frames if str(frame["frame_id"]) in frame_id_filter]
     if args.max_frames is not None:
@@ -326,6 +324,7 @@ def main() -> None:
             out_path = output_dir / f"{frame_id}_{camera}_reproj.png"
             draw_overlay(
                 rgb_path,
+                frame,
                 objects,
                 params["intrinsics"],
                 params["extrinsics"],
@@ -333,24 +332,22 @@ def main() -> None:
                 args.point_radius,
                 out_path,
                 mask_alpha=args.mask_alpha,
-                geometry_loader=geometry_loader,
             )
 
         if not args.skip_pointcloud:
             try:
-                plot_pointcloud(objects, output_dir / f"{frame_id}_pointcloud.png", geometry_loader)
+                plot_pointcloud(frame, objects, output_dir / f"{frame_id}_pointcloud.png")
             except ImportError:
                 print("[warn] matplotlib not installed; skipping 3D point cloud plot (pip install matplotlib to enable).", file=sys.stderr)
 
         report["frames"].append({
             "frame_id": frame_id,
             "frame_index": frame_index,
-            "objects": [sanity_report_for_object(obj) for obj in objects],
+            "objects": [sanity_report_for_object(frame, obj) for obj in objects],
         })
 
     report_path = output_dir / "sanity_report.json"
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    geometry_loader.close()
     print(json.dumps({"output_dir": str(output_dir), "sanity_report": str(report_path), "frames_rendered": len(report["frames"])}, ensure_ascii=False, indent=2))
 
 
