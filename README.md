@@ -82,8 +82,10 @@ grids, and numbered overlays are stored below `frames/<frame>/<camera>/`.
 
 `multiview_candidate_fusion.py` intersects every candidate mask with its depth
 image, uses camera intrinsics/extrinsics to lift pixels into world-space point
-clouds, clusters observations believed to represent the same physical object,
-and tracks the resulting role-neutral IDs (`O1`, `O2`, …) across frames.
+clouds, then performs deterministic anchor-camera assignment and tracks the
+resulting role-neutral IDs (`O1`, `O2`, …) across frames. The anchor camera is
+the camera containing the highest-confidence observation (camera name breaks
+ties); remaining cameras use the same confidence-first, name-tiebroken order.
 
 | Python argument | Pipeline variable | Default | Purpose |
 | --- | --- | --- | --- |
@@ -96,18 +98,27 @@ and tracks the resulting role-neutral IDs (`O1`, `O2`, …) across frames.
 | `--depth-mode` | — | `auto` | Decode `auto`, packed `rlbench-rgb`, or single-channel `raw` depth. |
 | `--depth-scale` | — | `1.0` | Divisor for raw/single-channel depth values. |
 | `--max-points-per-candidate` | — | `4096` | Bound point-cloud size and memory use per observation. |
-| `--cluster-distance-m` | `CLUSTER_DISTANCE_M` | `0.03` m | Merge observations with nearby centroids. |
-| `--bbox-iou-threshold` | — | `0.0` (off) | Also merge when 3D bbox IoU reaches this threshold. |
-| `--nearest-distance-m` | — | unset | Also merge when point clouds approach within this distance. |
+| `--cluster-distance-m` | `CLUSTER_DISTANCE_M` | `0.03` m | Maximum pairwise centroid distance in a completed hypothesis. |
+| `--bbox-iou-threshold` | — | `0.0` (off) | Optional minimum pairwise 3D bbox IoU during full validation. |
+| `--nearest-distance-m` | — | unset | Optional maximum robust symmetric surface distance during validation. |
+| `--max-hypothesis-diameter-m` | — | `0.50` m | Maximum robust pooled point-cloud diameter. |
+| `--max-size-ratio` | — | `4.0` | Maximum axis-wise box-size ratio. |
+| `--legacy-union-find` | — | off | Deprecated one-release debug path for old transitive pairwise clustering. |
 | `--track-distance-m` | — | `0.15` m | Maximum inter-frame centroid movement for retaining an object ID. |
 | `--min-fused-points` | `MIN_FUSED_POINTS` | `0` (off) | Drop fused objects with too few total points. |
 | `--min-bbox-diagonal-m` | `MIN_BBOX_DIAGONAL_M` | `0.0` (off) | Drop spatially tiny 3D boxes. |
 | `--save-object-summary` | `SAVE_OBJECT_SUMMARY` | off | Export trajectories and decision-ready object evidence. |
 | `--object-summary-json` | `OBJECT_SUMMARY_JSON` | `object_summary.json` | Override the summary path. |
 
-The centroid, bbox-IoU, and nearest-point tests are alternative merge signals
-(logical OR), not cumulative requirements. Tighten them carefully: overly
-large values can merge neighboring objects. `object_summary.json` is generated
+Pairwise centroid, bbox-IoU, and nearest-point tests remain alternative cheap
+compatibility gates only. They never define the final transitive partition.
+Every insertion is jointly validated against the complete hypothesis for
+centroid spread, robust diameter, box size, and enabled IoU/surface limits. A
+per-camera Hungarian assignment includes explicit dummy columns, so an
+incompatible observation creates a new hypothesis instead of being forced into
+one; consequently every hypothesis has at most one observation per camera.
+Appearance embeddings are intentionally not part of this geometry-only MVP.
+`object_summary.json` is generated
 automatically when Stage 4 is enabled.
 
 ### Stage 3: fused-object sanity visualization
@@ -168,7 +179,10 @@ object.
 `stage4_visualize_decision.py` joins `object_predictions.json` with
 `frame_fused_candidates.json`, highlights selected target/reference points on
 the camera views, and writes `decision_visualization.json` plus images under
-`viz_decision/`.
+`viz_decision/`. Labels use role-specific IDs (`T1`, `T2`, … for targets and
+`R1`, `R2`, … for references) rather than internal fused IDs (`O1`, `O2`, …),
+and their boxes, backgrounds, text, and centroid marks are translucently
+composited so scene content remains visible.
 
 Its required inputs are `--object-predictions-json` and `--fused-json`.
 `--episode-dir`, `--output-dir`, `--viz-dir`, `--cameras`,
