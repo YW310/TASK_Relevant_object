@@ -12,6 +12,7 @@ geometric validation. Pairwise compatibility is only an assignment gate.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import pickle
 import sys
@@ -41,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--episode-dir", required=True, help="RLBench/RLBench-exported episode directory.")
     parser.add_argument("--candidates-json", required=True, help="Path to episode_candidates.json.")
-    parser.add_argument("--output-json", default=None, help="Default: frame_fused_candidates.json next to episode_candidates.json.")
+    parser.add_argument("--output-json", default=None, help="Default: <episode-dir>/frame_fused_candidates.json (a lightweight per-frame manifest).")
     parser.add_argument("--cameras", default=None, help="Optional comma-separated camera subset.")
     parser.add_argument("--camera-params-json", default=None, help="Optional camera parameter JSON overriding auto-discovery.")
     parser.add_argument("--rlbench-low-dim-obs", default=None, help="Optional path to RLBench low_dim_obs.pkl. Default: <episode-dir>/low_dim_obs.pkl.")
@@ -1229,27 +1230,12 @@ def fuse_frame(
                             "attempted_same_camera_cluster_insertions": same_camera_diagnostics}}
 
 
-def main() -> None:
-    args = build_parser().parse_args()
-    episode_dir = Path(args.episode_dir).expanduser().resolve()
-    candidates_path = Path(args.candidates_json).expanduser().resolve()
-    output_path = Path(args.output_json).expanduser().resolve() if args.output_json else candidates_path.with_name("frame_fused_candidates.json")
-    summary = json.loads(candidates_path.read_text(encoding="utf-8"))
-    camera_params = load_camera_params(Path(args.camera_params_json).expanduser().resolve() if args.camera_params_json else None)
-    rlbench_low_dim_override = Path(args.rlbench_low_dim_obs).expanduser().resolve() if args.rlbench_low_dim_obs else None
-    rlbench_low_dim_path = resolve_rlbench_low_dim_path(episode_dir, rlbench_low_dim_override)
-    rlbench_observations = load_rlbench_observations(episode_dir, rlbench_low_dim_override)
-    cameras = parse_csv(args.cameras)
-    track_state: dict[str, Any] = {}
-    frames = [
-        fuse_frame(frame, episode_dir, camera_params, rlbench_observations, cameras, args, track_state=track_state)
-        for frame in summary.get("frames", [])
-    ]
-    for frame in frames:
-        save_frame_geometry(frame, output_path)
-    result = {
-        "episode_dir": str(episode_dir),
-        "source_candidates_json": str(candidates_path),
+FUSED_MANIFEST_SCHEMA_VERSION = 2
+
+
+def _fusion_parameters(args: argparse.Namespace, rlbench_low_dim_path: Path, has_rlbench_observations: bool) -> dict[str, Any]:
+    """Return the parameters that determine the per-frame fusion artifacts."""
+    return {
         "cluster_distance_m": args.cluster_distance_m,
         "bbox_iou_threshold": args.bbox_iou_threshold,
         "nearest_distance_m": args.nearest_distance_m,
@@ -1258,12 +1244,139 @@ def main() -> None:
         "min_bbox_diagonal_m": args.min_bbox_diagonal_m,
         "max_hypothesis_diameter_m": args.max_hypothesis_diameter_m,
         "max_size_ratio": args.max_size_ratio,
+        "max_points_per_candidate": args.max_points_per_candidate,
+        "depth_mode": args.depth_mode,
+        "depth_scale": args.depth_scale,
+        "cameras": list(parse_csv(args.cameras) or []),
         "fusion_algorithm": "legacy_pairwise_union_find" if args.legacy_union_find else "anchor_gated_assignment_v1",
-        "rlbench_low_dim_obs": str(rlbench_low_dim_path) if rlbench_observations else None,
+        "rlbench_low_dim_obs": str(rlbench_low_dim_path) if has_rlbench_observations else None,
         "invert_rlbench_extrinsics": bool(args.invert_rlbench_extrinsics),
-        "frames": frames,
     }
-    atomic_json_dump(result, output_path)
+
+
+def _restore_track_state(frame: Mapping[str, Any], track_state: dict[str, Any]) -> None:
+    """Advance tracking from a completed frame when resuming a partial run."""
+    tracks = []
+    next_object_index = int(track_state.get("next_object_index", 0))
+    for obj in frame.get("objects", []):
+        object_id = str(obj.get("id", ""))
+        if not (object_id.startswith("O") and object_id[1:].isdigit()):
+            continue
+        index = int(object_id[1:])
+        next_object_index = max(next_object_index, index)
+        tracks.append({"index": index, "centroid": obj["centroid_world"]})
+    track_state.update({"tracks": tracks, "next_object_index": next_object_index})
+
+
+def _load_completed_frame(entry: Mapping[str, Any], output_dir: Path) -> dict[str, Any] | None:
+    """Validate and load a resumable frame artifact, or return ``None``."""
+    if entry.get("status") != "complete":
+        return None
+    path = output_dir / str(entry["fused_objects_json"])
+    try:
+        frame = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if str(frame.get("frame_id")) != str(entry.get("frame_id")):
+        return None
+    return frame
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    episode_dir = Path(args.episode_dir).expanduser().resolve()
+    candidates_path = Path(args.candidates_json).expanduser().resolve()
+    output_path = Path(args.output_json).expanduser().resolve() if args.output_json else episode_dir / "frame_fused_candidates.json"
+    summary = json.loads(candidates_path.read_text(encoding="utf-8"))
+    camera_params = load_camera_params(Path(args.camera_params_json).expanduser().resolve() if args.camera_params_json else None)
+    rlbench_low_dim_override = Path(args.rlbench_low_dim_obs).expanduser().resolve() if args.rlbench_low_dim_obs else None
+    rlbench_low_dim_path = resolve_rlbench_low_dim_path(episode_dir, rlbench_low_dim_override)
+    rlbench_observations = load_rlbench_observations(episode_dir, rlbench_low_dim_override)
+    cameras = parse_csv(args.cameras)
+    source_frames = list(summary.get("frames", []))
+    fusion_parameters = _fusion_parameters(args, rlbench_low_dim_path, bool(rlbench_observations))
+    old_manifest: Mapping[str, Any] = {}
+    try:
+        old_manifest = json.loads(output_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
+    may_resume = (
+        old_manifest.get("schema_version") == FUSED_MANIFEST_SCHEMA_VERSION
+        and old_manifest.get("episode_metadata", {}).get("source_candidates_json") == str(candidates_path)
+        and old_manifest.get("fusion_parameters") == fusion_parameters
+    )
+    old_entries = {
+        str(entry.get("frame_id")): entry
+        for entry in old_manifest.get("frames", [])
+    } if may_resume else {}
+
+    entries: list[dict[str, Any]] = []
+    seen_frame_keys: set[str] = set()
+    for frame in source_frames:
+        frame_id = str(frame["frame_id"])
+        frame_key = _geometry_segment(frame_id)
+        if frame_key in seen_frame_keys:
+            raise ValueError(f"Frame ids produce duplicate filesystem key: {frame_key!r}")
+        seen_frame_keys.add(frame_key)
+        relative_path = (Path("frames") / frame_key / "fused_objects.json").as_posix()
+        old_entry = old_entries.get(frame_id, {})
+        reusable = dict(old_entry) if old_entry.get("fused_objects_json") == relative_path else {}
+        entries.append({
+            "frame_id": frame_id,
+            "frame_index": frame.get("frame_index"),
+            "fused_objects_json": relative_path,
+            "object_count": int(reusable.get("object_count", 0)),
+            "status": reusable.get("status", "pending"),
+        })
+
+    manifest: dict[str, Any] = {
+        "schema_version": FUSED_MANIFEST_SCHEMA_VERSION,
+        "episode_metadata": {
+            "episode_dir": str(episode_dir),
+            "source_candidates_json": str(candidates_path),
+            "instruction": summary.get("instruction"),
+            "role_spec": summary.get("role_spec"),
+        },
+        "fusion_parameters": fusion_parameters,
+        "frame_order": [entry["frame_id"] for entry in entries],
+        "frames": entries,
+    }
+    atomic_json_dump(manifest, output_path)
+
+    track_state: dict[str, Any] = {}
+    frames: list[dict[str, Any]] = []
+    failures = 0
+    for source_frame, entry in zip(source_frames, entries):
+        completed = _load_completed_frame(entry, output_path.parent)
+        if completed is not None:
+            frames.append(completed)
+            _restore_track_state(completed, track_state)
+            continue
+        entry.update({"status": "pending", "object_count": 0})
+        atomic_json_dump(manifest, output_path)
+        previous_track_state = copy.deepcopy(track_state)
+        try:
+            fused_frame = fuse_frame(
+                source_frame, episode_dir, camera_params, rlbench_observations,
+                cameras, args, track_state=track_state,
+            )
+            save_frame_geometry(fused_frame, output_path)
+            atomic_json_dump(fused_frame, output_path.parent / entry["fused_objects_json"])
+        except Exception as exc:
+            track_state.clear()
+            track_state.update(previous_track_state)
+            entry["status"] = "failed"
+            failures += 1
+            atomic_json_dump(manifest, output_path)
+            print(f"[error] frame_id={entry['frame_id']}: {exc}", file=sys.stderr)
+            continue
+        entry.update({"status": "complete", "object_count": len(fused_frame.get("objects", []))})
+        frames.append(fused_frame)
+        atomic_json_dump(manifest, output_path)
+
+    # Keep the legacy-shaped context private to the optional summary builder;
+    # the persisted manifest remains deliberately lightweight.
+    result = {"episode_dir": str(episode_dir), "source_candidates_json": str(candidates_path), **fusion_parameters}
 
     outputs = {"output_json": str(output_path), "frames": len(frames)}
     if args.save_object_summary or args.object_summary_json:
@@ -1277,7 +1390,10 @@ def main() -> None:
         atomic_json_dump(object_summary, object_summary_path)
         outputs["object_summary_json"] = str(object_summary_path)
 
+    outputs["failed_frames"] = failures
     print(json.dumps(outputs, ensure_ascii=False, indent=2))
+    if failures:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
