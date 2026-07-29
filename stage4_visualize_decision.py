@@ -315,7 +315,6 @@ def main() -> None:
     }
     meta_path = output_dir / "decision_visualization.json"
     meta_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
-    geometry_loader.close()
     print(
         json.dumps(
             {
