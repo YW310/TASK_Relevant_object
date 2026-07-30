@@ -69,6 +69,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--point-stride", type=int, default=4, help="Subsample points_world by this stride before rendering.")
     parser.add_argument("--point-radius", type=int, default=2, help="Marker radius for highlighted decision points.")
     parser.add_argument("--mask-alpha", type=int, default=90, help="Alpha (0-255) for highlighted translucent point masks.")
+    parser.add_argument("--box-width", type=int, default=1, help="Decision/object bbox line width in pixels.")
+    parser.add_argument(
+        "--annotation-alpha",
+        type=int,
+        default=150,
+        help="Alpha (0-255) for bbox, centroid, and text annotations.",
+    )
     return parser
 
 
@@ -122,10 +129,15 @@ def _draw_decision_overlay(
     point_stride: int,
     point_radius: int,
     mask_alpha: int,
+    box_width: int = 1,
+    annotation_alpha: int = 150,
 ) -> Image.Image:
-    """Render all fused objects once, replacing selected O-labels with T/R labels."""
+    """Render objects once with thin, alpha-composited annotations."""
     image = background.convert("RGBA")
     width, height = image.size
+    mask_alpha = max(0, min(255, int(mask_alpha)))
+    annotation_alpha = max(0, min(255, int(annotation_alpha)))
+    box_width = max(1, int(box_width))
     mask_layer = np.zeros((height, width, 4), dtype=np.uint8)
     boxes: list[tuple[tuple[int, int, int, int], tuple[int, int, int], bool]] = []
     labels: list[tuple[float, float, str, tuple[int, int, int], bool]] = []
@@ -173,26 +185,31 @@ def _draw_decision_overlay(
         labels.append((float(cu), float(cv), label, color, selected))
 
     image = Image.alpha_composite(image, Image.fromarray(mask_layer, mode="RGBA"))
-    draw = ImageDraw.Draw(image, "RGBA")
+    # Draw onto a transparent layer first. Drawing alpha-valued colors directly
+    # onto an RGBA image and then converting to RGB would discard transparency.
+    annotation_layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(annotation_layer, "RGBA")
     for (u_min, v_min, u_max, v_max), color, selected in boxes:
+        alpha = annotation_alpha if selected else min(annotation_alpha, 105)
         draw.rectangle(
             [u_min, v_min, u_max, v_max],
-            outline=(*color, 255),
-            width=3 if selected else 2,
+            outline=(*color, alpha),
+            width=box_width,
         )
     for cu, cv, label, color, selected in labels:
         radius = 2.5 if selected else 1.25
+        alpha = annotation_alpha if selected else min(annotation_alpha, 105)
         draw.ellipse(
             [cu - radius, cv - radius, cu + radius, cv + radius],
-            fill=(*color, 255) if selected else None,
-            outline=(255, 255, 255, 255),
+            fill=(*color, alpha) if selected else None,
+            outline=(255, 255, 255, alpha),
             width=1,
         )
         # Draw only the replacement label. No filled label rectangle is used,
         # avoiding the large translucent block that obscured small RLBench objects.
-        draw.text((cu + 5, cv - 7), label, fill=(*color, 255))
+        draw.text((cu + 5, cv - 7), label, fill=(*color, alpha))
 
-    return image
+    return Image.alpha_composite(image, annotation_layer)
 
 
 def _background_image(
@@ -300,6 +317,8 @@ def main() -> None:
                 args.point_stride,
                 args.point_radius,
                 args.mask_alpha,
+                args.box_width,
+                args.annotation_alpha,
             )
             out_path = output_dir / f"{frame_id}_{camera}_decision.png"
             image.convert("RGB").save(out_path)

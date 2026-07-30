@@ -57,3 +57,9 @@ def test_decision_label_does_not_draw_old_translucent_background_block():
 
     # The old implementation filled x=20..100, y=2..20 behind the label.
     assert image.getpixel((80, 10)) == (240, 240, 240, 255)
+    # The bbox is one pixel wide by default and is genuinely alpha-composited.
+    assert image.getpixel((30, 39)) == (240, 240, 240, 255)
+    bbox_pixel = image.getpixel((30, 40))
+    assert bbox_pixel != (240, 240, 240, 255)
+    assert bbox_pixel != (255, 80, 80, 255)
+    assert bbox_pixel[3] == 255

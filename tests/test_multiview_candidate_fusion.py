@@ -7,6 +7,7 @@ from multiview_candidate_fusion import (
     Observation3D,
     assign_object_ids,
     cluster_observations,
+    filter_small_clusters,
     frame_index_from_frame,
 )
 
@@ -104,6 +105,60 @@ class SourceFrameIndexTest(unittest.TestCase):
 
     def test_non_numeric_frame_id_falls_back_to_frame_index(self) -> None:
         self.assertEqual(2, frame_index_from_frame({"frame_id": "keyframe", "frame_index": 2}))
+
+
+class CentroidCloudConsistencyTest(unittest.TestCase):
+    def test_large_empty_gap_around_centroid_drops_cluster(self) -> None:
+        bad = _observation(
+            "front:bad",
+            "front",
+            [[-0.05, 0.0, 0.0], [0.05, 0.0, 0.0]],
+        )
+        bad.points_world = np.asarray(
+            [[-0.05, 0.0, 0.0], [0.05, 0.0, 0.0]],
+            dtype=np.float64,
+        )
+        bad.centroid_world = bad.points_world.mean(axis=0)
+
+        good = _observation(
+            "front:good",
+            "front",
+            [[0.0, 0.0, 0.0], [0.01, 0.01, 0.01]],
+        )
+        diagnostics = []
+        args = SimpleNamespace(
+            min_fused_points=0,
+            min_bbox_diagonal_m=0.0,
+            max_centroid_to_cloud_distance_m=0.02,
+            _filtered_cluster_diagnostics=diagnostics,
+        )
+
+        kept = filter_small_clusters([[bad], [good]], args)
+
+        self.assertEqual(1, len(kept))
+        self.assertIs(good, kept[0][0])
+        self.assertEqual("max_centroid_to_cloud_distance_m", diagnostics[0]["reason"])
+        self.assertAlmostEqual(0.05, diagnostics[0]["centroid_to_cloud_distance_m"])
+
+    def test_centroid_distance_filter_can_be_disabled(self) -> None:
+        candidate = _observation(
+            "front:split",
+            "front",
+            [[-0.05, 0.0, 0.0], [0.05, 0.0, 0.0]],
+        )
+        candidate.points_world = np.asarray(
+            [[-0.05, 0.0, 0.0], [0.05, 0.0, 0.0]],
+            dtype=np.float64,
+        )
+        args = SimpleNamespace(
+            min_fused_points=0,
+            min_bbox_diagonal_m=0.0,
+            max_centroid_to_cloud_distance_m=0.0,
+        )
+
+        kept = filter_small_clusters([[candidate]], args)
+        self.assertEqual(1, len(kept))
+        self.assertIs(candidate, kept[0][0])
 
 
 if __name__ == "__main__":

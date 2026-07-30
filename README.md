@@ -109,6 +109,7 @@ ties); remaining cameras use the same confidence-first, name-tiebroken order.
 | `--track-max-size-ratio` | `TRACK_MAX_SIZE_RATIO` | `2.5` | Reject implausible temporal matches whose 3D bbox size changes too much. |
 | `--min-fused-points` | `MIN_FUSED_POINTS` | `0` (off) | Drop fused objects with too few total points. |
 | `--min-bbox-diagonal-m` | `MIN_BBOX_DIAGONAL_M` | `0.0` (off) | Drop spatially tiny 3D boxes. |
+| `--max-centroid-to-cloud-distance-m` | `MAX_CENTROID_TO_CLOUD_DISTANCE_M` | `0.02` m | Drop a fused object whose centroid is farther than this from every cloud point, indicating a split or contaminated cloud; `<=0` disables it. |
 | `--save-object-summary` | `SAVE_OBJECT_SUMMARY` | off | Export trajectories and decision-ready object evidence. |
 | `--object-summary-json` | `OBJECT_SUMMARY_JSON` | `object_summary.json` | Override the summary path. |
 
@@ -153,7 +154,9 @@ See `schemas/frame_fused_candidates.schema.json`,
 `visualize_fused_candidates.py` projects fused world points back into each
 camera image and creates colored 2D overlays, an object report, and a 3D
 point-cloud view. This stage does not change fusion results; use it to diagnose
-depth decoding, camera transforms, bad masks, or incorrect clustering.
+depth decoding, camera transforms, bad masks, or incorrect clustering. Its
+`sanity_report.json` includes the stored/recomputed centroid residual and the
+centroid-to-nearest-cloud-point distance for every retained object.
 
 | Python argument | Pipeline variable | Default | Purpose |
 | --- | --- | --- | --- |
@@ -228,10 +231,11 @@ Its required inputs are `--object-predictions-json` and `--fused-json`.
 `--episode-dir`, `--output-dir`, `--viz-dir`, `--cameras`,
 `--camera-params-json`, and `--rlbench-low-dim-obs` override discovered paths
 or camera selection. Rendering is controlled by `--point-stride` (default
-`4`), `--point-radius` (`2` pixels), and `--mask-alpha` (`90`); use
+`4`), `--point-radius` (`2` pixels), `--mask-alpha` (`90`), `--box-width`
+(`1` pixel), and `--annotation-alpha` (`150`); use
 `--invert-rlbench-extrinsics` when Stage 2 used the same transform option.
-The pipeline exposes `DECISION_VIZ_OUTPUT_DIR` and
-`SKIP_DECISION_VIZ` for this stage.
+The pipeline exposes `DECISION_VIZ_OUTPUT_DIR`, `DECISION_VIZ_BOX_WIDTH`,
+`DECISION_VIZ_ANNOTATION_ALPHA`, and `SKIP_DECISION_VIZ` for this stage.
 
 Stage 2 stores point clouds outside the JSON in compressed per-frame archives
 at `frames/<frame_key>/fused_geometry.npz`, using a key such as `000000_0`

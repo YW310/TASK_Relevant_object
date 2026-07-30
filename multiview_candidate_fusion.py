@@ -168,6 +168,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--max-centroid-to-cloud-distance-m",
+        type=float,
+        default=0.02,
+        help=(
+            "Drop a fused object when its arithmetic centroid is farther than this many "
+            "meters from the nearest point in its pooled point cloud. This rejects split/"
+            "contaminated clouds whose centroid falls into a large empty gap. Default: "
+            "0.02 m; set <=0 to disable."
+        ),
+    )
+    parser.add_argument(
         "--save-object-summary",
         action="store_true",
         help=(
@@ -745,12 +756,26 @@ def filter_small_clusters(clusters: list[list[Observation3D]], args: argparse.Na
     object that is only barely visible from one camera but has enough total
     points/extent still survives.
     """
-    if args.min_fused_points <= 0 and args.min_bbox_diagonal_m <= 0.0:
+    max_centroid_gap = float(
+        getattr(args, "max_centroid_to_cloud_distance_m", 0.0)
+    )
+    if (
+        args.min_fused_points <= 0
+        and args.min_bbox_diagonal_m <= 0.0
+        and max_centroid_gap <= 0.0
+    ):
         return clusters
     kept = []
+    diagnostics = getattr(args, "_filtered_cluster_diagnostics", None)
     for cluster in clusters:
         all_points = np.concatenate([obs.points_world for obs in cluster], axis=0)
         if args.min_fused_points > 0 and len(all_points) < args.min_fused_points:
+            if isinstance(diagnostics, list):
+                diagnostics.append({
+                    "reason": "min_fused_points",
+                    "cameras": sorted({obs.camera for obs in cluster}),
+                    "point_count": int(len(all_points)),
+                })
             print(
                 f"[info] dropping small observation cluster (cameras "
                 f"{sorted({obs.camera for obs in cluster})}): {len(all_points)} points < "
@@ -760,10 +785,40 @@ def filter_small_clusters(clusters: list[list[Observation3D]], args: argparse.Na
             continue
         diagonal = float(np.linalg.norm(all_points.max(axis=0) - all_points.min(axis=0)))
         if args.min_bbox_diagonal_m > 0.0 and diagonal < args.min_bbox_diagonal_m:
+            if isinstance(diagnostics, list):
+                diagnostics.append({
+                    "reason": "min_bbox_diagonal_m",
+                    "cameras": sorted({obs.camera for obs in cluster}),
+                    "bbox_diagonal_m": diagonal,
+                })
             print(
                 f"[info] dropping small observation cluster (cameras "
                 f"{sorted({obs.camera for obs in cluster})}): bbox diagonal {diagonal:.3f}m < "
                 f"--min-bbox-diagonal-m {args.min_bbox_diagonal_m}.",
+                file=sys.stderr,
+            )
+            continue
+        centroid = all_points.mean(axis=0)
+        centroid_to_cloud_distance = float(
+            np.linalg.norm(all_points - centroid, axis=1).min()
+        )
+        if (
+            max_centroid_gap > 0.0
+            and centroid_to_cloud_distance > max_centroid_gap
+        ):
+            if isinstance(diagnostics, list):
+                diagnostics.append({
+                    "reason": "max_centroid_to_cloud_distance_m",
+                    "cameras": sorted({obs.camera for obs in cluster}),
+                    "centroid_world": centroid.tolist(),
+                    "centroid_to_cloud_distance_m": centroid_to_cloud_distance,
+                    "threshold_m": max_centroid_gap,
+                })
+            print(
+                f"[info] dropping inconsistent observation cluster (cameras "
+                f"{sorted({obs.camera for obs in cluster})}): centroid-to-cloud "
+                f"distance {centroid_to_cloud_distance:.3f}m > "
+                f"--max-centroid-to-cloud-distance-m {max_centroid_gap:.3f}m.",
                 file=sys.stderr,
             )
             continue
@@ -1189,11 +1244,15 @@ def assign_object_ids(
         else:
             next_object_index += 1
             index = next_object_index
+        centroid_to_cloud_distance = float(
+            np.linalg.norm(all_points - centroid, axis=1).min()
+        )
         objects.append({
             "id": f"O{index}",
             "role_evidence": aggregate_role_evidence(cluster, frame_id),
             "_points_world": all_points,
             "centroid_world": centroid.tolist(),
+            "centroid_to_cloud_distance_m": centroid_to_cloud_distance,
             "bbox3d_world": np.stack([all_points.min(axis=0), all_points.max(axis=0)]).tolist(),
             "visible_camera": sorted({o.camera for o in cluster}),
             "mask_area": int(sum(int(o.candidate.get("mask_area_pixels", 0)) for o in cluster)),
@@ -1349,7 +1408,9 @@ def fuse_frame(
             observations.append(candidate_to_observation(cand, camera, frame_id, points_world, centroid, bbox))
 
     same_camera_diagnostics: list[dict[str, Any]] = []
+    filtered_cluster_diagnostics: list[dict[str, Any]] = []
     args._same_camera_diagnostics = same_camera_diagnostics
+    args._filtered_cluster_diagnostics = filtered_cluster_diagnostics
     clusters = cluster_observations(observations, args)
     clusters = filter_small_clusters(clusters, args)
     objects, updated_track_state = assign_object_ids(clusters, track_state or {}, args, frame_id)
@@ -1359,6 +1420,7 @@ def fuse_frame(
     return {"frame_index": frame.get("frame_index"), "frame_id": frame_id, "objects": objects,
             "diagnostics": {"canonicalization_suppressed": canonicalization_suppressed,
                             "attempted_same_camera_cluster_insertions": same_camera_diagnostics,
+                            "filtered_clusters": filtered_cluster_diagnostics,
                             "tracking_state": updated_track_state}}
 
 
@@ -1376,6 +1438,7 @@ def _fusion_parameters(args: argparse.Namespace, rlbench_low_dim_path: Path, has
         "track_max_size_ratio": args.track_max_size_ratio,
         "min_fused_points": args.min_fused_points,
         "min_bbox_diagonal_m": args.min_bbox_diagonal_m,
+        "max_centroid_to_cloud_distance_m": args.max_centroid_to_cloud_distance_m,
         "max_hypothesis_diameter_m": args.max_hypothesis_diameter_m,
         "max_size_ratio": args.max_size_ratio,
         "legacy_canonical_iou": args.legacy_canonical_iou,

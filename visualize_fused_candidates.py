@@ -159,6 +159,21 @@ def draw_overlay(
 
 
 def sanity_report_for_object(frame: Mapping[str, Any], obj: Mapping[str, Any]) -> dict[str, Any]:
+    points = load_object_points(frame, obj["id"])
+    stored_centroid = np.asarray(obj["centroid_world"], dtype=np.float64)
+    if len(points) > 0:
+        recomputed_centroid = points.mean(axis=0)
+        centroid_residual_m = float(
+            np.linalg.norm(stored_centroid - recomputed_centroid)
+        )
+        centroid_to_cloud_distance_m = float(
+            np.linalg.norm(points - stored_centroid, axis=1).min()
+        )
+    else:
+        recomputed_centroid = np.full((3,), np.nan)
+        centroid_residual_m = None
+        centroid_to_cloud_distance_m = None
+
     per_camera_centroids: dict[str, list[np.ndarray]] = {}
     for obs in obj.get("observations", []):
         per_camera_centroids.setdefault(obs["camera"], []).append(np.asarray(obs["centroid_world"], dtype=np.float64))
@@ -175,8 +190,13 @@ def sanity_report_for_object(frame: Mapping[str, Any], obj: Mapping[str, Any]) -
     return {
         "id": obj["id"],
         "role_evidence": obj.get("role_evidence", {}),
-        "num_points": int(len(load_object_points(frame, obj["id"]))),
+        "num_points": int(len(points)),
         "centroid_world": obj["centroid_world"],
+        "recomputed_centroid_world": (
+            recomputed_centroid.tolist() if len(points) > 0 else None
+        ),
+        "centroid_residual_m": centroid_residual_m,
+        "centroid_to_cloud_distance_m": centroid_to_cloud_distance_m,
         "bbox_size_m": (bbox[1] - bbox[0]).tolist(),
         "visible_camera": obj.get("visible_camera"),
         "cross_camera_centroid_spread_m": max_spread,

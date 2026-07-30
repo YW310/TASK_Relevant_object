@@ -32,6 +32,7 @@
 #   TRACK_MAX_SIZE_RATIO (default: 2.5) Reject implausible temporal ID matches by 3D bbox size.
 #   MIN_FUSED_POINTS (default: 0)           Drop fused objects with fewer combined points than this (0=off).
 #   MIN_BBOX_DIAGONAL_M (default: 0.0)      Drop fused objects with a smaller 3D bbox diagonal than this (0=off).
+#   MAX_CENTROID_TO_CLOUD_DISTANCE_M (default: 0.02) Drop fused objects whose centroid lies in a large empty gap.
 #   SAVE_OBJECT_SUMMARY (default: 0)        Set to 1 to export object_summary.json for downstream Qwen3-VL role decisions.
 #   OBJECT_SUMMARY_JSON                      Optional explicit object summary output path.
 #   SKIP_DECISION (default: 1)              Set to 0 to run stage 4 object-level target/reference decision.
@@ -77,7 +78,8 @@
 #   Stage 4: DECISION_GROUNDING_MIN_SIDE, DECISION_MAX_RETRIES,
 #     DECISION_DRY_RUN (plus the DECISION_* variables above).
 #   Stage 5: DECISION_VIZ_POINT_STRIDE, DECISION_VIZ_POINT_RADIUS,
-#     DECISION_VIZ_MASK_ALPHA.
+#     DECISION_VIZ_MASK_ALPHA, DECISION_VIZ_BOX_WIDTH,
+#     DECISION_VIZ_ANNOTATION_ALPHA.
 #   Stage 6: STAGE1_CANDIDATES_JSON, STAGE_COMPARE_PANEL_GAP,
 #     STAGE_COMPARE_LABEL_HEIGHT, STAGE_COMPARE_SUMMARY_WIDTH,
 #     STAGE_COMPARE_BACKGROUND.
@@ -152,6 +154,7 @@ TRACK_MAX_MISSED_FRAMES="${TRACK_MAX_MISSED_FRAMES:-2}"
 TRACK_MAX_SIZE_RATIO="${TRACK_MAX_SIZE_RATIO:-2.5}"
 MIN_FUSED_POINTS="${MIN_FUSED_POINTS:-0}"
 MIN_BBOX_DIAGONAL_M="${MIN_BBOX_DIAGONAL_M:-0.0}"
+MAX_CENTROID_TO_CLOUD_DISTANCE_M="${MAX_CENTROID_TO_CLOUD_DISTANCE_M:-0.02}"
 SAVE_OBJECT_SUMMARY="${SAVE_OBJECT_SUMMARY:-0}"
 OBJECT_SUMMARY_JSON="${OBJECT_SUMMARY_JSON:-}"
 SKIP_DECISION="${SKIP_DECISION:-1}"
@@ -191,6 +194,8 @@ VIZ_SKIP_POINTCLOUD="${VIZ_SKIP_POINTCLOUD:-0}"
 DECISION_VIZ_POINT_STRIDE="${DECISION_VIZ_POINT_STRIDE:-4}"
 DECISION_VIZ_POINT_RADIUS="${DECISION_VIZ_POINT_RADIUS:-2}"
 DECISION_VIZ_MASK_ALPHA="${DECISION_VIZ_MASK_ALPHA:-90}"
+DECISION_VIZ_BOX_WIDTH="${DECISION_VIZ_BOX_WIDTH:-1}"
+DECISION_VIZ_ANNOTATION_ALPHA="${DECISION_VIZ_ANNOTATION_ALPHA:-150}"
 STAGE1_CANDIDATES_JSON="${STAGE1_CANDIDATES_JSON:-}"
 STAGE_COMPARE_PANEL_GAP="${STAGE_COMPARE_PANEL_GAP:-8}"
 STAGE_COMPARE_LABEL_HEIGHT="${STAGE_COMPARE_LABEL_HEIGHT:-26}"
@@ -295,6 +300,7 @@ else
     --track-max-size-ratio "${TRACK_MAX_SIZE_RATIO}"
     --min-fused-points "${MIN_FUSED_POINTS}"
     --min-bbox-diagonal-m "${MIN_BBOX_DIAGONAL_M}"
+    --max-centroid-to-cloud-distance-m "${MAX_CENTROID_TO_CLOUD_DISTANCE_M}"
   )
   # Stage 4 depends on object_summary; auto-enable summary export when decision is requested.
   [[ "${SAVE_OBJECT_SUMMARY}" == "1" || "${SKIP_DECISION}" == "0" ]] && STAGE2_ARGS+=(--save-object-summary)
@@ -382,6 +388,8 @@ else
     --point-stride "${DECISION_VIZ_POINT_STRIDE}"
     --point-radius "${DECISION_VIZ_POINT_RADIUS}"
     --mask-alpha "${DECISION_VIZ_MASK_ALPHA}"
+    --box-width "${DECISION_VIZ_BOX_WIDTH}"
+    --annotation-alpha "${DECISION_VIZ_ANNOTATION_ALPHA}"
   )
   [[ -n "${RLBENCH_LOW_DIM_OBS}" ]] && STAGE5_ARGS+=(--rlbench-low-dim-obs "${RLBENCH_LOW_DIM_OBS}")
   [[ -n "${DECISION_VIZ_OUTPUT_DIR}" ]] && STAGE5_ARGS+=(--output-dir "${DECISION_VIZ_OUTPUT_DIR}")
