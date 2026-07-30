@@ -621,6 +621,7 @@ def main() -> None:
 
     target_frame = _pick_decision_frame(frame_inputs, args.decision_frame, args.decision_frame_id)
 
+    frame_decisions: list[dict[str, Any]] = []
     grounder = None if args.dry_run else Qwen3VLRLBenchGrounder(
         model_path=args.model_path,
         grounding_min_side=args.grounding_min_side,
@@ -633,7 +634,6 @@ def main() -> None:
         frame_input=target_frame,
         args=args,
         grounder=grounder,
-        previous_frame_decisions=frame_decisions,
     )
     frame_decision["online_step"] = 0
     frame_decisions.append(frame_decision)

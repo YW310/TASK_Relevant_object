@@ -74,7 +74,7 @@ def test_one_model_call_and_payload_contains_only_window_frames():
     )
     grounder = _MockGrounder()
 
-    result = _run_decision_for_frame(summary, frames, frames[6], args, grounder, [])
+    result = _run_decision_for_frame(summary, frames, frames[6], args, grounder)
 
     assert len(grounder.calls) == 1
     assert result["frame_id"] == "f6"
