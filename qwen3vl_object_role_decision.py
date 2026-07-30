@@ -627,18 +627,16 @@ def main() -> None:
         max_retries=args.max_retries,
     )
 
-    # Initialize the exported per-frame collection before inference.  Keeping
-    # this definition ahead of the call also makes the execution order explicit:
-    # Qwen produces one source decision, then that decision is expanded below.
-    frame_decisions: list[dict[str, Any]] = []
     frame_decision = _run_decision_for_frame(
         summary=summary,
         frame_inputs=frame_inputs,
         frame_input=target_frame,
         args=args,
         grounder=grounder,
+        previous_frame_decisions=frame_decisions,
     )
-    frame_decisions.extend(_build_frame_decision_entries(frame_inputs, frame_decision))
+    frame_decision["online_step"] = 0
+    frame_decisions.append(frame_decision)
 
     final_decision_entry = frame_decision
     final_candidate_ids = final_decision_entry.get("candidate_ids", [])

@@ -74,7 +74,7 @@ def test_one_model_call_and_payload_contains_only_window_frames():
     )
     grounder = _MockGrounder()
 
-    result = _run_decision_for_frame(summary, frames, frames[6], args, grounder)
+    result = _run_decision_for_frame(summary, frames, frames[6], args, grounder, [])
 
     assert len(grounder.calls) == 1
     assert result["frame_id"] == "f6"
@@ -120,7 +120,4 @@ def test_main_calls_grounder_once_for_multi_frame_episode(tmp_path, monkeypatch)
     output = json.loads((tmp_path / "decision.json").read_text())
     assert output["decision_frame_id"] == "f7"
     assert output["decision_frame_index"] == 7
-    assert len(output["frame_decisions"]) == 8
-    assert [item["frame_id"] for item in output["frame_decisions"]] == [f"f{i}" for i in range(8)]
-    assert all(item["decision_source_frame_id"] == "f7" for item in output["frame_decisions"])
-    assert all(item["decision"]["target_object_id"] == "O1" for item in output["frame_decisions"])
+    assert len(output["frame_decisions"]) == 1
