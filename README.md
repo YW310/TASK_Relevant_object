@@ -133,6 +133,7 @@ same integer `schema_version` (currently `3`) and UUID `generation_id`:
 2. **`frames/<frame_key>/fused_objects.json`** owns the current frame's
    `objects`, their `observations`, and fusion `diagnostics`. Point arrays are
    still external in the sibling `fused_geometry.npz` and referenced by key.
+   The key is `<six-digit frame_index>_<frame_id>` (for example `000000_0`).
 3. **`object_summary.json`** contains cross-frame tracks, aggregate statistics,
    decision-ready scalar metadata, and `frame_ref` links back to the per-frame
    files. It does not duplicate complete point clouds or other full geometry.
@@ -218,7 +219,8 @@ The pipeline exposes `DECISION_VIZ_OUTPUT_DIR` and
 `SKIP_DECISION_VIZ` for this stage.
 
 Stage 2 stores point clouds outside the JSON in compressed per-frame archives
-at `frames/<frame_key>/fused_geometry.npz`. Object and observation records
+at `frames/<frame_key>/fused_geometry.npz`, using a key such as `000000_0`
+(`<six-digit frame_index>_<frame_id>`). Object and observation records
 contain `geometry_path`, `points_key`, and `point_count`; the visualization
 commands load those arrays lazily and remain compatible with older JSON files
 that embed `points_world` directly.

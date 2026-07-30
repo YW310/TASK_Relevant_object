@@ -345,7 +345,8 @@ python qwen_role_sam3_candidate_episode.py \
 `multiview_candidate_fusion.py` reads the SAM3 per-camera candidate masks,
 matching per-frame depth images, and camera intrinsics/extrinsics to create
 frame-level 3D object candidates. It writes `frame_fused_candidates.json` plus
-one compressed `frames/<frame_key>/fused_geometry.npz` archive per frame.
+one compressed `frames/<frame_key>/fused_geometry.npz` archive per frame. The
+key is `<six-digit frame_index>_<frame_id>` (for example `000000_0`).
 Objects and contributing observations reference their arrays with
 `geometry_path`, `points_key`, and `point_count`, while compact geometry fields
 such as `centroid_world` and `bbox3d_world` remain in JSON alongside camera,
