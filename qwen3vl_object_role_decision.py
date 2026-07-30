@@ -473,30 +473,12 @@ def _validate_decision_ids(result: dict[str, Any], valid_ids: set[str]) -> None:
             raise ValueError(f"{key}={value!r} is not in candidate object ids: {sorted(valid_ids)}")
 
 
-def _summarize_previous_decisions(frame_decisions: Sequence[Mapping[str, Any]], max_items: int = 3) -> list[dict[str, Any]]:
-    if max_items <= 0:
-        return []
-    selected = list(frame_decisions[-max_items:])
-    return [
-        {
-            "frame_id": item.get("frame_id"),
-            "frame_index": item.get("frame_index"),
-            "target_object_id": item.get("decision", {}).get("target_object_id"),
-            "reference_object_id": item.get("decision", {}).get("reference_object_id"),
-            "confidence": item.get("decision", {}).get("confidence"),
-            "uncertain": item.get("decision", {}).get("uncertain"),
-        }
-        for item in selected
-    ]
-
-
 def _run_decision_for_frame(
     summary: Mapping[str, Any],
     frame_inputs: Sequence[Mapping[str, Any]],
     frame_input: Mapping[str, Any],
     args: argparse.Namespace,
     grounder: Qwen3VLRLBenchGrounder | None,
-    previous_frame_decisions: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     ordered = _ordered_frames(frame_inputs)
     temporal_frames = _resolve_temporal_frames(ordered, frame_input, args.decision_window_frames)
@@ -519,11 +501,6 @@ def _run_decision_for_frame(
     candidate_ids = {str(item.get("object_id")) for item in candidates if item.get("object_id") is not None}
     representative_images = _collect_representative_images(candidates, args.max_candidate_images)
     payload_json = _build_prompt_payload(summary, frame_input, object_track_context, temporal_window_meta)
-    previous_summary = _summarize_previous_decisions(previous_frame_decisions)
-    if previous_summary:
-        payload = json.loads(payload_json)
-        payload["online_history"] = previous_summary
-        payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
     prompt_text = _decision_prompt(payload_json, representative_images)
 
     content: list[dict[str, Any]] = []
@@ -548,7 +525,6 @@ def _run_decision_for_frame(
             "candidate_filter_stats": filter_stats,
             "temporal_window": temporal_window_meta,
             "representative_images": representative_images,
-            "online_history": previous_summary,
             "messages": [{"role": "user", "content": content}],
             "dry_run": True,
         }
@@ -570,7 +546,6 @@ def _run_decision_for_frame(
         "candidate_filter_stats": filter_stats,
         "temporal_window": temporal_window_meta,
         "representative_images": representative_images,
-        "online_history": previous_summary,
         "decision": {
             "target_object_id": result.get("target_object_id"),
             "reference_object_id": result.get("reference_object_id"),
