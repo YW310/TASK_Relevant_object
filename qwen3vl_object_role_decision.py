@@ -19,9 +19,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from qwen3vl_rlbench_episode_grounding import Qwen3VLRLBenchGrounder, atomic_json_dump
-from multiview_candidate_fusion import load_rlbench_observations
+from multiview_candidate_fusion import frame_index_from_frame, load_rlbench_observations
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,10 +38,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Default: object_predictions.json next to --object-summary-json",
     )
     parser.add_argument(
+        "--decision-scope",
+        choices=("all", "single"),
+        default="all",
+        help=(
+            "Run one rolling-window decision for every frame (all, default), or only "
+            "the frame selected by --decision-frame/--decision-frame-id (single)."
+        ),
+    )
+    parser.add_argument(
         "--decision-frame",
         choices=("last", "first"),
         default="last",
-        help="Which frame from frame_decision_inputs to classify by default.",
+        help="Frame selector used only when --decision-scope=single.",
     )
     parser.add_argument(
         "--decision-frame-id",
@@ -54,7 +64,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-candidate-images",
         type=int,
         default=8,
-        help="Max representative object images to attach to the decision prompt.",
+        help=(
+            "Maximum temporal contact-sheet images attached to one decision prompt. "
+            "Set to 0 to disable visual evidence."
+        ),
+    )
+    parser.add_argument(
+        "--decision-artifacts-dir",
+        default=None,
+        help="Directory for temporal object contact sheets. Default: decision_inputs next to --output-json.",
     )
     parser.add_argument(
         "--max-candidates-for-decision",
@@ -145,28 +163,146 @@ def _best_observation_image(obs: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _collect_representative_images(candidates: Sequence[Mapping[str, Any]], max_images: int) -> list[dict[str, Any]]:
-    candidates_with_obs = []
-    for candidate in candidates:
-        obs_list = list(candidate.get("observations", []))
-        if not obs_list:
+def _object_id_sort_key(candidate: Mapping[str, Any]) -> tuple[int, int | str]:
+    object_id = str(candidate.get("object_id") or "")
+    if object_id.startswith("O") and object_id[1:].isdigit():
+        return (0, int(object_id[1:]))
+    return (1, object_id)
+
+
+def _safe_path_segment(value: Any) -> str:
+    text = str(value) if value is not None else "unknown"
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in text) or "unknown"
+
+
+def _contact_sheet_font(size: int) -> ImageFont.ImageFont:
+    for candidate in ("DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
+        try:
+            return ImageFont.truetype(candidate, size=size)
+        except OSError:
             continue
-        obs_sorted = sorted(obs_list, key=lambda o: float(o.get("sam_score") or 0.0), reverse=True)
-        best_obs = obs_sorted[0]
-        image_path = _best_observation_image(best_obs)
-        if image_path is None:
-            continue
-        candidates_with_obs.append(
-            {
-                "object_id": candidate.get("object_id"),
-                "camera": best_obs.get("camera"),
-                "sam_score": float(best_obs.get("sam_score") or 0.0),
+    return ImageFont.load_default()
+
+
+def _best_candidate_observation(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
+    observations = sorted(
+        list(candidate.get("observations", [])),
+        key=lambda item: float(item.get("sam_score") or 0.0),
+        reverse=True,
+    )
+    for observation in observations:
+        image_path = _best_observation_image(observation)
+        if image_path is not None:
+            return {
+                "object_id": str(candidate.get("object_id")),
+                "camera": observation.get("camera"),
+                "sam_score": float(observation.get("sam_score") or 0.0),
                 "image_path": image_path,
             }
+    return None
+
+
+def _build_object_contact_sheet(
+    frame_input: Mapping[str, Any],
+    output_dir: Path,
+) -> dict[str, Any] | None:
+    """Render one object-ID-labelled visual summary for a fused frame."""
+    cards = []
+    for candidate in sorted(frame_input.get("candidate_objects", []), key=_object_id_sort_key):
+        observation = _best_candidate_observation(candidate)
+        if observation is not None:
+            cards.append(observation)
+    if not cards:
+        return None
+
+    columns = min(4, len(cards))
+    rows = (len(cards) + columns - 1) // columns
+    cell_width, cell_height = 176, 184
+    title_height = 30
+    canvas = Image.new(
+        "RGB",
+        (columns * cell_width, title_height + rows * cell_height),
+        (242, 242, 242),
+    )
+    draw = ImageDraw.Draw(canvas)
+    title_font = _contact_sheet_font(14)
+    label_font = _contact_sheet_font(12)
+    frame_id = str(frame_input.get("frame_id"))
+    frame_index = frame_input.get("frame_index")
+    draw.rectangle((0, 0, canvas.width, title_height), fill=(28, 28, 28))
+    draw.text(
+        (8, 7),
+        f"Frame {frame_id} (index={frame_index}) fused objects",
+        fill=(255, 255, 255),
+        font=title_font,
+    )
+
+    for card_index, card in enumerate(cards):
+        column = card_index % columns
+        row = card_index // columns
+        x0 = column * cell_width
+        y0 = title_height + row * cell_height
+        draw.rectangle(
+            (x0 + 3, y0 + 3, x0 + cell_width - 4, y0 + cell_height - 4),
+            fill=(255, 255, 255),
+            outline=(175, 175, 175),
+        )
+        with Image.open(card["image_path"]) as source:
+            thumbnail = ImageOps.contain(
+                source.convert("RGBA"),
+                (cell_width - 16, 132),
+                Image.Resampling.LANCZOS,
+            )
+        px = x0 + (cell_width - thumbnail.width) // 2
+        py = y0 + 7
+        canvas.paste(thumbnail.convert("RGB"), (px, py))
+        draw.text(
+            (x0 + 8, y0 + 143),
+            f"{card['object_id']}  camera={card.get('camera')}",
+            fill=(15, 15, 15),
+            font=label_font,
+        )
+        draw.text(
+            (x0 + 8, y0 + 161),
+            f"SAM={card.get('sam_score', 0.0):.3f}",
+            fill=(55, 55, 55),
+            font=label_font,
         )
 
-    candidates_with_obs.sort(key=lambda item: item["sam_score"], reverse=True)
-    return candidates_with_obs[: max(0, max_images)]
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frame_key = f"{_safe_path_segment(frame_index)}_{_safe_path_segment(frame_id)}"
+    output_path = output_dir / f"{frame_key}_objects.png"
+    canvas.save(output_path)
+    return {
+        "kind": "object_contact_sheet",
+        "frame_id": frame_id,
+        "frame_index": frame_index,
+        "object_ids": [card["object_id"] for card in cards],
+        "image_path": str(output_path.resolve()),
+    }
+
+
+def _collect_temporal_contact_sheets(
+    temporal_frames: Sequence[Mapping[str, Any]],
+    output_dir: Path | None,
+    max_images: int,
+    cache: dict[str, dict[str, Any] | None] | None = None,
+) -> list[dict[str, Any]]:
+    if output_dir is None or max_images <= 0:
+        return []
+    selected_frames = list(temporal_frames)[-max_images:]
+    results = []
+    for frame in selected_frames:
+        cache_key = f"{frame.get('frame_index')}::{frame.get('frame_id')}"
+        if cache is not None and cache_key in cache:
+            metadata = cache[cache_key]
+        else:
+            metadata = _build_object_contact_sheet(frame, output_dir / "frames")
+            if cache is not None:
+                cache[cache_key] = metadata
+        if metadata is not None:
+            results.append(metadata)
+    return results
 
 
 def _compact_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
@@ -298,17 +434,13 @@ def _build_temporal_object_context(
         observations = load_rlbench_observations(Path(str(episode_dir)).expanduser().resolve(), None)
         ee_by_frame_index = {}
         for frame in selected_frames:
-            frame_index = frame.get("frame_index")
-            if frame_index is None:
+            source_frame_index = frame_index_from_frame(frame)
+            if source_frame_index is None:
                 continue
-            try:
-                idx = int(frame_index)
-            except (TypeError, ValueError):
-                continue
-            if 0 <= idx < len(observations):
-                ee = _extract_end_effector_position(observations[idx])
+            if 0 <= source_frame_index < len(observations):
+                ee = _extract_end_effector_position(observations[source_frame_index])
                 if ee is not None:
-                    ee_by_frame_index[idx] = ee
+                    ee_by_frame_index[source_frame_index] = ee
 
     frame_ids = {str(frame.get("frame_id")) for frame in selected_frames}
     frame_indices = {
@@ -332,17 +464,13 @@ def _build_temporal_object_context(
         samples = sorted(samples, key=_frame_sort_key)
         ee_distances = []
         for item in samples:
-            frame_index = item.get("frame_index")
-            if frame_index is None:
+            source_frame_index = frame_index_from_frame(item)
+            if source_frame_index is None:
                 continue
-            try:
-                idx = int(frame_index)
-            except (TypeError, ValueError):
-                continue
-            if idx not in ee_by_frame_index:
+            if source_frame_index not in ee_by_frame_index:
                 continue
             centroid = np.asarray(item.get("centroid_world", [0.0, 0.0, 0.0]), dtype=np.float64)
-            ee_distances.append(float(np.linalg.norm(centroid - ee_by_frame_index[idx])))
+            ee_distances.append(float(np.linalg.norm(centroid - ee_by_frame_index[source_frame_index])))
 
         centroids = [np.asarray(item.get("centroid_world", [0.0, 0.0, 0.0]), dtype=np.float64) for item in samples]
         motion_path_length_m = float(
@@ -401,18 +529,45 @@ def _build_temporal_object_context(
 def _build_prompt_payload(
     summary: Mapping[str, Any],
     frame_input: Mapping[str, Any],
+    temporal_frames: Sequence[Mapping[str, Any]],
     object_track_context: Mapping[str, Any],
     temporal_window: Mapping[str, Any],
+    valid_output_object_ids: set[str],
 ) -> str:
+    decision_frame_id = str(frame_input.get("frame_id"))
+    window_frames = []
+    for temporal_frame in temporal_frames:
+        is_decision_frame = str(temporal_frame.get("frame_id")) == decision_frame_id
+        evidence_frame = frame_input if is_decision_frame else temporal_frame
+        candidates = list(evidence_frame.get("candidate_objects", []))
+        relations = list(evidence_frame.get("pairwise_relations", []))
+        if is_decision_frame:
+            relations = [
+                relation
+                for relation in relations
+                if str(relation.get("source_object_id")) in valid_output_object_ids
+                and str(relation.get("target_object_id")) in valid_output_object_ids
+            ]
+        window_frames.append(
+            {
+                "frame_id": evidence_frame.get("frame_id"),
+                "frame_index": evidence_frame.get("frame_index"),
+                "is_decision_frame": is_decision_frame,
+                "candidate_objects": [_compact_candidate(item) for item in candidates],
+                "pairwise_relations": relations,
+            }
+        )
+
     payload = {
         "instruction_prior": summary.get("instruction_prior"),
         "role_spec_prior": summary.get("role_spec_prior"),
         "decision_frame_id": frame_input.get("frame_id"),
         "decision_frame_index": frame_input.get("frame_index"),
         "temporal_window": temporal_window,
-        "candidate_objects": [_compact_candidate(item) for item in frame_input.get("candidate_objects", [])],
+        "valid_output_object_ids": sorted(valid_output_object_ids),
+        "current_candidate_objects": [_compact_candidate(item) for item in frame_input.get("candidate_objects", [])],
+        "window_frames": window_frames,
         "object_track_context": object_track_context,
-        "pairwise_relations": frame_input.get("pairwise_relations", []),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -420,9 +575,10 @@ def _build_prompt_payload(
 def _decision_prompt(payload_json: str, representative_images: Sequence[Mapping[str, Any]]) -> str:
     image_list = [
         {
-            "object_id": item.get("object_id"),
-            "camera": item.get("camera"),
-            "sam_score": item.get("sam_score"),
+            "kind": item.get("kind"),
+            "frame_id": item.get("frame_id"),
+            "frame_index": item.get("frame_index"),
+            "object_ids": item.get("object_ids", []),
             "image_path": item.get("image_path"),
         }
         for item in representative_images
@@ -431,21 +587,30 @@ def _decision_prompt(payload_json: str, representative_images: Sequence[Mapping[
     return (
         "You are deciding current RLBench object roles from fused object evidence.\n\n"
         "Goal:\n"
-        "- Select one current target_object_id and one current reference_object_id from candidate_objects.\n"
+        "- Select the current target_object_id from valid_output_object_ids.\n"
+        "- Select reference_object_id only when the instruction defines a separate object, "
+        "support, container, slot, surface, or region that determines the goal relation.\n"
+        "- Set reference_object_id=null when no separate reference exists. A color, base, "
+        "support, or part mentioned only to identify the target is not automatically a reference.\n"
         "- Use not only instruction text, but also geometric relations, temporal evidence, camera visibility,"
-        " mask/point quality, and representative object images.\n"
+        " mask/point quality, and the chronological object contact sheets.\n"
         "- This is an online decision: the current frame must be judged together with previous frames in the temporal window.\n"
+        "- Treat window_frames as chronological evidence ending at is_decision_frame=true. "
+        "Use earlier frames to resolve occlusion and appearance, but output only a current valid object ID.\n"
         "- Consider end-effector distance as a soft cue: targets are often near the active end-effector, "
         "but do not force this if other evidence is stronger.\n"
+        "- Prefer temporal identity continuity, but do not copy online_history when current visual evidence contradicts it.\n"
         "- If uncertain, set uncertain=true with explicit reason.\n\n"
         "Input evidence JSON:\n"
         f"{payload_json}\n\n"
-        "Representative candidate images (if any):\n"
+        "Chronological object contact sheets (if any):\n"
         f"{json.dumps(image_list, ensure_ascii=False, indent=2)}\n\n"
         "Rules:\n"
-        "1. target_object_id/reference_object_id must be from candidate_objects.object_id, or null when uncertain.\n"
+        "1. Any non-null target_object_id/reference_object_id must be in valid_output_object_ids.\n"
         "2. Prefer objects with stable multi-view support over tiny/noisy single-view fragments unless evidence strongly contradicts.\n"
-        "3. Keep the response strictly as one JSON object.\n\n"
+        "3. reference_object_id=null can be a confident semantic decision; it does not imply uncertainty.\n"
+        "4. Distinguish the manipulated object from its interaction part and from descriptive surroundings.\n"
+        "5. Keep the response strictly as one JSON object.\n\n"
         "Output schema:\n"
         "{\n"
         "  \"target_object_id\": \"O1\" or null,\n"
@@ -473,12 +638,30 @@ def _validate_decision_ids(result: dict[str, Any], valid_ids: set[str]) -> None:
             raise ValueError(f"{key}={value!r} is not in candidate object ids: {sorted(valid_ids)}")
 
 
+def _summarize_previous_decisions(frame_decisions: Sequence[Mapping[str, Any]], max_items: int = 3) -> list[dict[str, Any]]:
+    if max_items <= 0:
+        return []
+    selected = list(frame_decisions[-max_items:])
+    return [
+        {
+            "frame_id": item.get("frame_id"),
+            "frame_index": item.get("frame_index"),
+            "target_object_id": item.get("decision", {}).get("target_object_id"),
+            "reference_object_id": item.get("decision", {}).get("reference_object_id"),
+            "confidence": item.get("decision", {}).get("confidence"),
+            "uncertain": item.get("decision", {}).get("uncertain"),
+        }
+        for item in selected
+    ]
+
+
 def _run_decision_for_frame(
     summary: Mapping[str, Any],
     frame_inputs: Sequence[Mapping[str, Any]],
     frame_input: Mapping[str, Any],
     args: argparse.Namespace,
     grounder: Qwen3VLRLBenchGrounder | None,
+    previous_frame_decisions: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     ordered = _ordered_frames(frame_inputs)
     temporal_frames = _resolve_temporal_frames(ordered, frame_input, args.decision_window_frames)
@@ -499,8 +682,27 @@ def _run_decision_for_frame(
     }
 
     candidate_ids = {str(item.get("object_id")) for item in candidates if item.get("object_id") is not None}
-    representative_images = _collect_representative_images(candidates, args.max_candidate_images)
-    payload_json = _build_prompt_payload(summary, frame_input, object_track_context, temporal_window_meta)
+    artifacts_value = getattr(args, "decision_artifacts_dir", None)
+    artifacts_dir = Path(artifacts_value) if artifacts_value else None
+    representative_images = _collect_temporal_contact_sheets(
+        temporal_frames,
+        artifacts_dir,
+        args.max_candidate_images,
+        cache=getattr(args, "_contact_sheet_cache", None),
+    )
+    payload_json = _build_prompt_payload(
+        summary,
+        frame_input,
+        temporal_frames,
+        object_track_context,
+        temporal_window_meta,
+        candidate_ids,
+    )
+    previous_summary = _summarize_previous_decisions(previous_frame_decisions)
+    if previous_summary:
+        payload = json.loads(payload_json)
+        payload["online_history"] = previous_summary
+        payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
     prompt_text = _decision_prompt(payload_json, representative_images)
 
     content: list[dict[str, Any]] = []
@@ -509,8 +711,9 @@ def _run_decision_for_frame(
             {
                 "type": "text",
                 "text": (
-                    f"CANDIDATE_OBJECT={item.get('object_id')} CAMERA={item.get('camera')} "
-                    f"SAM_SCORE={item.get('sam_score'):.4f}"
+                    f"TEMPORAL_FRAME={item.get('frame_id')} "
+                    f"FRAME_INDEX={item.get('frame_index')} "
+                    f"OBJECT_CONTACT_SHEET={','.join(item.get('object_ids', []))}"
                 ),
             }
         )
@@ -524,7 +727,9 @@ def _run_decision_for_frame(
             "candidate_ids": sorted(candidate_ids),
             "candidate_filter_stats": filter_stats,
             "temporal_window": temporal_window_meta,
+            "temporal_contact_sheets": representative_images,
             "representative_images": representative_images,
+            "online_history": previous_summary,
             "messages": [{"role": "user", "content": content}],
             "dry_run": True,
         }
@@ -545,7 +750,9 @@ def _run_decision_for_frame(
         "candidate_ids": sorted(candidate_ids),
         "candidate_filter_stats": filter_stats,
         "temporal_window": temporal_window_meta,
+        "temporal_contact_sheets": representative_images,
         "representative_images": representative_images,
+        "online_history": previous_summary,
         "decision": {
             "target_object_id": result.get("target_object_id"),
             "reference_object_id": result.get("reference_object_id"),
@@ -561,35 +768,32 @@ def _run_decision_for_frame(
     }
 
 
-def _build_frame_decision_entries(
-    frame_inputs: Sequence[Mapping[str, Any]],
-    decision_entry: Mapping[str, Any],
-) -> list[dict[str, Any]]:
-    """Project one window-based role decision onto every saved episode frame."""
-    source_frame_id = str(decision_entry.get("frame_id"))
-    entries = []
-    for index, frame_input in enumerate(_ordered_frames(frame_inputs)):
-        entry = {
-            "frame_id": frame_input.get("frame_id"),
-            "frame_index": frame_input.get("frame_index"),
-            "candidate_ids": sorted(
-                str(item.get("object_id"))
-                for item in frame_input.get("candidate_objects", [])
-                if item.get("object_id") is not None
-            ),
-            "decision_source_frame_id": decision_entry.get("frame_id"),
-            "decision_source_frame_index": decision_entry.get("frame_index"),
-            "online_step": index,
-        }
-        if "decision" in decision_entry:
-            entry["decision"] = decision_entry.get("decision")
-        if str(frame_input.get("frame_id")) == source_frame_id:
-            # Preserve the exact prompt/filter/debug evidence on the frame where
-            # the single Qwen inference was performed.
-            entry.update(decision_entry)
-            entry["online_step"] = index
-        entries.append(entry)
-    return entries
+def _build_output_document(
+    summary_path: Path,
+    summary: Mapping[str, Any],
+    frame_decisions: Sequence[Mapping[str, Any]],
+    decision_scope: str,
+    dry_run: bool,
+) -> dict[str, Any]:
+    if not frame_decisions:
+        raise ValueError("Cannot build object predictions without frame decisions")
+    final_entry = frame_decisions[-1]
+    output = {
+        "object_summary_json": str(summary_path),
+        "decision_scope": decision_scope,
+        "decision_frame_id": final_entry.get("frame_id"),
+        "decision_frame_index": final_entry.get("frame_index"),
+        "instruction_prior": summary.get("instruction_prior"),
+        "role_spec_prior": summary.get("role_spec_prior"),
+        "candidate_ids": final_entry.get("candidate_ids", []),
+        "frame_decisions": list(frame_decisions),
+    }
+    if dry_run:
+        output["dry_run"] = True
+    else:
+        output["decision"] = final_entry.get("decision")
+        output["raw_text"] = final_entry.get("raw_text")
+    return output
 
 
 def main() -> None:
@@ -619,74 +823,76 @@ def main() -> None:
     if not frame_inputs:
         raise ValueError("object_summary contains no frame_decision_inputs")
 
-    target_frame = _pick_decision_frame(frame_inputs, args.decision_frame, args.decision_frame_id)
+    if args.decision_scope == "single" or args.decision_frame_id is not None:
+        frames_to_decide = [
+            _pick_decision_frame(frame_inputs, args.decision_frame, args.decision_frame_id)
+        ]
+        effective_scope = "single"
+    else:
+        frames_to_decide = frame_inputs
+        effective_scope = "all"
 
     frame_decisions: list[dict[str, Any]] = []
+    artifacts_path = (
+        Path(args.decision_artifacts_dir).expanduser().resolve()
+        if args.decision_artifacts_dir
+        else output_path.with_name("decision_inputs")
+    )
+    args.decision_artifacts_dir = str(artifacts_path)
+    args._contact_sheet_cache = {}
     grounder = None if args.dry_run else Qwen3VLRLBenchGrounder(
         model_path=args.model_path,
         grounding_min_side=args.grounding_min_side,
         max_retries=args.max_retries,
     )
 
-    frame_decision = _run_decision_for_frame(
-        summary=summary,
-        frame_inputs=frame_inputs,
-        frame_input=target_frame,
-        args=args,
-        grounder=grounder,
-    )
-    frame_decision["online_step"] = 0
-    frame_decisions.append(frame_decision)
-
-    final_decision_entry = frame_decision
-    final_candidate_ids = final_decision_entry.get("candidate_ids", [])
-    final_frame_id = final_decision_entry.get("frame_id")
-    final_frame_index = final_decision_entry.get("frame_index")
-
-    if args.dry_run:
-        output = {
-            "object_summary_json": str(summary_path),
-            "decision_frame_id": final_frame_id,
-            "decision_frame_index": final_frame_index,
-            "instruction_prior": summary.get("instruction_prior"),
-            "role_spec_prior": summary.get("role_spec_prior"),
-            "candidate_ids": final_candidate_ids,
-            "frame_decisions": frame_decisions,
-            "dry_run": True,
-        }
-        atomic_json_dump(output, output_path)
+    for online_step, frame_input in enumerate(frames_to_decide):
         print(
-            json.dumps(
-                {
-                    "output_json": str(output_path),
-                    "decision_frame_id": final_frame_id,
-                    "frame_count": len(frame_decisions),
-                    "dry_run": True,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
+            f"Decision progress {online_step + 1}/{len(frames_to_decide)}: "
+            f"frame_id={frame_input.get('frame_id')}",
+            flush=True,
         )
-        return
+        frame_decision = _run_decision_for_frame(
+            summary=summary,
+            frame_inputs=frame_inputs,
+            frame_input=frame_input,
+            args=args,
+            grounder=grounder,
+            previous_frame_decisions=frame_decisions,
+        )
+        frame_decision["online_step"] = online_step
+        frame_decisions.append(frame_decision)
+        # Checkpoint after every successful model call so a long episode leaves
+        # useful per-frame decisions even if a later frame fails.
+        output = _build_output_document(
+            summary_path,
+            summary,
+            frame_decisions,
+            effective_scope,
+            args.dry_run,
+        )
+        atomic_json_dump(output, output_path)
+        if not args.dry_run:
+            decision = frame_decision.get("decision", {})
+            print(
+                "Decision result "
+                f"frame_id={frame_decision.get('frame_id')} "
+                f"target={decision.get('target_object_id')} "
+                f"reference={decision.get('reference_object_id')} "
+                f"confidence={decision.get('confidence')}",
+                flush=True,
+            )
 
-    output = {
-        "object_summary_json": str(summary_path),
-        "decision_frame_id": final_frame_id,
-        "decision_frame_index": final_frame_index,
-        "instruction_prior": summary.get("instruction_prior"),
-        "role_spec_prior": summary.get("role_spec_prior"),
-        "candidate_ids": final_candidate_ids,
-        "frame_decisions": frame_decisions,
-        "decision": final_decision_entry.get("decision"),
-        "raw_text": final_decision_entry.get("raw_text"),
-    }
-    atomic_json_dump(output, output_path)
+    final_decision_entry = frame_decisions[-1]
     print(
         json.dumps(
             {
                 "output_json": str(output_path),
-                "decision_frame_id": final_frame_id,
+                "decision_scope": effective_scope,
+                "decision_frame_id": final_decision_entry.get("frame_id"),
                 "frame_count": len(frame_decisions),
+                "decision_artifacts_dir": str(artifacts_path),
+                "dry_run": bool(args.dry_run),
             },
             ensure_ascii=False,
             indent=2,

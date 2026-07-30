@@ -105,6 +105,8 @@ ties); remaining cameras use the same confidence-first, name-tiebroken order.
 | `--max-size-ratio` | — | `4.0` | Maximum axis-wise box-size ratio. |
 | `--legacy-union-find` | — | off | Deprecated one-release debug path for old transitive pairwise clustering. |
 | `--track-distance-m` | — | `0.15` m | Maximum inter-frame centroid movement for retaining an object ID. |
+| `--track-max-missed-frames` | `TRACK_MAX_MISSED_FRAMES` | `2` | Preserve dormant tracks through short processed-frame occlusions. |
+| `--track-max-size-ratio` | `TRACK_MAX_SIZE_RATIO` | `2.5` | Reject implausible temporal matches whose 3D bbox size changes too much. |
 | `--min-fused-points` | `MIN_FUSED_POINTS` | `0` (off) | Drop fused objects with too few total points. |
 | `--min-bbox-diagonal-m` | `MIN_BBOX_DIAGONAL_M` | `0.0` (off) | Drop spatially tiny 3D boxes. |
 | `--save-object-summary` | `SAVE_OBJECT_SUMMARY` | off | Export trajectories and decision-ready object evidence. |
@@ -171,21 +173,23 @@ Set `SKIP_VIZ=1` in the shell pipeline to omit this stage.
 ### Stage 4: Qwen3-VL object-level role decision (optional)
 
 `qwen3vl_object_role_decision.py` consumes Stage 2's object summary rather than
-raw SAM role IDs. It filters fused objects, constructs a temporal evidence
-window with representative crops and geometry, and asks Qwen3-VL to select the
-current target/reference object IDs with confidence, evidence, and uncertainty.
-The single window-based result is retained for every episode frame in
-`frame_decisions`, so downstream visualization still saves every frame.
+raw SAM role IDs. By default it makes one online decision for every frame. Each
+decision uses a rolling temporal window ending at the current frame, complete
+per-frame candidate/relationship evidence, and chronological object-ID contact
+sheets. The top-level `decision` remains the last frame's result for backward
+compatibility, while `frame_decisions` contains the complete episode.
 
 | Python argument | Pipeline variable | Default | Purpose |
 | --- | --- | --- | --- |
 | `--object-summary-json` | `OBJECT_SUMMARY_JSON` or derived | required | Decision-ready Stage 2 summary. |
 | `--output-json` | `DECISION_OUTPUT_JSON` | `object_predictions.json` | Selection result path. |
 | `--model-path` | `DECISION_MODEL_PATH` / `MODEL_PATH` | script model path | Qwen3-VL checkpoint for selection. |
-| `--decision-frame` | `DECISION_FRAME` | `last` | Decide at the `first` or `last` available frame. |
-| `--decision-frame-id` | `DECISION_FRAME_ID` | unset | Explicit frame, overriding `--decision-frame`. |
+| `--decision-scope` | `DECISION_SCOPE` | `all` | `all` runs one rolling-window model call per frame; `single` selects one frame. |
+| `--decision-frame` | `DECISION_FRAME` | `last` | Select the `first` or `last` frame when scope is `single`. |
+| `--decision-frame-id` | `DECISION_FRAME_ID` | unset | Explicit frame ID; when set it forces a single-frame decision. |
 | `--decision-window-frames` | `DECISION_WINDOW_FRAMES` | `3` | Current frame `t` plus its two preceding frames `[t-2, t-1, t]` (when available), evaluated in one model call; `1` is single-frame mode. |
-| `--max-candidate-images` | `MAX_CANDIDATE_IMAGES` | `8` | Maximum representative images attached to the prompt. |
+| `--max-candidate-images` | `MAX_CANDIDATE_IMAGES` | `8` | Maximum chronological object contact sheets attached to each prompt. |
+| `--decision-artifacts-dir` | `DECISION_ARTIFACTS_DIR` | `decision_inputs/` | Contact-sheet output directory. |
 | `--max-candidates-for-decision` | `MAX_CANDIDATES_FOR_DECISION` | `12` | Candidate cap after filtering. |
 | `--min-candidate-point-count` | `MIN_CANDIDATE_POINT_COUNT` | `0` (off) | Remove sparse fused objects. |
 | `--min-candidate-camera-count` | `MIN_CANDIDATE_CAMERA_COUNT` | `1` | Require support from this many cameras. |
@@ -199,7 +203,9 @@ The single window-based result is retained for every episode frame in
 Enable this stage with `SKIP_DECISION=0`. Doing so also enables object-summary
 generation in Stage 2. Filters apply before the candidate cap and are useful
 for excluding fragments, but aggressive thresholds can discard the true task
-object.
+object. A non-relational instruction is allowed to produce a confident
+`reference_object_id=null`; descriptive colors, bases, or parts do not by
+themselves create a separate reference object.
 
 ### Stage 5: decision overlays (optional)
 
@@ -328,10 +334,13 @@ used options include:
 | `CLUSTER_DISTANCE_M` | `0.03` | Maximum centroid distance for 3D fusion |
 | `LEGACY_CANONICAL_IOU` | `0.35` | Stage-2 mask IoU for canonicalizing legacy candidate JSON |
 | `LEGACY_CANONICAL_CONTAINMENT` | `0.50` | Stage-2 smaller-mask coverage for legacy candidate JSON |
+| `TRACK_MAX_MISSED_FRAMES` | `2` | Preserve object IDs through brief processed-frame occlusions |
+| `TRACK_MAX_SIZE_RATIO` | `2.5` | Reject temporal ID matches with implausible bbox-size changes |
 | `SKIP_CANDIDATES` | `0` | Reuse an existing `episode_candidates.json` |
 | `SKIP_FUSION` | `0` | Reuse an existing `frame_fused_candidates.json` |
 | `SKIP_VIZ` | `0` | Disable fusion visualizations |
 | `SKIP_DECISION` | `1` | Set to `0` to run object-level role selection |
+| `DECISION_SCOPE` | `all` | Run one rolling-window decision per frame; use `single` for debugging |
 | `SKIP_DECISION_VIZ` | `0` | Disable decision overlays when selection runs |
 | `SKIP_STAGE_COMPARE` | `1` | Set to `0` to create comparison montages |
 

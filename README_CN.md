@@ -201,7 +201,14 @@ outputs/light_bulb_front/qwen_candidates/qwen_selection.json
 
 ## Stage 4：对象级角色决策
 
-`qwen3vl_object_role_decision.py` 默认使用 `DECISION_WINDOW_FRAMES=3`：以当前决策帧
-`t` 为锚点，只取当前帧和前两帧 `[t-2, t-1, t]`（episode 开头按实际帧数截断），
-并通过**一次模型调用**综合这些时序证据。`--decision-frame-id` 可显式指定 `t`；否则
-`--decision-frame last` 选择最后一帧。
+`qwen3vl_object_role_decision.py` 默认使用 `DECISION_SCOPE=all`，为 episode 中的
+**每一帧**输出一条 decision。每个当前帧 `t` 分别触发一次模型调用，并使用
+`DECISION_WINDOW_FRAMES=3` 的滑动窗口 `[t-2, t-1, t]`（episode 开头按实际帧数
+截断）。窗口内每一帧都会提供完整候选、空间关系和带 fused object ID 的 contact
+sheet；输出 JSON 的 `frame_decisions` 保存全部逐帧结果，顶层 `decision` 保留最后一帧
+结果用于兼容后续可视化。
+
+调试单帧时设置 `DECISION_SCOPE=single`，再用 `--decision-frame-id` 或
+`--decision-frame first|last` 选择帧。对于没有独立参考物的单对象任务，
+`reference_object_id=null` 是正常且可以高置信度的判断；仅用于识别 target 的颜色、
+底座或局部结构不应被强制解释成 reference。

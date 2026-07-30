@@ -27,7 +27,8 @@ Use [run_full_pipeline.sh](run_full_pipeline.sh) when you want one command for t
 4. Stage 4 (optional object-level target/reference decision)
 - Script: [qwen3vl_object_role_decision.py](qwen3vl_object_role_decision.py)
 - Input: object_summary.json from Stage 2.
-- Output: object_predictions.json with current target/reference object ids, confidence, uncertainty, and evidence.
+- Output: object_predictions.json with one rolling-window target/reference decision per frame, plus the last decision at top level for compatibility.
+- Visual evidence: chronological per-frame object contact sheets under decision_inputs/.
 - Default is disabled (SKIP_DECISION=1).
 
 5. Stage 5 (optional decision visualization)
@@ -44,7 +45,7 @@ Use [run_full_pipeline.sh](run_full_pipeline.sh) when you want one command for t
 
 - By default, Stages 1-3 run and Stage 4 is skipped.
 - If SKIP_DECISION=0, Stage 4 runs and Stage 2 automatically exports object_summary.json.
-- Existing behavior is preserved if new decision-related flags are not enabled.
+- Stage 4 defaults to DECISION_SCOPE=all; use DECISION_SCOPE=single for the legacy one-frame debug behavior.
 
 ### Typical command
 
@@ -63,8 +64,8 @@ SAVE_OBJECT_SUMMARY=1 \
 - SAM3 recall/precision: THRESHOLD, CAMERA_THRESHOLD_OVERRIDES
 - Per-view canonicalization: MASK_NMS_IOU, CANONICAL_CONTAINMENT, CANONICAL_BBOX_IOU
 - Legacy canonicalization during fusion: LEGACY_CANONICAL_IOU, LEGACY_CANONICAL_CONTAINMENT
-- 3D fusion strictness: CLUSTER_DISTANCE_M, MIN_FUSED_POINTS, MIN_BBOX_DIAGONAL_M
-- Decision stage: SKIP_DECISION, DECISION_FRAME, DECISION_FRAME_ID, MAX_CANDIDATE_IMAGES
+- 3D fusion/tracking: CLUSTER_DISTANCE_M, TRACK_MAX_MISSED_FRAMES, TRACK_MAX_SIZE_RATIO, MIN_FUSED_POINTS, MIN_BBOX_DIAGONAL_M
+- Decision stage: SKIP_DECISION, DECISION_SCOPE, DECISION_FRAME, DECISION_FRAME_ID, DECISION_WINDOW_FRAMES, MAX_CANDIDATE_IMAGES
 
 ## What it produces
 

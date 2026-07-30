@@ -127,6 +127,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--track-max-missed-frames",
+        type=int,
+        default=2,
+        help=(
+            "Keep an unmatched object track alive for this many processed frames so a "
+            "short occlusion does not force a new object ID."
+        ),
+    )
+    parser.add_argument(
+        "--track-max-size-ratio",
+        type=float,
+        default=2.5,
+        help=(
+            "Reject a temporal ID match when non-degenerate 3D bbox axes change by more "
+            "than this ratio. Set <=0 to disable the tracking size gate."
+        ),
+    )
+    parser.add_argument(
         "--min-fused-points",
         type=int,
         default=0,
@@ -390,13 +408,20 @@ def observation_misc(observation: Any) -> Mapping[str, Any]:
 
 
 def frame_index_from_frame(frame: Mapping[str, Any]) -> int | None:
-    raw = frame.get("frame_index")
-    if raw is None:
-        raw = frame.get("frame_id")
-    try:
-        return int(str(raw))
-    except (TypeError, ValueError):
-        return None
+    """Resolve the source episode index, preferring a numeric frame ID.
+
+    Stage 1's ``frame_index`` is the index within the sampled frame list, so it
+    diverges from RLBench's observation index when FRAME_INTERVAL/START_FRAME is
+    used. Numeric RGB/depth frame IDs retain the original episode index.
+    """
+    for raw in (frame.get("frame_id"), frame.get("frame_index")):
+        if raw is None:
+            continue
+        try:
+            return int(str(raw))
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def camera_param_from_rlbench_observation(
@@ -1065,6 +1090,8 @@ def build_object_summary(
             "bbox_iou_threshold": result.get("bbox_iou_threshold"),
             "nearest_distance_m": result.get("nearest_distance_m"),
             "track_distance_m": result.get("track_distance_m"),
+            "track_max_missed_frames": result.get("track_max_missed_frames"),
+            "track_max_size_ratio": result.get("track_max_size_ratio"),
             "min_fused_points": result.get("min_fused_points"),
             "min_bbox_diagonal_m": result.get("min_bbox_diagonal_m"),
             "max_hypothesis_diameter_m": result.get("max_hypothesis_diameter_m"),
@@ -1098,32 +1125,64 @@ def assign_object_ids(
     args: argparse.Namespace,
     frame_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Track physical objects globally; semantic roles never partition identity."""
+    """Track physical objects globally, retaining IDs across short occlusions."""
     prev_tracks: list[dict[str, Any]] = list(track_state.get("tracks", []))
     next_object_index = int(track_state.get("next_object_index", 0))
-    centroids = [np.concatenate([o.points_world for o in c]).mean(axis=0) for c in clusters]
+    cluster_points = [np.concatenate([o.points_world for o in cluster]) for cluster in clusters]
+    centroids = [points.mean(axis=0) for points in cluster_points]
+    bbox_sizes = [points.max(axis=0) - points.min(axis=0) for points in cluster_points]
+    max_missed_frames = max(0, int(getattr(args, "track_max_missed_frames", 0)))
+    max_track_size_ratio = float(getattr(args, "track_max_size_ratio", 0.0))
     assigned: dict[int, int] = {}
+    assigned_previous: dict[int, int] = {}
     if clusters and prev_tracks:
         nc, np_ = len(clusters), len(prev_tracks)
         size = nc + np_
-        abstain = args.track_distance_m + 1e-6
+        # Costs are normalized so 1.0 means "prefer a new/unmatched track".
+        abstain = 1.0 + 1e-6
         cost = np.full((size, size), abstain * 1000.0 + 1e6)
         for ci, centroid in enumerate(centroids):
             for pi, track in enumerate(prev_tracks):
+                missed_frames = max(0, int(track.get("missed_frames", 0)))
+                distance_limit = float(args.track_distance_m) * (missed_frames + 1)
                 distance = float(np.linalg.norm(centroid - np.asarray(track["centroid"])))
-                if distance <= args.track_distance_m:
-                    cost[ci, pi] = distance
+                if distance_limit < 0 or distance > distance_limit:
+                    continue
+
+                size_ratio = 1.0
+                previous_size_value = track.get("bbox_size")
+                if previous_size_value is not None:
+                    previous_size = np.asarray(previous_size_value, dtype=np.float64)
+                    current_size = np.asarray(bbox_sizes[ci], dtype=np.float64)
+                    valid_axes = (previous_size > 1e-6) & (current_size > 1e-6)
+                    if np.any(valid_axes):
+                        size_ratio = float(
+                            np.max(
+                                np.maximum(
+                                    previous_size[valid_axes] / current_size[valid_axes],
+                                    current_size[valid_axes] / previous_size[valid_axes],
+                                )
+                            )
+                        )
+                    if max_track_size_ratio > 0 and size_ratio > max_track_size_ratio:
+                        continue
+
+                normalized_distance = distance / max(distance_limit, 1e-9)
+                size_penalty = 0.05 * float(np.log(max(1.0, size_ratio)))
+                missed_penalty = 0.03 * missed_frames
+                cost[ci, pi] = normalized_distance + size_penalty + missed_penalty
             cost[ci, np_ + ci] = abstain
         for pi in range(np_):
             cost[nc + pi, pi] = abstain
         cost[nc:, np_:] = 0.0
         for row, col in solve_min_cost_assignment(cost):
-            if row < nc and col < np_:
+            if row < nc and col < np_ and cost[row, col] < abstain:
                 assigned[row] = int(prev_tracks[col]["index"])
+                assigned_previous[row] = col
 
     objects, tracks = [], []
     for ci, cluster in enumerate(clusters):
-        all_points = np.concatenate([o.points_world for o in cluster])
+        all_points = cluster_points[ci]
         centroid = centroids[ci]
         if ci in assigned:
             index = assigned[ci]
@@ -1141,8 +1200,28 @@ def assign_object_ids(
             "sam_score": float(np.mean([float(o.candidate.get("score", 0.0)) for o in cluster])),
             "observations": [observation_to_json(o) for o in cluster],
         })
-        tracks.append({"index": index, "centroid": centroid.tolist()})
+        tracks.append(
+            {
+                "index": index,
+                "centroid": centroid.tolist(),
+                "bbox_size": bbox_sizes[ci].tolist(),
+                "missed_frames": 0,
+            }
+        )
+
+    matched_previous_indices = set(assigned_previous.values())
+    for previous_index, previous_track in enumerate(prev_tracks):
+        if previous_index in matched_previous_indices:
+            continue
+        missed_frames = max(0, int(previous_track.get("missed_frames", 0))) + 1
+        if missed_frames > max_missed_frames:
+            continue
+        dormant_track = dict(previous_track)
+        dormant_track["missed_frames"] = missed_frames
+        tracks.append(dormant_track)
+
     objects.sort(key=lambda obj: int(str(obj["id"])[1:]))
+    tracks.sort(key=lambda track: int(track["index"]))
     return objects, {"tracks": tracks, "next_object_index": next_object_index}
 
 
@@ -1279,7 +1358,8 @@ def fuse_frame(
         track_state.update(updated_track_state)
     return {"frame_index": frame.get("frame_index"), "frame_id": frame_id, "objects": objects,
             "diagnostics": {"canonicalization_suppressed": canonicalization_suppressed,
-                            "attempted_same_camera_cluster_insertions": same_camera_diagnostics}}
+                            "attempted_same_camera_cluster_insertions": same_camera_diagnostics,
+                            "tracking_state": updated_track_state}}
 
 
 FUSED_MANIFEST_SCHEMA_VERSION = 3
@@ -1292,6 +1372,8 @@ def _fusion_parameters(args: argparse.Namespace, rlbench_low_dim_path: Path, has
         "bbox_iou_threshold": args.bbox_iou_threshold,
         "nearest_distance_m": args.nearest_distance_m,
         "track_distance_m": args.track_distance_m,
+        "track_max_missed_frames": args.track_max_missed_frames,
+        "track_max_size_ratio": args.track_max_size_ratio,
         "min_fused_points": args.min_fused_points,
         "min_bbox_diagonal_m": args.min_bbox_diagonal_m,
         "max_hypothesis_diameter_m": args.max_hypothesis_diameter_m,
@@ -1310,6 +1392,12 @@ def _fusion_parameters(args: argparse.Namespace, rlbench_low_dim_path: Path, has
 
 def _restore_track_state(frame: Mapping[str, Any], track_state: dict[str, Any]) -> None:
     """Advance tracking from a completed frame when resuming a partial run."""
+    persisted_state = frame.get("diagnostics", {}).get("tracking_state")
+    if isinstance(persisted_state, Mapping) and isinstance(persisted_state.get("tracks"), list):
+        track_state.clear()
+        track_state.update(copy.deepcopy(dict(persisted_state)))
+        return
+
     tracks = []
     next_object_index = int(track_state.get("next_object_index", 0))
     for obj in frame.get("objects", []):
@@ -1318,7 +1406,16 @@ def _restore_track_state(frame: Mapping[str, Any], track_state: dict[str, Any]) 
             continue
         index = int(object_id[1:])
         next_object_index = max(next_object_index, index)
-        tracks.append({"index": index, "centroid": obj["centroid_world"]})
+        bbox = np.asarray(obj.get("bbox3d_world", []), dtype=np.float64)
+        bbox_size = (bbox[1] - bbox[0]).tolist() if bbox.shape == (2, 3) else None
+        tracks.append(
+            {
+                "index": index,
+                "centroid": obj["centroid_world"],
+                "bbox_size": bbox_size,
+                "missed_frames": 0,
+            }
+        )
     track_state.update({"tracks": tracks, "next_object_index": next_object_index})
 
 

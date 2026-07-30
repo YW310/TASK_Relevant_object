@@ -28,18 +28,22 @@
 #   CLUSTER_DISTANCE_M (default: 0.03)      Fusion clustering centroid distance threshold.
 #   LEGACY_CANONICAL_IOU (default: 0.35)     Stage-2 IoU for deduplicating legacy candidate JSON.
 #   LEGACY_CANONICAL_CONTAINMENT (default: 0.50) Stage-2 smaller-mask coverage for legacy JSON.
+#   TRACK_MAX_MISSED_FRAMES (default: 2) Keep object IDs through short processed-frame occlusions.
+#   TRACK_MAX_SIZE_RATIO (default: 2.5) Reject implausible temporal ID matches by 3D bbox size.
 #   MIN_FUSED_POINTS (default: 0)           Drop fused objects with fewer combined points than this (0=off).
 #   MIN_BBOX_DIAGONAL_M (default: 0.0)      Drop fused objects with a smaller 3D bbox diagonal than this (0=off).
 #   SAVE_OBJECT_SUMMARY (default: 0)        Set to 1 to export object_summary.json for downstream Qwen3-VL role decisions.
 #   OBJECT_SUMMARY_JSON                      Optional explicit object summary output path.
 #   SKIP_DECISION (default: 1)              Set to 0 to run stage 4 object-level target/reference decision.
 #   DECISION_MODEL_PATH                      Qwen3-VL model path for stage 4 (default: MODEL_PATH or script default).
-#   DECISION_FRAME (default: last)          first|last decision frame from object_summary.
-#   DECISION_FRAME_ID                        Optional explicit frame_id for decision.
+#   DECISION_SCOPE (default: all)           all=one rolling-window decision per frame; single=one selected frame.
+#   DECISION_FRAME (default: last)          first|last frame when DECISION_SCOPE=single.
+#   DECISION_FRAME_ID                        Optional explicit frame_id; forces a single-frame decision.
 #   DECISION_WINDOW_FRAMES (default: 3)     Current t plus [t-2,t-1] ([t-2,t-1,t]), in one model call.
 #   DECISION_MAX_NEW_TOKENS (default: 1024) Stage-4 JSON generation budget per frame.
 #   DECISION_OUTPUT_JSON                     Optional explicit output path for object_predictions.json.
-#   MAX_CANDIDATE_IMAGES (default: 8)       Max representative object images attached to decision prompt.
+#   DECISION_ARTIFACTS_DIR                   Optional output directory for temporal object contact sheets.
+#   MAX_CANDIDATE_IMAGES (default: 8)       Max temporal contact sheets attached to each decision prompt.
 #   MAX_CANDIDATES_FOR_DECISION (default: 12) Max candidates kept for stage-4 prompt after filtering.
 #   MIN_CANDIDATE_POINT_COUNT (default: 0)   Drop tiny candidates by point count before stage-4 decision.
 #   MIN_CANDIDATE_CAMERA_COUNT (default: 1)  Require at least this many supporting cameras.
@@ -143,12 +147,15 @@ MAX_HYPOTHESIS_DIAMETER_M="${MAX_HYPOTHESIS_DIAMETER_M:-0.50}"
 MAX_SIZE_RATIO="${MAX_SIZE_RATIO:-4.0}"
 LEGACY_UNION_FIND="${LEGACY_UNION_FIND:-0}"
 TRACK_DISTANCE_M="${TRACK_DISTANCE_M:-0.15}"
+TRACK_MAX_MISSED_FRAMES="${TRACK_MAX_MISSED_FRAMES:-2}"
+TRACK_MAX_SIZE_RATIO="${TRACK_MAX_SIZE_RATIO:-2.5}"
 MIN_FUSED_POINTS="${MIN_FUSED_POINTS:-0}"
 MIN_BBOX_DIAGONAL_M="${MIN_BBOX_DIAGONAL_M:-0.0}"
 SAVE_OBJECT_SUMMARY="${SAVE_OBJECT_SUMMARY:-0}"
 OBJECT_SUMMARY_JSON="${OBJECT_SUMMARY_JSON:-}"
 SKIP_DECISION="${SKIP_DECISION:-1}"
 DECISION_MODEL_PATH="${DECISION_MODEL_PATH:-${MODEL_PATH:-}}"
+DECISION_SCOPE="${DECISION_SCOPE:-all}"
 DECISION_FRAME="${DECISION_FRAME:-last}"
 DECISION_FRAME_ID="${DECISION_FRAME_ID:-}"
 DECISION_WINDOW_FRAMES="${DECISION_WINDOW_FRAMES:-3}"
@@ -157,6 +164,7 @@ DECISION_GROUNDING_MIN_SIDE="${DECISION_GROUNDING_MIN_SIDE:-512}"
 DECISION_MAX_RETRIES="${DECISION_MAX_RETRIES:-1}"
 DECISION_DRY_RUN="${DECISION_DRY_RUN:-0}"
 DECISION_OUTPUT_JSON="${DECISION_OUTPUT_JSON:-}"
+DECISION_ARTIFACTS_DIR="${DECISION_ARTIFACTS_DIR:-}"
 MAX_CANDIDATE_IMAGES="${MAX_CANDIDATE_IMAGES:-8}"
 MAX_CANDIDATES_FOR_DECISION="${MAX_CANDIDATES_FOR_DECISION:-12}"
 MIN_CANDIDATE_POINT_COUNT="${MIN_CANDIDATE_POINT_COUNT:-0}"
@@ -281,6 +289,8 @@ else
     --legacy-canonical-iou "${LEGACY_CANONICAL_IOU}"
     --legacy-canonical-containment "${LEGACY_CANONICAL_CONTAINMENT}"
     --track-distance-m "${TRACK_DISTANCE_M}"
+    --track-max-missed-frames "${TRACK_MAX_MISSED_FRAMES}"
+    --track-max-size-ratio "${TRACK_MAX_SIZE_RATIO}"
     --min-fused-points "${MIN_FUSED_POINTS}"
     --min-bbox-diagonal-m "${MIN_BBOX_DIAGONAL_M}"
   )
@@ -306,6 +316,7 @@ else
   SUMMARY_INPUT="${OBJECT_SUMMARY_JSON:-${OBJECT_SUMMARY_PATH_DEFAULT}}"
   STAGE4_ARGS=(
     --object-summary-json "${SUMMARY_INPUT}"
+    --decision-scope "${DECISION_SCOPE}"
     --decision-frame "${DECISION_FRAME}"
     --decision-window-frames "${DECISION_WINDOW_FRAMES}"
     --grounding-min-side "${DECISION_GROUNDING_MIN_SIDE}"
@@ -321,6 +332,7 @@ else
   [[ -n "${DECISION_MODEL_PATH}" ]] && STAGE4_ARGS+=(--model-path "${DECISION_MODEL_PATH}")
   [[ -n "${DECISION_FRAME_ID}" ]] && STAGE4_ARGS+=(--decision-frame-id "${DECISION_FRAME_ID}")
   [[ -n "${DECISION_OUTPUT_JSON}" ]] && STAGE4_ARGS+=(--output-json "${DECISION_OUTPUT_JSON}")
+  [[ -n "${DECISION_ARTIFACTS_DIR}" ]] && STAGE4_ARGS+=(--decision-artifacts-dir "${DECISION_ARTIFACTS_DIR}")
   [[ "${DECISION_DRY_RUN}" == "1" ]] && STAGE4_ARGS+=(--dry-run)
   "${PYTHON}" "${SCRIPT_DIR}/qwen3vl_object_role_decision.py" "${STAGE4_ARGS[@]}"
 fi
