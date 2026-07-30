@@ -33,6 +33,11 @@
 #   MIN_FUSED_POINTS (default: 0)           Drop fused objects with fewer combined points than this (0=off).
 #   MIN_BBOX_DIAGONAL_M (default: 0.0)      Drop fused objects with a smaller 3D bbox diagonal than this (0=off).
 #   MAX_CENTROID_TO_CLOUD_DISTANCE_M (default: 0.02) Drop fused objects whose centroid lies in a large empty gap.
+#   COMPONENT_VOXEL_SIZE_M (default: 0.008) Voxel size for disconnected point-cloud component detection.
+#   MIN_LARGEST_COMPONENT_RATIO (default: 0.75) Largest-component ratio required for a coherent cloud.
+#   MAX_SECONDARY_COMPONENT_RATIO (default: 0.20) Maximum tolerated second-component point ratio.
+#   MIN_COMPONENT_CENTROID_GAP_M (default: 0.02) Minimum gap between two large component centers.
+#   MIN_COMPONENT_POINTS (default: 20) Ignore smaller disconnected point groups as noise.
 #   SAVE_OBJECT_SUMMARY (default: 0)        Set to 1 to export object_summary.json for downstream Qwen3-VL role decisions.
 #   OBJECT_SUMMARY_JSON                      Optional explicit object summary output path.
 #   SKIP_DECISION (default: 1)              Set to 0 to run stage 4 object-level target/reference decision.
@@ -155,6 +160,11 @@ TRACK_MAX_SIZE_RATIO="${TRACK_MAX_SIZE_RATIO:-2.5}"
 MIN_FUSED_POINTS="${MIN_FUSED_POINTS:-0}"
 MIN_BBOX_DIAGONAL_M="${MIN_BBOX_DIAGONAL_M:-0.0}"
 MAX_CENTROID_TO_CLOUD_DISTANCE_M="${MAX_CENTROID_TO_CLOUD_DISTANCE_M:-0.02}"
+COMPONENT_VOXEL_SIZE_M="${COMPONENT_VOXEL_SIZE_M:-0.008}"
+MIN_LARGEST_COMPONENT_RATIO="${MIN_LARGEST_COMPONENT_RATIO:-0.75}"
+MAX_SECONDARY_COMPONENT_RATIO="${MAX_SECONDARY_COMPONENT_RATIO:-0.20}"
+MIN_COMPONENT_CENTROID_GAP_M="${MIN_COMPONENT_CENTROID_GAP_M:-0.02}"
+MIN_COMPONENT_POINTS="${MIN_COMPONENT_POINTS:-20}"
 SAVE_OBJECT_SUMMARY="${SAVE_OBJECT_SUMMARY:-0}"
 OBJECT_SUMMARY_JSON="${OBJECT_SUMMARY_JSON:-}"
 SKIP_DECISION="${SKIP_DECISION:-1}"
@@ -301,6 +311,11 @@ else
     --min-fused-points "${MIN_FUSED_POINTS}"
     --min-bbox-diagonal-m "${MIN_BBOX_DIAGONAL_M}"
     --max-centroid-to-cloud-distance-m "${MAX_CENTROID_TO_CLOUD_DISTANCE_M}"
+    --component-voxel-size-m "${COMPONENT_VOXEL_SIZE_M}"
+    --min-largest-component-ratio "${MIN_LARGEST_COMPONENT_RATIO}"
+    --max-secondary-component-ratio "${MAX_SECONDARY_COMPONENT_RATIO}"
+    --min-component-centroid-gap-m "${MIN_COMPONENT_CENTROID_GAP_M}"
+    --min-component-points "${MIN_COMPONENT_POINTS}"
   )
   # Stage 4 depends on object_summary; auto-enable summary export when decision is requested.
   [[ "${SAVE_OBJECT_SUMMARY}" == "1" || "${SKIP_DECISION}" == "0" ]] && STAGE2_ARGS+=(--save-object-summary)

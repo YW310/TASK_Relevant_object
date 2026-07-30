@@ -228,6 +228,12 @@ Stage 2 默认设置 `MAX_CENTROID_TO_CLOUD_DISTANCE_M=0.02`。如果融合中�
 前被删除。设置为 `0` 可关闭此过滤；具体删除原因写入每帧的
 `diagnostics.filtered_clusters`。
 
+此外，Stage 2 会以 `COMPONENT_VOXEL_SIZE_M=0.008` 对点云做 3D voxel 连通区域
+分析。如果最大区域少于 75%、第二大区域超过 20%，并且两个区域中心相距至少 2 cm，
+就以 `multiple_large_3d_components` 原因删除 candidate。少于
+`MIN_COMPONENT_POINTS=20` 的小区域按噪声忽略。相关阈值都可以通过 pipeline 环境
+变量调整。
+
 Stage 5 可视化会在原始 RGB 上重新绘制一次所有对象。若 `O2` 被判为 target，原标签
 直接替换为 `T2`，不会同时保留 `O2` 或再绘制带透明底色的标签方块。bbox 默认使用
 1 像素线宽，bbox、文字、中心点和点云高亮均采用透明叠加；可通过

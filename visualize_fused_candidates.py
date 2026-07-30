@@ -197,6 +197,7 @@ def sanity_report_for_object(frame: Mapping[str, Any], obj: Mapping[str, Any]) -
         ),
         "centroid_residual_m": centroid_residual_m,
         "centroid_to_cloud_distance_m": centroid_to_cloud_distance_m,
+        "point_cloud_components": obj.get("point_cloud_components"),
         "bbox_size_m": (bbox[1] - bbox[0]).tolist(),
         "visible_camera": obj.get("visible_camera"),
         "cross_camera_centroid_spread_m": max_spread,

@@ -110,6 +110,11 @@ ties); remaining cameras use the same confidence-first, name-tiebroken order.
 | `--min-fused-points` | `MIN_FUSED_POINTS` | `0` (off) | Drop fused objects with too few total points. |
 | `--min-bbox-diagonal-m` | `MIN_BBOX_DIAGONAL_M` | `0.0` (off) | Drop spatially tiny 3D boxes. |
 | `--max-centroid-to-cloud-distance-m` | `MAX_CENTROID_TO_CLOUD_DISTANCE_M` | `0.02` m | Drop a fused object whose centroid is farther than this from every cloud point, indicating a split or contaminated cloud; `<=0` disables it. |
+| `--component-voxel-size-m` | `COMPONENT_VOXEL_SIZE_M` | `0.008` m | Voxel size for dependency-free 3D connected-component detection; `<=0` disables it. |
+| `--min-largest-component-ratio` | `MIN_LARGEST_COMPONENT_RATIO` | `0.75` | Minimum dominant-component point fraction expected from a coherent candidate. |
+| `--max-secondary-component-ratio` | `MAX_SECONDARY_COMPONENT_RATIO` | `0.20` | Reject when a separated second component exceeds this point fraction; `<=0` disables it. |
+| `--min-component-centroid-gap-m` | `MIN_COMPONENT_CENTROID_GAP_M` | `0.02` m | Require this separation between the two main components before rejection. |
+| `--min-component-points` | `MIN_COMPONENT_POINTS` | `20` | Ignore smaller disconnected point groups as noise. |
 | `--save-object-summary` | `SAVE_OBJECT_SUMMARY` | off | Export trajectories and decision-ready object evidence. |
 | `--object-summary-json` | `OBJECT_SUMMARY_JSON` | `object_summary.json` | Override the summary path. |
 
@@ -156,7 +161,8 @@ camera image and creates colored 2D overlays, an object report, and a 3D
 point-cloud view. This stage does not change fusion results; use it to diagnose
 depth decoding, camera transforms, bad masks, or incorrect clustering. Its
 `sanity_report.json` includes the stored/recomputed centroid residual and the
-centroid-to-nearest-cloud-point distance for every retained object.
+centroid-to-nearest-cloud-point distance for every retained object. Retained
+objects also report voxel component counts, ratios, and the main-component gap.
 
 | Python argument | Pipeline variable | Default | Purpose |
 | --- | --- | --- | --- |

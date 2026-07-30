@@ -179,6 +179,48 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--component-voxel-size-m",
+        type=float,
+        default=0.008,
+        help=(
+            "Voxel size used to find disconnected 3D point-cloud components. "
+            "Set <=0 to disable component filtering."
+        ),
+    )
+    parser.add_argument(
+        "--min-largest-component-ratio",
+        type=float,
+        default=0.75,
+        help=(
+            "Reject a multi-component cloud when its largest connected component "
+            "contains less than this fraction of all points."
+        ),
+    )
+    parser.add_argument(
+        "--max-secondary-component-ratio",
+        type=float,
+        default=0.20,
+        help=(
+            "Reject a multi-component cloud when its second-largest component "
+            "exceeds this fraction of all points. Set <=0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--min-component-centroid-gap-m",
+        type=float,
+        default=0.02,
+        help=(
+            "Minimum centroid separation between the two largest components before "
+            "the cloud is treated as two merged objects."
+        ),
+    )
+    parser.add_argument(
+        "--min-component-points",
+        type=int,
+        default=20,
+        help="Ignore disconnected components with fewer points than this.",
+    )
+    parser.add_argument(
         "--save-object-summary",
         action="store_true",
         help=(
@@ -743,6 +785,105 @@ def warn_near_miss_unmerged_clusters(clusters: list[list[Observation3D]], args: 
                 )
 
 
+def point_cloud_component_stats(
+    points: np.ndarray,
+    voxel_size_m: float,
+    min_component_points: int = 1,
+) -> dict[str, Any]:
+    """Measure disconnected 3D regions using a dependency-free voxel graph."""
+    points = np.asarray(points, dtype=np.float64)
+    if len(points) == 0 or voxel_size_m <= 0.0:
+        return {
+            "component_count": 0,
+            "largest_component_ratio": 0.0,
+            "second_component_ratio": 0.0,
+            "component_centroid_gap_m": None,
+        }
+
+    voxel_coords = np.floor(points / float(voxel_size_m)).astype(np.int64)
+    unique_voxels, inverse, voxel_counts = np.unique(
+        voxel_coords,
+        axis=0,
+        return_inverse=True,
+        return_counts=True,
+    )
+    voxel_sums = np.zeros((len(unique_voxels), 3), dtype=np.float64)
+    np.add.at(voxel_sums, inverse, points)
+    voxel_index = {
+        tuple(int(value) for value in coord): index
+        for index, coord in enumerate(unique_voxels)
+    }
+    neighbor_offsets = [
+        (dx, dy, dz)
+        for dx in (-1, 0, 1)
+        for dy in (-1, 0, 1)
+        for dz in (-1, 0, 1)
+        if (dx, dy, dz) != (0, 0, 0)
+    ]
+
+    visited: set[int] = set()
+    components: list[dict[str, Any]] = []
+    for start_index, start_coord in enumerate(unique_voxels):
+        if start_index in visited:
+            continue
+        stack = [start_index]
+        visited.add(start_index)
+        component_count = 0
+        component_sum = np.zeros((3,), dtype=np.float64)
+        while stack:
+            current_index = stack.pop()
+            component_count += int(voxel_counts[current_index])
+            component_sum += voxel_sums[current_index]
+            coord = unique_voxels[current_index]
+            for dx, dy, dz in neighbor_offsets:
+                neighbor = (
+                    int(coord[0] + dx),
+                    int(coord[1] + dy),
+                    int(coord[2] + dz),
+                )
+                neighbor_index = voxel_index.get(neighbor)
+                if neighbor_index is None or neighbor_index in visited:
+                    continue
+                visited.add(neighbor_index)
+                stack.append(neighbor_index)
+        if component_count >= max(1, int(min_component_points)):
+            components.append({
+                "point_count": component_count,
+                "centroid_world": (component_sum / component_count),
+            })
+
+    components.sort(key=lambda item: int(item["point_count"]), reverse=True)
+    total_points = max(1, len(points))
+    largest_ratio = (
+        float(components[0]["point_count"] / total_points) if components else 0.0
+    )
+    second_ratio = (
+        float(components[1]["point_count"] / total_points)
+        if len(components) >= 2
+        else 0.0
+    )
+    centroid_gap = (
+        float(
+            np.linalg.norm(
+                components[0]["centroid_world"]
+                - components[1]["centroid_world"]
+            )
+        )
+        if len(components) >= 2
+        else None
+    )
+    return {
+        "component_count": len(components),
+        "largest_component_ratio": largest_ratio,
+        "second_component_ratio": second_ratio,
+        "component_centroid_gap_m": centroid_gap,
+        "component_point_counts": [
+            int(component["point_count"]) for component in components
+        ],
+        "voxel_size_m": float(voxel_size_m),
+    }
+
+
 def filter_small_clusters(clusters: list[list[Observation3D]], args: argparse.Namespace) -> list[list[Observation3D]]:
     """Drop fused (post-clustering) objects that are too small to be real.
 
@@ -759,10 +900,30 @@ def filter_small_clusters(clusters: list[list[Observation3D]], args: argparse.Na
     max_centroid_gap = float(
         getattr(args, "max_centroid_to_cloud_distance_m", 0.0)
     )
+    component_voxel_size = float(
+        getattr(args, "component_voxel_size_m", 0.0)
+    )
+    min_largest_component_ratio = float(
+        getattr(args, "min_largest_component_ratio", 0.0)
+    )
+    max_secondary_component_ratio = float(
+        getattr(args, "max_secondary_component_ratio", 0.0)
+    )
+    min_component_centroid_gap = float(
+        getattr(args, "min_component_centroid_gap_m", 0.0)
+    )
+    min_component_points = max(
+        1, int(getattr(args, "min_component_points", 1))
+    )
+    component_filter_enabled = (
+        component_voxel_size > 0.0
+        and max_secondary_component_ratio > 0.0
+    )
     if (
         args.min_fused_points <= 0
         and args.min_bbox_diagonal_m <= 0.0
         and max_centroid_gap <= 0.0
+        and not component_filter_enabled
     ):
         return clusters
     kept = []
@@ -819,6 +980,45 @@ def filter_small_clusters(clusters: list[list[Observation3D]], args: argparse.Na
                 f"{sorted({obs.camera for obs in cluster})}): centroid-to-cloud "
                 f"distance {centroid_to_cloud_distance:.3f}m > "
                 f"--max-centroid-to-cloud-distance-m {max_centroid_gap:.3f}m.",
+                file=sys.stderr,
+            )
+            continue
+        component_stats = point_cloud_component_stats(
+            all_points,
+            component_voxel_size,
+            min_component_points,
+        )
+        component_gap = component_stats.get("component_centroid_gap_m")
+        multiple_large_components = (
+            component_filter_enabled
+            and int(component_stats.get("component_count", 0)) >= 2
+            and float(component_stats.get("largest_component_ratio", 0.0))
+            < min_largest_component_ratio
+            and float(component_stats.get("second_component_ratio", 0.0))
+            > max_secondary_component_ratio
+            and component_gap is not None
+            and float(component_gap) >= min_component_centroid_gap
+        )
+        if multiple_large_components:
+            detail = {
+                "reason": "multiple_large_3d_components",
+                "cameras": sorted({obs.camera for obs in cluster}),
+                **component_stats,
+                "thresholds": {
+                    "min_largest_component_ratio": min_largest_component_ratio,
+                    "max_secondary_component_ratio": max_secondary_component_ratio,
+                    "min_component_centroid_gap_m": min_component_centroid_gap,
+                    "min_component_points": min_component_points,
+                },
+            }
+            if isinstance(diagnostics, list):
+                diagnostics.append(detail)
+            print(
+                f"[info] dropping merged observation cluster (cameras "
+                f"{detail['cameras']}): largest component "
+                f"{component_stats['largest_component_ratio']:.2%}, secondary "
+                f"{component_stats['second_component_ratio']:.2%}, component "
+                f"gap {float(component_gap):.3f}m.",
                 file=sys.stderr,
             )
             continue
@@ -1247,12 +1447,18 @@ def assign_object_ids(
         centroid_to_cloud_distance = float(
             np.linalg.norm(all_points - centroid, axis=1).min()
         )
+        component_stats = point_cloud_component_stats(
+            all_points,
+            float(getattr(args, "component_voxel_size_m", 0.0)),
+            max(1, int(getattr(args, "min_component_points", 1))),
+        )
         objects.append({
             "id": f"O{index}",
             "role_evidence": aggregate_role_evidence(cluster, frame_id),
             "_points_world": all_points,
             "centroid_world": centroid.tolist(),
             "centroid_to_cloud_distance_m": centroid_to_cloud_distance,
+            "point_cloud_components": component_stats,
             "bbox3d_world": np.stack([all_points.min(axis=0), all_points.max(axis=0)]).tolist(),
             "visible_camera": sorted({o.camera for o in cluster}),
             "mask_area": int(sum(int(o.candidate.get("mask_area_pixels", 0)) for o in cluster)),
@@ -1439,6 +1645,11 @@ def _fusion_parameters(args: argparse.Namespace, rlbench_low_dim_path: Path, has
         "min_fused_points": args.min_fused_points,
         "min_bbox_diagonal_m": args.min_bbox_diagonal_m,
         "max_centroid_to_cloud_distance_m": args.max_centroid_to_cloud_distance_m,
+        "component_voxel_size_m": args.component_voxel_size_m,
+        "min_largest_component_ratio": args.min_largest_component_ratio,
+        "max_secondary_component_ratio": args.max_secondary_component_ratio,
+        "min_component_centroid_gap_m": args.min_component_centroid_gap_m,
+        "min_component_points": args.min_component_points,
         "max_hypothesis_diameter_m": args.max_hypothesis_diameter_m,
         "max_size_ratio": args.max_size_ratio,
         "legacy_canonical_iou": args.legacy_canonical_iou,

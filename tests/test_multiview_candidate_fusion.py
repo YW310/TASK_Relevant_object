@@ -108,6 +108,20 @@ class SourceFrameIndexTest(unittest.TestCase):
 
 
 class CentroidCloudConsistencyTest(unittest.TestCase):
+    @staticmethod
+    def _component_args(diagnostics: list[dict] | None = None) -> SimpleNamespace:
+        return SimpleNamespace(
+            min_fused_points=0,
+            min_bbox_diagonal_m=0.0,
+            max_centroid_to_cloud_distance_m=0.0,
+            component_voxel_size_m=0.008,
+            min_largest_component_ratio=0.75,
+            max_secondary_component_ratio=0.20,
+            min_component_centroid_gap_m=0.02,
+            min_component_points=5,
+            _filtered_cluster_diagnostics=diagnostics if diagnostics is not None else [],
+        )
+
     def test_large_empty_gap_around_centroid_drops_cluster(self) -> None:
         bad = _observation(
             "front:bad",
@@ -157,6 +171,56 @@ class CentroidCloudConsistencyTest(unittest.TestCase):
         )
 
         kept = filter_small_clusters([[candidate]], args)
+        self.assertEqual(1, len(kept))
+        self.assertIs(candidate, kept[0][0])
+
+    def test_two_large_disconnected_point_regions_drop_cluster(self) -> None:
+        candidate = _observation(
+            "front:two-objects",
+            "front",
+            [[0.0, 0.0, 0.0], [0.04, 0.001, 0.001]],
+        )
+        candidate.points_world = np.concatenate(
+            (
+                np.tile([[0.0, 0.0, 0.0]], (60, 1)),
+                np.tile([[0.04, 0.0, 0.0]], (40, 1)),
+            ),
+            axis=0,
+        )
+        candidate.centroid_world = candidate.points_world.mean(axis=0)
+        diagnostics: list[dict] = []
+
+        kept = filter_small_clusters(
+            [[candidate]],
+            self._component_args(diagnostics),
+        )
+
+        self.assertEqual([], kept)
+        self.assertEqual("multiple_large_3d_components", diagnostics[0]["reason"])
+        self.assertAlmostEqual(0.6, diagnostics[0]["largest_component_ratio"])
+        self.assertAlmostEqual(0.4, diagnostics[0]["second_component_ratio"])
+        self.assertAlmostEqual(0.04, diagnostics[0]["component_centroid_gap_m"])
+
+    def test_small_secondary_region_is_treated_as_noise(self) -> None:
+        candidate = _observation(
+            "front:object-plus-noise",
+            "front",
+            [[0.0, 0.0, 0.0], [0.04, 0.001, 0.001]],
+        )
+        candidate.points_world = np.concatenate(
+            (
+                np.tile([[0.0, 0.0, 0.0]], (85, 1)),
+                np.tile([[0.04, 0.0, 0.0]], (15, 1)),
+            ),
+            axis=0,
+        )
+        candidate.centroid_world = candidate.points_world.mean(axis=0)
+
+        kept = filter_small_clusters(
+            [[candidate]],
+            self._component_args(),
+        )
+
         self.assertEqual(1, len(kept))
         self.assertIs(candidate, kept[0][0])
 
