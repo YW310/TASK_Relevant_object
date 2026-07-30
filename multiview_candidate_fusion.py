@@ -1152,9 +1152,19 @@ def _geometry_segment(value: Any) -> str:
     return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in text) or "unknown"
 
 
+def _frame_artifact_key(frame_id: Any, frame_index: Any) -> str:
+    """Return a stable, sortable directory key such as ``000000_0``."""
+    frame_id_segment = _geometry_segment(frame_id)
+    try:
+        index_segment = f"{int(frame_index):06d}"
+    except (TypeError, ValueError):
+        index_segment = _geometry_segment(frame_index)
+    return f"{index_segment}_{frame_id_segment}"
+
+
 def save_frame_geometry(frame: Mapping[str, Any], output_path: Path) -> None:
     """Move transient point arrays from a fused frame into a compressed NPZ."""
-    frame_key = _geometry_segment(frame.get("frame_id", frame.get("frame_index", "frame")))
+    frame_key = _frame_artifact_key(frame.get("frame_id", "frame"), frame.get("frame_index", "unknown"))
     relative_path = Path("frames") / frame_key / "fused_geometry.npz"
     archive_path = output_path.parent / relative_path
     # Keep identity metadata inside the archive itself.  This makes the NPZ a
@@ -1365,7 +1375,7 @@ def main() -> None:
     seen_frame_keys: set[str] = set()
     for frame in source_frames:
         frame_id = str(frame["frame_id"])
-        frame_key = _geometry_segment(frame_id)
+        frame_key = _frame_artifact_key(frame_id, frame.get("frame_index", "unknown"))
         if frame_key in seen_frame_keys:
             raise ValueError(f"Frame ids produce duplicate filesystem key: {frame_key!r}")
         seen_frame_keys.add(frame_key)
