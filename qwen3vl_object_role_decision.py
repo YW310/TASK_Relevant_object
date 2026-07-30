@@ -75,6 +75,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for temporal object contact sheets. Default: decision_inputs next to --output-json.",
     )
     parser.add_argument(
+        "--use-decision-history",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Feed recent model decisions back into the next prompt. Disabled by default "
+            "to prevent an early wrong decision from propagating through the episode."
+        ),
+    )
+    parser.add_argument(
         "--max-candidates-for-decision",
         type=int,
         default=12,
@@ -184,22 +193,96 @@ def _contact_sheet_font(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
-def _best_candidate_observation(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
+def _semantic_role_score(candidate: Mapping[str, Any], role_name: str) -> float:
+    role_evidence = candidate.get("role_evidence", {})
+    if not isinstance(role_evidence, Mapping):
+        return 0.0
+    value = role_evidence.get(role_name, 0.0)
+    if isinstance(value, Mapping):
+        for key in ("probability", "score", "score_mass"):
+            if value.get(key) is not None:
+                return float(value[key])
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _target_proximity_cues(context: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Normalize current-distance and approach evidence used after semantic filtering."""
+    context = context or {}
+    explicit = context.get("target_proximity_cues", {})
+    if isinstance(explicit, Mapping) and explicit:
+        return dict(explicit)
+
+    stats = context.get("end_effector_distance_m", {})
+    if not isinstance(stats, Mapping):
+        stats = {}
+    current = stats.get("current", stats.get("last"))
+    minimum = stats.get("min")
+    return {
+        "current_distance_m": float(current) if current is not None else None,
+        "window_min_distance_m": float(minimum) if minimum is not None else None,
+        "approach_delta_m": 0.0,
+        "approaching_step_fraction": 0.0,
+        "consistently_approaching": False,
+        "distance_sample_count": 0,
+    }
+
+
+def _target_proximity_sort_key(
+    object_id: str,
+    temporal_context_by_object: Mapping[str, Mapping[str, Any]],
+) -> tuple[Any, ...]:
+    cues = _target_proximity_cues(temporal_context_by_object.get(object_id))
+    current = cues.get("current_distance_m")
+    minimum = cues.get("window_min_distance_m")
+    approach_delta = float(cues.get("approach_delta_m") or 0.0)
+    approach_fraction = float(cues.get("approaching_step_fraction") or 0.0)
+    consistently_approaching = bool(cues.get("consistently_approaching", False))
+    return (
+        current is None,
+        float(current) if current is not None else float("inf"),
+        not consistently_approaching,
+        -approach_fraction,
+        -approach_delta,
+        float(minimum) if minimum is not None else float("inf"),
+    )
+
+
+def _candidate_observation_cards(
+    candidate: Mapping[str, Any],
+    max_views: int = 2,
+) -> list[dict[str, Any]]:
     observations = sorted(
         list(candidate.get("observations", [])),
         key=lambda item: float(item.get("sam_score") or 0.0),
         reverse=True,
     )
+    cards = []
+    seen_cameras = set()
     for observation in observations:
+        camera = str(observation.get("camera") or "unknown")
+        if camera in seen_cameras:
+            continue
         image_path = _best_observation_image(observation)
-        if image_path is not None:
-            return {
+        if image_path is None:
+            continue
+        seen_cameras.add(camera)
+        cards.append(
+            {
                 "object_id": str(candidate.get("object_id")),
-                "camera": observation.get("camera"),
+                "camera": camera,
                 "sam_score": float(observation.get("sam_score") or 0.0),
+                "target_prior": _semantic_role_score(candidate, "target"),
+                "reference_prior": _semantic_role_score(candidate, "reference"),
                 "image_path": image_path,
             }
-    return None
+        )
+        if len(cards) >= max(1, max_views):
+            break
+    return cards
 
 
 def _build_object_contact_sheet(
@@ -209,9 +292,7 @@ def _build_object_contact_sheet(
     """Render one object-ID-labelled visual summary for a fused frame."""
     cards = []
     for candidate in sorted(frame_input.get("candidate_objects", []), key=_object_id_sort_key):
-        observation = _best_candidate_observation(candidate)
-        if observation is not None:
-            cards.append(observation)
+        cards.extend(_candidate_observation_cards(candidate))
     if not cards:
         return None
 
@@ -264,7 +345,11 @@ def _build_object_contact_sheet(
         )
         draw.text(
             (x0 + 8, y0 + 161),
-            f"SAM={card.get('sam_score', 0.0):.3f}",
+            (
+                f"SAM={card.get('sam_score', 0.0):.2f} "
+                f"T={card.get('target_prior', 0.0):.2f} "
+                f"R={card.get('reference_prior', 0.0):.2f}"
+            ),
             fill=(55, 55, 55),
             font=label_font,
         )
@@ -277,7 +362,7 @@ def _build_object_contact_sheet(
         "kind": "object_contact_sheet",
         "frame_id": frame_id,
         "frame_index": frame_index,
-        "object_ids": [card["object_id"] for card in cards],
+        "object_ids": sorted({card["object_id"] for card in cards}),
         "image_path": str(output_path.resolve()),
     }
 
@@ -353,11 +438,32 @@ def _filter_candidates(
         # Safety fallback: never send an empty candidate set into the decision prompt.
         kept = [dict(item) for item in candidates]
 
+    best_target_score = max(
+        (_semantic_role_score(item, "target") for item in kept),
+        default=0.0,
+    )
+    target_gate_threshold = (
+        max(0.05, 0.5 * best_target_score) if best_target_score > 0.0 else 0.0
+    )
+
+    def target_gate_rank(item: Mapping[str, Any]) -> int:
+        # When Stage 1 has no target evidence, keep every candidate in the same
+        # compatibility tier and let visual Qwen evidence perform the filtering.
+        if best_target_score <= 0.0:
+            return 0
+        return int(_semantic_role_score(item, "target") < target_gate_threshold)
+
     kept.sort(
         key=lambda item: (
+            target_gate_rank(item),
+            *_target_proximity_sort_key(
+                str(item.get("object_id")),
+                temporal_context_by_object,
+            ),
+            -_semantic_role_score(item, "target"),
+            -_semantic_role_score(item, "reference"),
             -int(item.get("camera_count") or 0),
             -float(item.get("sam_score") or 0.0),
-            float((temporal_context_by_object.get(str(item.get("object_id")), {}).get("end_effector_distance_m", {}).get("mean") or 1e9)),
             -int(item.get("point_count") or 0),
             str(item.get("object_id") or ""),
         )
@@ -375,6 +481,12 @@ def _filter_candidates(
             "min_candidate_sam_score": args.min_candidate_sam_score,
             "max_ee_distance_m": args.max_ee_distance_m,
             "max_candidates_for_decision": args.max_candidates_for_decision,
+            "target_gate_threshold": target_gate_threshold,
+            "target_gate_basis": "stage1_target_role_evidence",
+            "within_target_gate_order": (
+                "current_ee_distance, consistent_approach, approach_fraction, "
+                "approach_delta, window_min_distance"
+            ),
         },
     }
     return kept, stats
@@ -448,6 +560,7 @@ def _build_temporal_object_context(
         for frame in selected_frames
         if frame.get("frame_index") is not None and str(frame.get("frame_index")).isdigit()
     }
+    decision_frame_id = str(selected_frames[-1].get("frame_id")) if selected_frames else None
 
     context_by_object: dict[str, Any] = {}
     for track in summary.get("object_tracks", []):
@@ -462,7 +575,7 @@ def _build_temporal_object_context(
             continue
 
         samples = sorted(samples, key=_frame_sort_key)
-        ee_distances = []
+        ee_distance_samples = []
         for item in samples:
             source_frame_index = frame_index_from_frame(item)
             if source_frame_index is None:
@@ -470,7 +583,55 @@ def _build_temporal_object_context(
             if source_frame_index not in ee_by_frame_index:
                 continue
             centroid = np.asarray(item.get("centroid_world", [0.0, 0.0, 0.0]), dtype=np.float64)
-            ee_distances.append(float(np.linalg.norm(centroid - ee_by_frame_index[source_frame_index])))
+            ee_distance_samples.append(
+                {
+                    "frame_id": str(item.get("frame_id")),
+                    "frame_index": item.get("frame_index"),
+                    "distance_m": float(
+                        np.linalg.norm(centroid - ee_by_frame_index[source_frame_index])
+                    ),
+                }
+            )
+
+        ee_distances = [float(item["distance_m"]) for item in ee_distance_samples]
+        approach_steps = [
+            ee_distances[index - 1] - ee_distances[index]
+            for index in range(1, len(ee_distances))
+        ]
+        # Allow 2 mm of pose/centroid jitter when deciding whether every
+        # observed step moves toward the object.
+        approach_tolerance_m = 0.002
+        approaching_step_fraction = (
+            float(
+                sum(delta >= -approach_tolerance_m for delta in approach_steps)
+                / len(approach_steps)
+            )
+            if approach_steps
+            else 0.0
+        )
+        current_distance = next(
+            (
+                float(item["distance_m"])
+                for item in reversed(ee_distance_samples)
+                if item["frame_id"] == decision_frame_id
+            ),
+            None,
+        )
+        proximity_cues = {
+            "current_distance_m": current_distance,
+            "window_min_distance_m": min(ee_distances) if ee_distances else None,
+            "approach_delta_m": (
+                float(ee_distances[0] - ee_distances[-1])
+                if len(ee_distances) >= 2
+                else 0.0
+            ),
+            "approaching_step_fraction": approaching_step_fraction,
+            "consistently_approaching": bool(
+                approach_steps
+                and all(delta >= -approach_tolerance_m for delta in approach_steps)
+            ),
+            "distance_sample_count": len(ee_distances),
+        }
 
         centroids = [np.asarray(item.get("centroid_world", [0.0, 0.0, 0.0]), dtype=np.float64) for item in samples]
         motion_path_length_m = float(
@@ -501,6 +662,8 @@ def _build_temporal_object_context(
             "window_bbox_diagonal_m_stats": _values_stats(bbox_diagonals),
             "window_motion_path_length_m": motion_path_length_m,
             "end_effector_distance_m": _values_stats(ee_distances),
+            "end_effector_distance_samples": ee_distance_samples,
+            "target_proximity_cues": proximity_cues,
             "window_samples": [
                 {
                     "frame_id": item.get("frame_id"),
@@ -592,14 +755,21 @@ def _decision_prompt(payload_json: str, representative_images: Sequence[Mapping[
         "support, container, slot, surface, or region that determines the goal relation.\n"
         "- Set reference_object_id=null when no separate reference exists. A color, base, "
         "support, or part mentioned only to identify the target is not automatically a reference.\n"
+        "- Treat explicit instruction identity cues such as color, shape, and named spatial position "
+        "as primary evidence. Match those cues against the labelled object crops before using proximity.\n"
+        "- For push/press tasks, the target is the specifically commanded button or pressable object. "
+        "Do not select the gripper, a nearby button, or a large supporting panel merely because it is closer.\n"
         "- Use not only instruction text, but also geometric relations, temporal evidence, camera visibility,"
         " mask/point quality, and the chronological object contact sheets.\n"
+        "- A contact sheet can contain two camera views of the same O-id. Use the repeated O-id to compare "
+        "appearance across views; it is one physical candidate, not two candidates.\n"
         "- This is an online decision: the current frame must be judged together with previous frames in the temporal window.\n"
         "- Treat window_frames as chronological evidence ending at is_decision_frame=true. "
         "Use earlier frames to resolve occlusion and appearance, but output only a current valid object ID.\n"
         "- Consider end-effector distance as a soft cue: targets are often near the active end-effector, "
-        "but do not force this if other evidence is stronger.\n"
-        "- Prefer temporal identity continuity, but do not copy online_history when current visual evidence contradicts it.\n"
+        "but visual identity cues from the instruction take precedence.\n"
+        "- If online_history is present, use it only as weak continuity evidence. Re-evaluate the current visual window "
+        "independently and do not copy a previous choice when current visual evidence contradicts it.\n"
         "- If uncertain, set uncertain=true with explicit reason.\n\n"
         "Input evidence JSON:\n"
         f"{payload_json}\n\n"
@@ -607,12 +777,18 @@ def _decision_prompt(payload_json: str, representative_images: Sequence[Mapping[
         f"{json.dumps(image_list, ensure_ascii=False, indent=2)}\n\n"
         "Rules:\n"
         "1. Any non-null target_object_id/reference_object_id must be in valid_output_object_ids.\n"
-        "2. Prefer objects with stable multi-view support over tiny/noisy single-view fragments unless evidence strongly contradicts.\n"
-        "3. reference_object_id=null can be a confident semantic decision; it does not imply uncertainty.\n"
-        "4. Distinguish the manipulated object from its interaction part and from descriptive surroundings.\n"
-        "5. Keep the response strictly as one JSON object.\n\n"
+        "2. First populate instruction_compatible_object_ids using instruction identity only. "
+        "Do not include an object merely because it is close to the gripper.\n"
+        "3. Select target_object_id only from instruction_compatible_object_ids. If multiple objects "
+        "are compatible, prefer the smallest current_distance_m, then consistently_approaching=true, "
+        "higher approaching_step_fraction, and larger approach_delta_m over t-2 to t.\n"
+        "4. Prefer objects with stable multi-view support over tiny/noisy single-view fragments unless evidence strongly contradicts.\n"
+        "5. reference_object_id=null can be a confident semantic decision; it does not imply uncertainty.\n"
+        "6. Distinguish the manipulated object from its interaction part and from descriptive surroundings.\n"
+        "7. Keep the response strictly as one JSON object.\n\n"
         "Output schema:\n"
         "{\n"
+        "  \"instruction_compatible_object_ids\": [\"O1\", \"O2\"],\n"
         "  \"target_object_id\": \"O1\" or null,\n"
         "  \"reference_object_id\": \"O2\" or \"O3\" or null,\n"
         "  \"confidence\": 0.0 to 1.0,\n"
@@ -627,6 +803,109 @@ def _decision_prompt(payload_json: str, representative_images: Sequence[Mapping[
         "  \"rejected_reason\": \"optional short reason\"\n"
         "}"
     )
+
+
+def _apply_two_stage_target_selection(
+    result: Mapping[str, Any],
+    candidates: Sequence[Mapping[str, Any]],
+    temporal_context_by_object: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Select by instruction compatibility first, then gripper proximity."""
+    selected = dict(result)
+    valid_ids = {
+        str(candidate.get("object_id"))
+        for candidate in candidates
+        if candidate.get("object_id") is not None
+    }
+    model_target = (
+        str(result.get("target_object_id"))
+        if result.get("target_object_id") is not None
+        else None
+    )
+    raw_compatible = result.get("instruction_compatible_object_ids")
+
+    if raw_compatible is None:
+        compatible_ids = [model_target] if model_target in valid_ids else []
+        selected["instruction_compatible_object_ids"] = compatible_ids
+        selected["model_target_object_id"] = model_target
+        selected["target_selection"] = {
+            "strategy": "model_target_fallback_missing_compatibility_list",
+            "candidate_order": compatible_ids,
+        }
+        return selected
+
+    if not isinstance(raw_compatible, list):
+        raise ValueError("instruction_compatible_object_ids must be a JSON list")
+
+    compatible_ids = []
+    for value in raw_compatible:
+        object_id = str(value)
+        if object_id not in valid_ids:
+            raise ValueError(
+                "instruction_compatible_object_ids contains invalid object id "
+                f"{object_id!r}; valid ids are {sorted(valid_ids)}"
+            )
+        if object_id not in compatible_ids:
+            compatible_ids.append(object_id)
+
+    candidate_by_id = {
+        str(candidate.get("object_id")): candidate for candidate in candidates
+    }
+    with_current_distance = [
+        object_id
+        for object_id in compatible_ids
+        if _target_proximity_cues(
+            temporal_context_by_object.get(object_id)
+        ).get("current_distance_m") is not None
+    ]
+
+    if with_current_distance:
+        candidate_order = sorted(
+            compatible_ids,
+            key=lambda object_id: (
+                *_target_proximity_sort_key(
+                    object_id,
+                    temporal_context_by_object,
+                ),
+                -_semantic_role_score(candidate_by_id[object_id], "target"),
+                object_id,
+            ),
+        )
+        final_target = candidate_order[0]
+        strategy = "instruction_gate_then_current_gripper_proximity"
+    elif model_target in compatible_ids:
+        candidate_order = [
+            model_target,
+            *[object_id for object_id in compatible_ids if object_id != model_target],
+        ]
+        final_target = model_target
+        strategy = "instruction_gate_then_model_target_no_current_gripper_pose"
+    else:
+        candidate_order = sorted(
+            compatible_ids,
+            key=lambda object_id: (
+                -_semantic_role_score(candidate_by_id[object_id], "target"),
+                object_id,
+            ),
+        )
+        final_target = candidate_order[0] if candidate_order else None
+        strategy = "instruction_gate_then_semantic_fallback_no_current_gripper_pose"
+
+    selected["model_target_object_id"] = model_target
+    selected["instruction_compatible_object_ids"] = compatible_ids
+    selected["target_object_id"] = final_target
+    selected["target_selection"] = {
+        "strategy": strategy,
+        "candidate_order": candidate_order,
+        "selected_proximity_cues": (
+            _target_proximity_cues(
+                temporal_context_by_object.get(str(final_target))
+            )
+            if final_target is not None
+            else None
+        ),
+    }
+    return selected
 
 
 def _validate_decision_ids(result: dict[str, Any], valid_ids: set[str]) -> None:
@@ -698,7 +977,11 @@ def _run_decision_for_frame(
         temporal_window_meta,
         candidate_ids,
     )
-    previous_summary = _summarize_previous_decisions(previous_frame_decisions)
+    previous_summary = (
+        _summarize_previous_decisions(previous_frame_decisions)
+        if getattr(args, "use_decision_history", False)
+        else []
+    )
     if previous_summary:
         payload = json.loads(payload_json)
         payload["online_history"] = previous_summary
@@ -742,6 +1025,11 @@ def _run_decision_for_frame(
 
     messages = [{"role": "user", "content": content}]
     result, raw_text = grounder.generate_json(messages, max_new_tokens=args.max_new_tokens)
+    result = _apply_two_stage_target_selection(
+        result,
+        candidates,
+        temporal_context_by_object,
+    )
     _validate_decision_ids(result, candidate_ids)
 
     return {
@@ -754,8 +1042,13 @@ def _run_decision_for_frame(
         "representative_images": representative_images,
         "online_history": previous_summary,
         "decision": {
+            "instruction_compatible_object_ids": result.get(
+                "instruction_compatible_object_ids", []
+            ),
+            "model_target_object_id": result.get("model_target_object_id"),
             "target_object_id": result.get("target_object_id"),
             "reference_object_id": result.get("reference_object_id"),
+            "target_selection": result.get("target_selection"),
             "confidence": result.get("confidence"),
             "uncertain": bool(result.get("uncertain", False)),
             "uncertain_reason": result.get("uncertain_reason"),

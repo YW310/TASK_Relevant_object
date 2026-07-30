@@ -188,6 +188,7 @@ compatibility, while `frame_decisions` contains the complete episode.
 | `--decision-frame` | `DECISION_FRAME` | `last` | Select the `first` or `last` frame when scope is `single`. |
 | `--decision-frame-id` | `DECISION_FRAME_ID` | unset | Explicit frame ID; when set it forces a single-frame decision. |
 | `--decision-window-frames` | `DECISION_WINDOW_FRAMES` | `3` | Current frame `t` plus its two preceding frames `[t-2, t-1, t]` (when available), evaluated in one model call; `1` is single-frame mode. |
+| `--[no-]use-decision-history` | `USE_DECISION_HISTORY` | off / `0` | Optionally feed recent model outputs back into the prompt. Off by default so an early wrong target does not propagate. |
 | `--max-candidate-images` | `MAX_CANDIDATE_IMAGES` | `8` | Maximum chronological object contact sheets attached to each prompt. |
 | `--decision-artifacts-dir` | `DECISION_ARTIFACTS_DIR` | `decision_inputs/` | Contact-sheet output directory. |
 | `--max-candidates-for-decision` | `MAX_CANDIDATES_FOR_DECISION` | `12` | Candidate cap after filtering. |
@@ -207,15 +208,21 @@ object. A non-relational instruction is allowed to produce a confident
 `reference_object_id=null`; descriptive colors, bases, or parts do not by
 themselves create a separate reference object.
 
+Target selection is explicitly two-stage. Qwen first returns
+`instruction_compatible_object_ids` from visual and instruction identity cues.
+Only within that set does the pipeline prefer the smallest current
+end-effector distance, followed by a consistent approach over `[t-2, t-1, t]`.
+The JSON keeps `model_target_object_id` and `target_selection` diagnostics so
+distance-based adjustments remain inspectable.
+
 ### Stage 5: decision overlays (optional)
 
 `stage4_visualize_decision.py` joins `object_predictions.json` with
-`frame_fused_candidates.json`, highlights selected target/reference points on
-the camera views, and writes `decision_visualization.json` plus images under
-`viz_decision/`. Labels use role-specific IDs (`T1`, `T2`, … for targets and
-`R1`, `R2`, … for references) rather than internal fused IDs (`O1`, `O2`, …),
-and their boxes, backgrounds, text, and centroid marks are translucently
-composited so scene content remains visible.
+`frame_fused_candidates.json`, re-renders fused objects once on each raw camera
+view, and writes `decision_visualization.json` plus images under
+`viz_decision/`. A selected internal label is replaced in place (`O2` becomes
+`T2` or `R2`) instead of drawing both labels. Labels have no filled translucent
+background block, so small objects remain visible.
 
 Its required inputs are `--object-predictions-json` and `--fused-json`.
 `--episode-dir`, `--output-dir`, `--viz-dir`, `--cameras`,

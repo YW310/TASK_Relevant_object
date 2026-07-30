@@ -40,6 +40,7 @@
 #   DECISION_FRAME (default: last)          first|last frame when DECISION_SCOPE=single.
 #   DECISION_FRAME_ID                        Optional explicit frame_id; forces a single-frame decision.
 #   DECISION_WINDOW_FRAMES (default: 3)     Current t plus [t-2,t-1] ([t-2,t-1,t]), in one model call.
+#   USE_DECISION_HISTORY (default: 0)       Feed prior model outputs into later prompts (off avoids error propagation).
 #   DECISION_MAX_NEW_TOKENS (default: 1024) Stage-4 JSON generation budget per frame.
 #   DECISION_OUTPUT_JSON                     Optional explicit output path for object_predictions.json.
 #   DECISION_ARTIFACTS_DIR                   Optional output directory for temporal object contact sheets.
@@ -159,6 +160,7 @@ DECISION_SCOPE="${DECISION_SCOPE:-all}"
 DECISION_FRAME="${DECISION_FRAME:-last}"
 DECISION_FRAME_ID="${DECISION_FRAME_ID:-}"
 DECISION_WINDOW_FRAMES="${DECISION_WINDOW_FRAMES:-3}"
+USE_DECISION_HISTORY="${USE_DECISION_HISTORY:-0}"
 DECISION_MAX_NEW_TOKENS="${DECISION_MAX_NEW_TOKENS:-1024}"
 DECISION_GROUNDING_MIN_SIDE="${DECISION_GROUNDING_MIN_SIDE:-512}"
 DECISION_MAX_RETRIES="${DECISION_MAX_RETRIES:-1}"
@@ -333,6 +335,7 @@ else
   [[ -n "${DECISION_FRAME_ID}" ]] && STAGE4_ARGS+=(--decision-frame-id "${DECISION_FRAME_ID}")
   [[ -n "${DECISION_OUTPUT_JSON}" ]] && STAGE4_ARGS+=(--output-json "${DECISION_OUTPUT_JSON}")
   [[ -n "${DECISION_ARTIFACTS_DIR}" ]] && STAGE4_ARGS+=(--decision-artifacts-dir "${DECISION_ARTIFACTS_DIR}")
+  [[ "${USE_DECISION_HISTORY}" == "1" ]] && STAGE4_ARGS+=(--use-decision-history)
   [[ "${DECISION_DRY_RUN}" == "1" ]] && STAGE4_ARGS+=(--dry-run)
   "${PYTHON}" "${SCRIPT_DIR}/qwen3vl_object_role_decision.py" "${STAGE4_ARGS[@]}"
 fi

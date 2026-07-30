@@ -29,12 +29,15 @@ Use [run_full_pipeline.sh](run_full_pipeline.sh) when you want one command for t
 - Input: object_summary.json from Stage 2.
 - Output: object_predictions.json with one rolling-window target/reference decision per frame, plus the last decision at top level for compatibility.
 - Visual evidence: chronological per-frame object contact sheets under decision_inputs/.
+- Each candidate can contribute two distinct camera views; semantic target/reference priors are shown on the sheet and used before the candidate cap.
+- Previous model outputs are not fed into later prompts by default, preventing an early wrong target from becoming self-reinforcing. Set USE_DECISION_HISTORY=1 only when that continuity prior is desired.
+- Target selection is two-stage: Qwen emits instruction-compatible IDs first, then code chooses within that set by current gripper distance and the t-2 to t approach trend. Both the raw model target and final ranking diagnostics are retained.
 - Default is disabled (SKIP_DECISION=1).
 
 5. Stage 5 (optional decision visualization)
 - Script: [stage4_visualize_decision.py](stage4_visualize_decision.py)
 - Input: object_predictions.json + frame_fused_candidates.json.
-- Output: per-frame decision overlays under outputs/<episode>/viz_decision.
+- Output: per-frame decision overlays under outputs/<episode>/viz_decision. Selected labels replace the corresponding O-label (for example O2 -> T2) and no filled label background is drawn.
 
 6. Stage 6 (optional compact stage comparison)
 - Script: [stage6_visualize_stage_montage.py](stage6_visualize_stage_montage.py)

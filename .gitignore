@@ -59,3 +59,4 @@ tokenizers/*
 *.zip
 *.venv
 vis_target*
+inputs

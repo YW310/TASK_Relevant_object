@@ -208,7 +208,20 @@ outputs/light_bulb_front/qwen_candidates/qwen_selection.json
 sheet；输出 JSON 的 `frame_decisions` 保存全部逐帧结果，顶层 `decision` 保留最后一帧
 结果用于兼容后续可视化。
 
+每个候选对象最多提供两个不同相机视角，contact sheet 会显示 target/reference
+语义先验。候选截断也优先保留具有角色语义证据的对象。默认
+`USE_DECISION_HISTORY=0`，不会把上一帧的模型答案反馈给下一帧，以免首帧误判在整段
+episode 中自我强化；确实需要该连续性先验时才设置为 `1`。
+
 调试单帧时设置 `DECISION_SCOPE=single`，再用 `--decision-frame-id` 或
 `--decision-frame first|last` 选择帧。对于没有独立参考物的单对象任务，
 `reference_object_id=null` 是正常且可以高置信度的判断；仅用于识别 target 的颜色、
 底座或局部结构不应被强制解释成 reference。
+
+Target 选择采用明确的两阶段流程：Qwen 先根据 instruction 和视觉身份线索输出
+`instruction_compatible_object_ids`；代码只在该集合内优先选择当前帧夹爪距离最小的
+对象，距离相同时再选择在 `[t-2, t-1, t]` 中持续接近、接近幅度更大的对象。输出会
+保留 `model_target_object_id` 和 `target_selection`，便于检查是否发生距离重排。
+
+Stage 5 可视化会在原始 RGB 上重新绘制一次所有对象。若 `O2` 被判为 target，原标签
+直接替换为 `T2`，不会同时保留 `O2` 或再绘制带透明底色的标签方块。

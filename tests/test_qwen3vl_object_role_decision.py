@@ -6,8 +6,12 @@ from PIL import Image
 
 import qwen3vl_object_role_decision as decision_module
 from qwen3vl_object_role_decision import (
+    _apply_two_stage_target_selection,
+    _build_temporal_object_context,
+    _candidate_observation_cards,
     _collect_temporal_contact_sheets,
     _decision_prompt,
+    _filter_candidates,
     _pick_decision_frame,
     _resolve_temporal_frames,
     _run_decision_for_frame,
@@ -153,6 +157,7 @@ def test_main_calls_grounder_once_per_frame_with_rolling_windows(tmp_path, monke
     assert len(output["frame_decisions"]) == 8
     assert [item["online_step"] for item in output["frame_decisions"]] == list(range(8))
     assert output["decision"] == output["frame_decisions"][-1]["decision"]
+    assert all("online_history" not in _payload_from_call(call) for call in grounder.calls)
 
 
 def test_single_scope_keeps_explicit_debug_behavior(tmp_path, monkeypatch):
@@ -211,7 +216,258 @@ def test_temporal_contact_sheets_include_frame_and_object_ids(tmp_path):
     assert all(Image.open(item["image_path"]).size[0] > 0 for item in sheets)
 
 
+def test_candidate_contact_sheet_uses_two_distinct_best_camera_views(tmp_path):
+    paths = []
+    for name, color in (
+        ("front.png", (180, 20, 20)),
+        ("front_low.png", (120, 20, 20)),
+        ("overhead.png", (20, 180, 20)),
+    ):
+        path = tmp_path / name
+        Image.new("RGB", (24, 24), color).save(path)
+        paths.append(path)
+    candidate = {
+        "object_id": "O2",
+        "role_evidence": {
+            "target": {"probability": 0.75},
+            "reference": {"probability": 0.1},
+        },
+        "observations": [
+            {"camera": "front", "sam_score": 0.9, "masked_crop_path": str(paths[0])},
+            {"camera": "front", "sam_score": 0.7, "masked_crop_path": str(paths[1])},
+            {"camera": "overhead", "sam_score": 0.8, "masked_crop_path": str(paths[2])},
+        ],
+    }
+
+    cards = _candidate_observation_cards(candidate)
+
+    assert [item["camera"] for item in cards] == ["front", "overhead"]
+    assert [item["object_id"] for item in cards] == ["O2", "O2"]
+    assert all(item["target_prior"] == 0.75 for item in cards)
+
+
+def test_candidate_cap_prioritizes_semantic_target_evidence():
+    candidates = [
+        {
+            "object_id": "O1",
+            "camera_count": 4,
+            "point_count": 500,
+            "sam_score": 0.99,
+            "role_evidence": {"target": {"probability": 0.02}},
+        },
+        {
+            "object_id": "O2",
+            "camera_count": 1,
+            "point_count": 20,
+            "sam_score": 0.5,
+            "role_evidence": {"target": {"probability": 0.9}},
+        },
+    ]
+    args = argparse.Namespace(
+        min_candidate_point_count=0,
+        min_candidate_camera_count=1,
+        min_candidate_sam_score=0.0,
+        max_ee_distance_m=None,
+        max_candidates_for_decision=1,
+    )
+
+    kept, stats = _filter_candidates(candidates, args)
+
+    assert [item["object_id"] for item in kept] == ["O2"]
+    assert stats["kept_candidates"] == 1
+
+
+def test_candidate_cap_uses_current_gripper_distance_inside_target_gate():
+    candidates = [
+        {
+            "object_id": "O2",
+            "camera_count": 2,
+            "point_count": 100,
+            "sam_score": 0.9,
+            "role_evidence": {"target": {"probability": 0.8}},
+        },
+        {
+            "object_id": "O3",
+            "camera_count": 2,
+            "point_count": 100,
+            "sam_score": 0.9,
+            "role_evidence": {"target": {"probability": 0.7}},
+        },
+    ]
+    context = {
+        "O2": {"target_proximity_cues": {"current_distance_m": 0.3}},
+        "O3": {"target_proximity_cues": {"current_distance_m": 0.1}},
+    }
+    args = argparse.Namespace(
+        min_candidate_point_count=0,
+        min_candidate_camera_count=1,
+        min_candidate_sam_score=0.0,
+        max_ee_distance_m=None,
+        max_candidates_for_decision=1,
+    )
+
+    kept, _ = _filter_candidates(candidates, args, context)
+
+    assert [item["object_id"] for item in kept] == ["O3"]
+
+
+def test_two_stage_selection_ignores_nearest_instruction_incompatible_object():
+    candidates = [
+        {"object_id": "O1", "role_evidence": {"target": {"probability": 0.95}}},
+        {"object_id": "O2", "role_evidence": {"target": {"probability": 0.8}}},
+        {"object_id": "O3", "role_evidence": {"target": {"probability": 0.7}}},
+    ]
+    context = {
+        "O1": {"target_proximity_cues": {"current_distance_m": 0.02}},
+        "O2": {
+            "target_proximity_cues": {
+                "current_distance_m": 0.25,
+                "consistently_approaching": True,
+                "approaching_step_fraction": 1.0,
+                "approach_delta_m": 0.1,
+            }
+        },
+        "O3": {
+            "target_proximity_cues": {
+                "current_distance_m": 0.15,
+                "consistently_approaching": True,
+                "approaching_step_fraction": 1.0,
+                "approach_delta_m": 0.05,
+            }
+        },
+    }
+    model_result = {
+        "instruction_compatible_object_ids": ["O2", "O3"],
+        "target_object_id": "O2",
+        "reference_object_id": None,
+    }
+
+    selected = _apply_two_stage_target_selection(model_result, candidates, context)
+
+    assert selected["target_object_id"] == "O3"
+    assert selected["model_target_object_id"] == "O2"
+    assert "O1" not in selected["target_selection"]["candidate_order"]
+
+
+def test_two_stage_selection_uses_approach_trend_when_current_distance_ties():
+    candidates = [
+        {"object_id": "O2", "role_evidence": {"target": {"probability": 0.8}}},
+        {"object_id": "O3", "role_evidence": {"target": {"probability": 0.8}}},
+    ]
+    context = {
+        "O2": {
+            "target_proximity_cues": {
+                "current_distance_m": 0.15,
+                "consistently_approaching": True,
+                "approaching_step_fraction": 1.0,
+                "approach_delta_m": 0.08,
+            }
+        },
+        "O3": {
+            "target_proximity_cues": {
+                "current_distance_m": 0.15,
+                "consistently_approaching": False,
+                "approaching_step_fraction": 0.5,
+                "approach_delta_m": 0.02,
+            }
+        },
+    }
+
+    selected = _apply_two_stage_target_selection(
+        {
+            "instruction_compatible_object_ids": ["O3", "O2"],
+            "target_object_id": "O3",
+        },
+        candidates,
+        context,
+    )
+
+    assert selected["target_object_id"] == "O2"
+
+
+def test_temporal_context_computes_current_distance_and_approach_trend(
+    tmp_path, monkeypatch
+):
+    frames = _frames(3)
+    trajectory = [
+        {
+            "frame_id": f"f{index}",
+            "frame_index": index,
+            "centroid_world": [0.0, 0.0, 0.0],
+            "visible_camera": ["front"],
+            "camera_count": 1,
+            "sam_score": 0.9,
+            "point_count": 20,
+            "mask_area": 10,
+            "bbox3d_world": [[0.0, 0.0, 0.0], [0.01, 0.01, 0.01]],
+        }
+        for index in range(3)
+    ]
+    observations = [
+        {"gripper_pose": [distance, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]}
+        for distance in (0.5, 0.3, 0.1)
+    ]
+    monkeypatch.setattr(
+        decision_module,
+        "load_rlbench_observations",
+        lambda episode_dir, override: observations,
+    )
+
+    context, _ = _build_temporal_object_context(
+        {
+            "episode_dir": str(tmp_path),
+            "object_tracks": [{"object_id": "O2", "trajectory": trajectory}],
+        },
+        frames,
+    )
+
+    cues = context["O2"]["target_proximity_cues"]
+    assert cues["current_distance_m"] == 0.1
+    assert cues["approach_delta_m"] == 0.4
+    assert cues["approaching_step_fraction"] == 1.0
+    assert cues["consistently_approaching"] is True
+
+
+def test_decision_history_is_opt_in():
+    frames = _frames(2)
+    for frame in frames:
+        frame["candidate_objects"] = [
+            {"object_id": "O1", "camera_count": 1, "point_count": 5, "sam_score": 0.9}
+        ]
+    args = argparse.Namespace(
+        decision_window_frames=3,
+        min_candidate_point_count=0,
+        min_candidate_camera_count=1,
+        min_candidate_sam_score=0.0,
+        max_ee_distance_m=None,
+        max_candidates_for_decision=12,
+        max_candidate_images=0,
+        use_decision_history=True,
+        dry_run=False,
+        max_new_tokens=64,
+    )
+    previous = [{
+        "frame_id": "f0",
+        "frame_index": 0,
+        "decision": {
+            "target_object_id": "O1",
+            "reference_object_id": None,
+            "confidence": 0.8,
+            "uncertain": False,
+        },
+    }]
+    grounder = _MockGrounder()
+
+    _run_decision_for_frame({}, frames, frames[1], args, grounder, previous)
+
+    payload = _payload_from_call(grounder.calls[0])
+    assert payload["online_history"][0]["frame_id"] == "f0"
+
+
 def test_prompt_allows_confident_null_reference_for_unary_tasks():
     prompt = _decision_prompt("{}", [])
     assert "reference_object_id=null" in prompt
     assert "does not imply uncertainty" in prompt
+    assert "visual identity cues from the instruction take precedence" in prompt
+    assert "instruction_compatible_object_ids" in prompt
+    assert "smallest current_distance_m" in prompt

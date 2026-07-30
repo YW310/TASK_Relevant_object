@@ -7,9 +7,9 @@ TARGET / REFERENCE overlays for every frame decision onto per-camera images.
 By default it writes images to:
   outputs/<episode>/viz_decision/
 
-It prefers using existing Stage-3 reprojection images as the background
-(<viz>/<frame_id>_<camera>_reproj.png). If unavailable, it falls back to raw
-RGB images from <episode>/<camera>_rgb/<frame_id>.png.
+It re-renders fused objects on the raw RGB image so selected labels replace the
+corresponding O-label instead of being stacked on an existing Stage-3 overlay.
+The Stage-3 path is retained in metadata for optional comparison rendering.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from multiview_candidate_fusion import (
     parse_csv,
     resolve_camera_param_for_frame,
 )
-from visualize_fused_candidates import find_rgb_path, project_points
+from visualize_fused_candidates import OBJECT_COLORS, find_rgb_path, project_points
 
 ROLE_COLORS = {
     "target": (255, 80, 80),
@@ -48,6 +48,11 @@ def _decision_label(role_name: str, object_id: str) -> str:
     """Render a role-specific id (T1/R2), never the internal fused O-id."""
     suffix = object_id[1:] if object_id.startswith("O") and len(object_id) > 1 else object_id
     return f"{ROLE_TAG[role_name]}{suffix}"
+
+
+def _display_label(object_id: str, role_name: str | None) -> str:
+    """Return one label per object: O-id normally, T/R-id when selected."""
+    return _decision_label(role_name, object_id) if role_name is not None else object_id
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -118,17 +123,22 @@ def _draw_decision_overlay(
     point_radius: int,
     mask_alpha: int,
 ) -> Image.Image:
+    """Render all fused objects once, replacing selected O-labels with T/R labels."""
     image = background.convert("RGBA")
     width, height = image.size
     mask_layer = np.zeros((height, width, 4), dtype=np.uint8)
-    boxes: list[tuple[tuple[int, int, int, int], tuple[int, int, int], str]] = []
-    labels: list[tuple[float, float, str, tuple[int, int, int]]] = []
-
+    boxes: list[tuple[tuple[int, int, int, int], tuple[int, int, int], bool]] = []
+    labels: list[tuple[float, float, str, tuple[int, int, int], bool]] = []
+    role_by_object_id: dict[str, str] = {}
     for role_name, object_id in decisions:
-        obj = objects_by_id.get(object_id)
-        if obj is None:
-            continue
-        color = ROLE_COLORS[role_name]
+        # Target wins if malformed output assigns both roles to one object.
+        if object_id not in role_by_object_id or role_name == "target":
+            role_by_object_id[object_id] = role_name
+
+    for object_index, (object_id, obj) in enumerate(objects_by_id.items()):
+        role_name = role_by_object_id.get(object_id)
+        selected = role_name is not None
+        color = ROLE_COLORS[role_name] if role_name is not None else OBJECT_COLORS[object_index % len(OBJECT_COLORS)]
         points = load_object_points(frame, object_id)
         if len(points) == 0:
             continue
@@ -146,38 +156,43 @@ def _draw_decision_overlay(
         for u, v in visible_uv:
             layer_draw.ellipse(
                 [u - point_radius, v - point_radius, u + point_radius, v + point_radius],
-                fill=(*color, mask_alpha),
+                fill=(*color, mask_alpha if selected else min(mask_alpha, 55)),
             )
         mask_layer = np.maximum(mask_layer, np.asarray(layer))
 
         u_min, v_min = visible_uv.min(axis=0)
         u_max, v_max = visible_uv.max(axis=0)
-        label = _decision_label(role_name, object_id)
-        boxes.append(((int(u_min), int(v_min), int(u_max), int(v_max)), color, label))
+        label = _display_label(object_id, role_name)
+        boxes.append(((int(u_min), int(v_min), int(u_max), int(v_max)), color, selected))
 
         centroid_uv, centroid_valid = project_points(np.asarray([obj.get("centroid_world", [0.0, 0.0, 0.0])], dtype=np.float64), intrinsics, extrinsics)
         if centroid_valid[0]:
             cu, cv = centroid_uv[0]
         else:
             cu, cv = float(u_min), float(v_min)
-        labels.append((float(cu), float(cv), label, color))
+        labels.append((float(cu), float(cv), label, color, selected))
 
     image = Image.alpha_composite(image, Image.fromarray(mask_layer, mode="RGBA"))
-    # Draw annotations on a separate transparent layer and composite it. Merely
-    # drawing alpha-valued colors onto ``image`` before convert("RGB") would
-    # discard alpha instead of visually blending the label with the scene.
-    annotation_layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(annotation_layer, "RGBA")
-    for (u_min, v_min, u_max, v_max), color, label in boxes:
-        # Keep decision overlays translucent to preserve scene context under the highlight.
-        draw.rectangle([u_min, v_min, u_max, v_max], outline=(*color, 170), width=3)
-        text_w = max(80, 7 * len(label))
-        draw.rectangle([u_min, max(0, v_min - 18), min(width - 1, u_min + text_w), v_min], fill=(*color, 130))
-        draw.text((u_min + 3, max(0, v_min - 16)), label, fill=(255, 255, 255, 210))
-    for cu, cv, label, color in labels:
-        draw.ellipse([cu - 3, cv - 3, cu + 3, cv + 3], fill=(*color, 190), outline=(255, 255, 255, 210), width=1)
+    draw = ImageDraw.Draw(image, "RGBA")
+    for (u_min, v_min, u_max, v_max), color, selected in boxes:
+        draw.rectangle(
+            [u_min, v_min, u_max, v_max],
+            outline=(*color, 255),
+            width=3 if selected else 2,
+        )
+    for cu, cv, label, color, selected in labels:
+        radius = 2.5 if selected else 1.25
+        draw.ellipse(
+            [cu - radius, cv - radius, cu + radius, cv + radius],
+            fill=(*color, 255) if selected else None,
+            outline=(255, 255, 255, 255),
+            width=1,
+        )
+        # Draw only the replacement label. No filled label rectangle is used,
+        # avoiding the large translucent block that obscured small RLBench objects.
+        draw.text((cu + 5, cv - 7), label, fill=(*color, 255))
 
-    return Image.alpha_composite(image, annotation_layer)
+    return image
 
 
 def _background_image(
@@ -185,14 +200,16 @@ def _background_image(
     episode_dir: Path,
     camera: str,
     frame_id: str,
-) -> tuple[Image.Image | None, str]:
+) -> tuple[Image.Image | None, str, str]:
+    """Use raw RGB for re-rendering while retaining Stage-3 path for comparison."""
     viz_path = viz_dir / f"{frame_id}_{camera}_reproj.png"
-    if viz_path.is_file():
-        return Image.open(viz_path).convert("RGBA"), str(viz_path)
     rgb_path = find_rgb_path(episode_dir, camera, frame_id)
     if rgb_path is not None:
-        return Image.open(rgb_path).convert("RGBA"), str(rgb_path)
-    return None, ""
+        comparison_path = viz_path if viz_path.is_file() else rgb_path
+        return Image.open(rgb_path).convert("RGBA"), str(rgb_path), str(comparison_path)
+    if viz_path.is_file():
+        return Image.open(viz_path).convert("RGBA"), str(viz_path), str(viz_path)
+    return None, "", ""
 
 
 def _blank_background_size(intrinsics: np.ndarray) -> tuple[int, int]:
@@ -251,7 +268,9 @@ def main() -> None:
         target_cameras = [c for c in decision_cameras if camera_filter is None or c in camera_filter]
 
         for camera in target_cameras:
-            background, background_path = _background_image(viz_dir, episode_dir, camera, frame_id)
+            background, render_background_path, comparison_background_path = _background_image(
+                viz_dir, episode_dir, camera, frame_id
+            )
             params = resolve_camera_param_for_frame(
                 camera,
                 frame_index,
@@ -267,7 +286,8 @@ def main() -> None:
             if background is None:
                 width, height = _blank_background_size(params["intrinsics"])
                 background = Image.new("RGBA", (width, height), (248, 248, 248, 255))
-                background_path = ""
+                render_background_path = ""
+                comparison_background_path = ""
                 print(f"[warn] frame_id={frame_id} camera={camera}: no background image found; rendering on blank canvas.", file=sys.stderr)
 
             image = _draw_decision_overlay(
@@ -291,7 +311,8 @@ def main() -> None:
                     "target_object_id": target_id,
                     "reference_object_id": reference_id,
                     "output_path": str(out_path),
-                    "background_path": background_path,
+                    "render_background_path": render_background_path,
+                    "background_path": comparison_background_path,
                 }
             )
 
