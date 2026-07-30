@@ -198,3 +198,10 @@ outputs/light_bulb_front/qwen_candidates/qwen_selection.json
 --candidate-top-k 6
 --min-mask-area 20~40
 ```
+
+## Stage 4：对象级角色决策
+
+`qwen3vl_object_role_decision.py` 默认使用 `DECISION_WINDOW_FRAMES=3`：以当前决策帧
+`t` 为锚点，只取当前帧和前两帧 `[t-2, t-1, t]`（episode 开头按实际帧数截断），
+并通过**一次模型调用**综合这些时序证据。`--decision-frame-id` 可显式指定 `t`；否则
+`--decision-frame last` 选择最后一帧。

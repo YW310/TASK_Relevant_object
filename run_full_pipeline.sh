@@ -36,7 +36,7 @@
 #   DECISION_MODEL_PATH                      Qwen3-VL model path for stage 4 (default: MODEL_PATH or script default).
 #   DECISION_FRAME (default: last)          first|last decision frame from object_summary.
 #   DECISION_FRAME_ID                        Optional explicit frame_id for decision.
-#   DECISION_WINDOW_FRAMES (default: 3)     Temporal window size (recent frames) for stage-4 decision.
+#   DECISION_WINDOW_FRAMES (default: 3)     Current t plus [t-2,t-1] ([t-2,t-1,t]), in one model call.
 #   DECISION_MAX_NEW_TOKENS (default: 1024) Stage-4 JSON generation budget per frame.
 #   DECISION_OUTPUT_JSON                     Optional explicit output path for object_predictions.json.
 #   MAX_CANDIDATE_IMAGES (default: 8)       Max representative object images attached to decision prompt.
