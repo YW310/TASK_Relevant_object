@@ -586,6 +586,37 @@ def _run_decision_for_frame(
     }
 
 
+def _build_frame_decision_entries(
+    frame_inputs: Sequence[Mapping[str, Any]],
+    decision_entry: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Project one window-based role decision onto every saved episode frame."""
+    source_frame_id = str(decision_entry.get("frame_id"))
+    entries = []
+    for index, frame_input in enumerate(_ordered_frames(frame_inputs)):
+        entry = {
+            "frame_id": frame_input.get("frame_id"),
+            "frame_index": frame_input.get("frame_index"),
+            "candidate_ids": sorted(
+                str(item.get("object_id"))
+                for item in frame_input.get("candidate_objects", [])
+                if item.get("object_id") is not None
+            ),
+            "decision_source_frame_id": decision_entry.get("frame_id"),
+            "decision_source_frame_index": decision_entry.get("frame_index"),
+            "online_step": index,
+        }
+        if "decision" in decision_entry:
+            entry["decision"] = decision_entry.get("decision")
+        if str(frame_input.get("frame_id")) == source_frame_id:
+            # Preserve the exact prompt/filter/debug evidence on the frame where
+            # the single Qwen inference was performed.
+            entry.update(decision_entry)
+            entry["online_step"] = index
+        entries.append(entry)
+    return entries
+
+
 def main() -> None:
     args = build_parser().parse_args()
     summary_path = Path(args.object_summary_json).expanduser().resolve()
@@ -615,7 +646,6 @@ def main() -> None:
 
     target_frame = _pick_decision_frame(frame_inputs, args.decision_frame, args.decision_frame_id)
 
-    frame_decisions: list[dict[str, Any]] = []
     grounder = None if args.dry_run else Qwen3VLRLBenchGrounder(
         model_path=args.model_path,
         grounding_min_side=args.grounding_min_side,
@@ -633,7 +663,7 @@ def main() -> None:
     frame_decision["online_step"] = 0
     frame_decisions.append(frame_decision)
 
-    final_decision_entry = frame_decisions[-1]
+    final_decision_entry = frame_decision
     final_candidate_ids = final_decision_entry.get("candidate_ids", [])
     final_frame_id = final_decision_entry.get("frame_id")
     final_frame_index = final_decision_entry.get("frame_index")

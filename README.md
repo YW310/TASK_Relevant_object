@@ -174,6 +174,8 @@ Set `SKIP_VIZ=1` in the shell pipeline to omit this stage.
 raw SAM role IDs. It filters fused objects, constructs a temporal evidence
 window with representative crops and geometry, and asks Qwen3-VL to select the
 current target/reference object IDs with confidence, evidence, and uncertainty.
+The single window-based result is retained for every episode frame in
+`frame_decisions`, so downstream visualization still saves every frame.
 
 | Python argument | Pipeline variable | Default | Purpose |
 | --- | --- | --- | --- |
