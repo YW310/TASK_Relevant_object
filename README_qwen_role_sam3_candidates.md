@@ -61,6 +61,8 @@ SAVE_OBJECT_SUMMARY=1 \
 
 - Sampling and coverage: FRAME_INTERVAL, MAX_FRAMES, CAMERAS
 - SAM3 recall/precision: THRESHOLD, CAMERA_THRESHOLD_OVERRIDES
+- Per-view canonicalization: MASK_NMS_IOU, CANONICAL_CONTAINMENT, CANONICAL_BBOX_IOU
+- Legacy canonicalization during fusion: LEGACY_CANONICAL_IOU, LEGACY_CANONICAL_CONTAINMENT
 - 3D fusion strictness: CLUSTER_DISTANCE_M, MIN_FUSED_POINTS, MIN_BBOX_DIAGONAL_M
 - Decision stage: SKIP_DECISION, DECISION_FRAME, DECISION_FRAME_ID, MAX_CANDIDATE_IMAGES
 
@@ -394,4 +396,9 @@ complete `prompt_provenance`, and per-role `role_scores`. Role scores use
 The `canonicalization.suppressed_candidates` diagnostic records collapsed and
 top-k-suppressed inputs. Multi-view fusion defensively canonicalizes legacy
 role-prefixed JSON and enforces a single observation per camera in every fused
-object; rejected same-camera insertions are recorded in frame diagnostics.
+object; rejected same-camera insertions are recorded in frame diagnostics. The
+legacy adapter defaults to 0.35 IoU or 0.50 smaller-mask coverage so shifted
+prompt masks for the same object are normally collapsed. Both thresholds remain
+configurable with `--legacy-canonical-iou` and
+`--legacy-canonical-containment`; inspect the suppressed-candidate diagnostics
+when tuning them further to avoid merging adjacent instances.
