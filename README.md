@@ -174,6 +174,8 @@ Set `SKIP_VIZ=1` in the shell pipeline to omit this stage.
 raw SAM role IDs. It filters fused objects, constructs a temporal evidence
 window with representative crops and geometry, and asks Qwen3-VL to select the
 current target/reference object IDs with confidence, evidence, and uncertainty.
+The single window-based result is retained for every episode frame in
+`frame_decisions`, so downstream visualization still saves every frame.
 
 | Python argument | Pipeline variable | Default | Purpose |
 | --- | --- | --- | --- |
@@ -182,7 +184,7 @@ current target/reference object IDs with confidence, evidence, and uncertainty.
 | `--model-path` | `DECISION_MODEL_PATH` / `MODEL_PATH` | script model path | Qwen3-VL checkpoint for selection. |
 | `--decision-frame` | `DECISION_FRAME` | `last` | Decide at the `first` or `last` available frame. |
 | `--decision-frame-id` | `DECISION_FRAME_ID` | unset | Explicit frame, overriding `--decision-frame`. |
-| `--decision-window-frames` | `DECISION_WINDOW_FRAMES` | `3` | Recent frames ending at the decision frame; `1` is single-frame mode. |
+| `--decision-window-frames` | `DECISION_WINDOW_FRAMES` | `3` | Current frame `t` plus its two preceding frames `[t-2, t-1, t]` (when available), evaluated in one model call; `1` is single-frame mode. |
 | `--max-candidate-images` | `MAX_CANDIDATE_IMAGES` | `8` | Maximum representative images attached to the prompt. |
 | `--max-candidates-for-decision` | `MAX_CANDIDATES_FOR_DECISION` | `12` | Candidate cap after filtering. |
 | `--min-candidate-point-count` | `MIN_CANDIDATE_POINT_COUNT` | `0` (off) | Remove sparse fused objects. |
