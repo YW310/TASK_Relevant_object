@@ -658,9 +658,10 @@ def main() -> None:
         frame_input=target_frame,
         args=args,
         grounder=grounder,
-        previous_frame_decisions=[],
+        previous_frame_decisions=frame_decisions,
     )
-    frame_decisions = _build_frame_decision_entries(frame_inputs, frame_decision)
+    frame_decision["online_step"] = 0
+    frame_decisions.append(frame_decision)
 
     final_decision_entry = frame_decision
     final_candidate_ids = final_decision_entry.get("candidate_ids", [])
