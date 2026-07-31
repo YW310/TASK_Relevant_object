@@ -44,6 +44,7 @@ from camera_geometry import (
     transform_points,
 )
 from common_io import atomic_json_dump, parse_optional_csv as parse_csv
+from dynamic_role_reasoning import pairwise_geometry
 from fused_candidate_io import iter_fused_frames, load_object_points
 from fusion_matching import (
     _confidence,
@@ -975,6 +976,7 @@ def build_object_summary(
                 c_dst = np.asarray(dst.get("centroid_world", [0.0] * 3), dtype=np.float64)
                 delta = c_dst - c_src
                 pairwise_relations.append({
+                    **pairwise_geometry(src, dst),
                     "source_object_id": src.get("id"), "target_object_id": dst.get("id"),
                     "distance_m": float(np.linalg.norm(delta)), "delta_world": delta.tolist(),
                     "source_to_target_labels": relation_label(delta),

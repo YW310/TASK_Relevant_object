@@ -68,6 +68,14 @@
 #   MIN_CANDIDATE_CAMERA_COUNT (default: 1)  Require at least this many supporting cameras.
 #   MIN_CANDIDATE_SAM_SCORE (default: 0.0)   Drop low-score candidates before stage-4 decision.
 #   MAX_EE_DISTANCE_M                         Optional filter by min end-effector distance across the temporal window.
+#   DYNAMIC_ROLE_REASONING (default: 1)      Maintain task schema, gripper events and persistent object states.
+#   GRASP_DISTANCE_M (default: 0.06)         Maximum gripper/object distance for a grasp event.
+#   OBJECT_STABLE_DISTANCE_M (default: 0.008) Per-sampled-frame displacement treated as stable.
+#   PLACEMENT_STABLE_FRAMES (default: 2)     Stable sampled frames required after release.
+#   MIN_SUPPORT_XY_OVERLAP (default: 0.35)   Minimum smaller-bbox XY overlap for ON/support.
+#   MIN_SUPPORT_VERTICAL_GAP_M (default: -0.01) Minimum tolerated support vertical gap.
+#   MAX_SUPPORT_VERTICAL_GAP_M (default: 0.025) Maximum tolerated support vertical gap.
+#   MIN_CONTAINMENT_RATIO (default: 0.5)     Minimum source bbox fraction inside a container bbox.
 #   SKIP_DECISION_VIZ (default: 0)          Set to 1 to skip Stage 5 decision visualization.
 #   DECISION_VIZ_OUTPUT_DIR                  Optional explicit output dir for decision overlays.
 #   SKIP_STAGE_COMPARE (default: 1)         Set to 0 to render compact Stage 3 vs Stage 5 montages.
@@ -92,7 +100,8 @@
 #     NEAREST_DISTANCE_M, MAX_HYPOTHESIS_DIAMETER_M, MAX_SIZE_RATIO,
 #     LEGACY_UNION_FIND, TRACK_DISTANCE_M.
 #   Stage 3: VIZ_DIR, VIZ_FRAME_IDS, VIZ_POINT_STRIDE, VIZ_POINT_RADIUS,
-#     VIZ_MASK_ALPHA, VIZ_MAX_FRAMES, VIZ_SKIP_POINTCLOUD.
+#     VIZ_MASK_ALPHA, VIZ_MAX_FRAMES, VIZ_SKIP_POINTCLOUD,
+#     VIZ_MONTAGE_COLUMNS, VIZ_MONTAGE_CELL_WIDTH.
 #   Stage 4: DECISION_GROUNDING_MIN_SIDE, DECISION_MAX_RETRIES,
 #     DECISION_DRY_RUN (plus the DECISION_* variables above).
 #   Stage 5: DECISION_VIZ_POINT_STRIDE, DECISION_VIZ_POINT_RADIUS,
@@ -212,6 +221,16 @@ MIN_CANDIDATE_POINT_COUNT="${MIN_CANDIDATE_POINT_COUNT:-0}"
 MIN_CANDIDATE_CAMERA_COUNT="${MIN_CANDIDATE_CAMERA_COUNT:-1}"
 MIN_CANDIDATE_SAM_SCORE="${MIN_CANDIDATE_SAM_SCORE:-0.0}"
 MAX_EE_DISTANCE_M="${MAX_EE_DISTANCE_M:-}"
+DYNAMIC_ROLE_REASONING="${DYNAMIC_ROLE_REASONING:-1}"
+GRASP_DISTANCE_M="${GRASP_DISTANCE_M:-0.06}"
+GRIPPER_CLOSED_THRESHOLD="${GRIPPER_CLOSED_THRESHOLD:-0.5}"
+OBJECT_MOVING_DISTANCE_M="${OBJECT_MOVING_DISTANCE_M:-0.01}"
+OBJECT_STABLE_DISTANCE_M="${OBJECT_STABLE_DISTANCE_M:-0.008}"
+PLACEMENT_STABLE_FRAMES="${PLACEMENT_STABLE_FRAMES:-2}"
+MIN_SUPPORT_XY_OVERLAP="${MIN_SUPPORT_XY_OVERLAP:-0.35}"
+MIN_SUPPORT_VERTICAL_GAP_M="${MIN_SUPPORT_VERTICAL_GAP_M:--0.01}"
+MAX_SUPPORT_VERTICAL_GAP_M="${MAX_SUPPORT_VERTICAL_GAP_M:-0.025}"
+MIN_CONTAINMENT_RATIO="${MIN_CONTAINMENT_RATIO:-0.5}"
 SKIP_DECISION_VIZ="${SKIP_DECISION_VIZ:-0}"
 DECISION_VIZ_OUTPUT_DIR="${DECISION_VIZ_OUTPUT_DIR:-}"
 SKIP_STAGE_COMPARE="${SKIP_STAGE_COMPARE:-1}"
@@ -227,6 +246,8 @@ VIZ_POINT_RADIUS="${VIZ_POINT_RADIUS:-2}"
 VIZ_MASK_ALPHA="${VIZ_MASK_ALPHA:-80}"
 VIZ_MAX_FRAMES="${VIZ_MAX_FRAMES:-}"
 VIZ_SKIP_POINTCLOUD="${VIZ_SKIP_POINTCLOUD:-0}"
+VIZ_MONTAGE_COLUMNS="${VIZ_MONTAGE_COLUMNS:-3}"
+VIZ_MONTAGE_CELL_WIDTH="${VIZ_MONTAGE_CELL_WIDTH:-512}"
 DECISION_VIZ_POINT_STRIDE="${DECISION_VIZ_POINT_STRIDE:-4}"
 DECISION_VIZ_POINT_RADIUS="${DECISION_VIZ_POINT_RADIUS:-2}"
 DECISION_VIZ_MASK_ALPHA="${DECISION_VIZ_MASK_ALPHA:-90}"
@@ -389,6 +410,15 @@ else
     --min-candidate-point-count "${MIN_CANDIDATE_POINT_COUNT}"
     --min-candidate-camera-count "${MIN_CANDIDATE_CAMERA_COUNT}"
     --min-candidate-sam-score "${MIN_CANDIDATE_SAM_SCORE}"
+    --grasp-distance-m "${GRASP_DISTANCE_M}"
+    --gripper-closed-threshold "${GRIPPER_CLOSED_THRESHOLD}"
+    --object-moving-distance-m "${OBJECT_MOVING_DISTANCE_M}"
+    --object-stable-distance-m "${OBJECT_STABLE_DISTANCE_M}"
+    --placement-stable-frames "${PLACEMENT_STABLE_FRAMES}"
+    --min-support-xy-overlap "${MIN_SUPPORT_XY_OVERLAP}"
+    --min-support-vertical-gap-m "${MIN_SUPPORT_VERTICAL_GAP_M}"
+    --max-support-vertical-gap-m "${MAX_SUPPORT_VERTICAL_GAP_M}"
+    --min-containment-ratio "${MIN_CONTAINMENT_RATIO}"
   )
   [[ -n "${MAX_EE_DISTANCE_M}" ]] && STAGE4_ARGS+=(--max-ee-distance-m "${MAX_EE_DISTANCE_M}")
   [[ -n "${DECISION_MODEL_PATH}" ]] && STAGE4_ARGS+=(--model-path "${DECISION_MODEL_PATH}")
@@ -396,6 +426,7 @@ else
   [[ -n "${DECISION_OUTPUT_JSON}" ]] && STAGE4_ARGS+=(--output-json "${DECISION_OUTPUT_JSON}")
   [[ -n "${DECISION_ARTIFACTS_DIR}" ]] && STAGE4_ARGS+=(--decision-artifacts-dir "${DECISION_ARTIFACTS_DIR}")
   [[ "${USE_DECISION_HISTORY}" == "1" ]] && STAGE4_ARGS+=(--use-decision-history)
+  [[ "${DYNAMIC_ROLE_REASONING}" == "0" ]] && STAGE4_ARGS+=(--no-dynamic-role-reasoning)
   [[ "${DECISION_DRY_RUN}" == "1" ]] && STAGE4_ARGS+=(--dry-run)
   "${PYTHON}" "${SCRIPT_DIR}/qwen3vl_object_role_decision.py" "${STAGE4_ARGS[@]}"
 fi
@@ -414,6 +445,8 @@ else
     --point-stride "${VIZ_POINT_STRIDE}"
     --point-radius "${VIZ_POINT_RADIUS}"
     --mask-alpha "${VIZ_MASK_ALPHA}"
+    --montage-columns "${VIZ_MONTAGE_COLUMNS}"
+    --montage-cell-width "${VIZ_MONTAGE_CELL_WIDTH}"
   )
   [[ -n "${VIZ_FRAME_IDS}" ]] && STAGE3_ARGS+=(--frame-ids "${VIZ_FRAME_IDS}")
   [[ -n "${RLBENCH_LOW_DIM_OBS}" ]] && STAGE3_ARGS+=(--rlbench-low-dim-obs "${RLBENCH_LOW_DIM_OBS}")

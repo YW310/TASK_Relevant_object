@@ -36,6 +36,26 @@ def test_raw_rgb_is_used_for_rendering_even_when_stage3_overlay_exists(tmp_path)
     assert comparison_path == str(stage3_path)
 
 
+def test_stage3_montage_is_used_as_comparison_without_separate_overlay(tmp_path):
+    episode_dir = tmp_path / "episode0"
+    rgb_dir = episode_dir / "front_rgb"
+    rgb_dir.mkdir(parents=True)
+    raw_path = rgb_dir / "0.png"
+    Image.new("RGB", (8, 8), (200, 10, 10)).save(raw_path)
+    viz_dir = tmp_path / "viz"
+    viz_dir.mkdir()
+    montage_path = viz_dir / "0_montage.png"
+    Image.new("RGB", (16, 16), (10, 10, 200)).save(montage_path)
+
+    image, render_path, comparison_path = _background_image(
+        viz_dir, episode_dir, "front", "0"
+    )
+
+    assert image is not None
+    assert render_path == str(raw_path)
+    assert comparison_path == str(montage_path)
+
+
 def test_decision_label_does_not_draw_old_translucent_background_block():
     background = Image.new("RGB", (128, 128), (240, 240, 240))
     obj = {

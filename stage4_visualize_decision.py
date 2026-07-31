@@ -218,9 +218,16 @@ def _background_image(
 ) -> tuple[Image.Image | None, str, str]:
     """Use raw RGB for re-rendering while retaining Stage-3 path for comparison."""
     viz_path = viz_dir / f"{frame_id}_{camera}_reproj.png"
+    montage_path = viz_dir / f"{frame_id}_montage.png"
     rgb_path = find_rgb_path(episode_dir, camera, frame_id)
     if rgb_path is not None:
-        comparison_path = viz_path if viz_path.is_file() else rgb_path
+        comparison_path = (
+            viz_path
+            if viz_path.is_file()
+            else montage_path
+            if montage_path.is_file()
+            else rgb_path
+        )
         return Image.open(rgb_path).convert("RGBA"), str(rgb_path), str(comparison_path)
     if viz_path.is_file():
         return Image.open(viz_path).convert("RGBA"), str(viz_path), str(viz_path)

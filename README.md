@@ -15,7 +15,7 @@ Qwen3-VL can subsequently select the current target and reference objects.
 | --- | --- | --- |
 | 1. Role parsing and proposals | `qwen_role_sam3_candidate_episode.py` | `role_spec.json`, per-view masks/crops, and `episode_candidates.json` |
 | 2. Multi-view fusion | `multiview_candidate_fusion.py` | Lightweight `frame_fused_candidates.json`, per-frame `fused_objects.json` / `fused_geometry.npz`, and optional `object_summary.json` |
-| 3. Fusion visualization | `visualize_fused_candidates.py` | Per-camera reprojection overlays in `viz/` |
+| 3. Fusion visualization | `visualize_fused_candidates.py` | One all-camera + point-cloud montage per frame in `viz/` |
 | 4. Object role decision (optional) | `qwen3vl_object_role_decision.py` | `object_predictions.json` |
 | 5. Decision visualization (optional) | `stage4_visualize_decision.py` | Target/reference overlays in `viz_decision/` |
 | 6. Stage comparison (optional) | `stage6_visualize_stage_montage.py` | Side-by-side panels in `viz_compare/` |
@@ -202,8 +202,10 @@ See `schemas/frame_fused_candidates.schema.json`,
 ### Stage 3: fused-object sanity visualization
 
 `visualize_fused_candidates.py` projects fused world points back into each
-camera image and creates colored 2D overlays, an object report, and a 3D
-point-cloud view. This stage does not change fusion results; use it to diagnose
+camera image and combines every selected camera overlay plus the four-angle 3D
+point-cloud view into one `<frame_id>_montage.png`. It no longer writes separate
+`*_reproj.png` or `*_pointcloud.png` panels. This stage does not change fusion
+results; use it to diagnose
 depth decoding, camera transforms, bad masks, or incorrect clustering. Its
 `sanity_report.json` includes the stored/recomputed centroid residual and the
 centroid-to-nearest-cloud-point distance for every retained object. Retained
@@ -224,6 +226,8 @@ transparent layer.
 | `--point-radius` | — | `2` px | Reprojected marker radius. |
 | `--mask-alpha` | — | `80` | Overlay opacity in the range 0–255. |
 | `--skip-pointcloud` | — | off | Omit the matplotlib 3D scatter plot. |
+| `--montage-columns` | `VIZ_MONTAGE_COLUMNS` | `3` | Number of panel columns in the per-frame montage. |
+| `--montage-cell-width` | `VIZ_MONTAGE_CELL_WIDTH` | `512` px | Square cell size used for camera and point-cloud panels. |
 
 Set `SKIP_VIZ=1` in the shell pipeline to omit this stage.
 
@@ -253,6 +257,14 @@ compatibility, while `frame_decisions` contains the complete episode.
 | `--min-candidate-camera-count` | `MIN_CANDIDATE_CAMERA_COUNT` | `1` | Require support from this many cameras. |
 | `--min-candidate-sam-score` | `MIN_CANDIDATE_SAM_SCORE` | `0.0` (off) | Remove candidates below a fused SAM score. |
 | `--max-ee-distance-m` | `MAX_EE_DISTANCE_M` | unset | Remove objects never close enough to the end effector in the window. |
+| `--[no-]dynamic-role-reasoning` | `DYNAMIC_ROLE_REASONING` | on / `1` | Maintain task predicates, gripper events, 3D relations, and persistent object state across the episode. |
+| `--grasp-distance-m` | `GRASP_DISTANCE_M` | `0.06` m | Maximum gripper/object distance used to confirm a grasp candidate. |
+| `--object-moving-distance-m` | `OBJECT_MOVING_DISTANCE_M` | `0.01` m | Minimum sampled-frame displacement treated as object motion. |
+| `--object-stable-distance-m` | `OBJECT_STABLE_DISTANCE_M` | `0.008` m | Maximum sampled-frame displacement treated as stable. |
+| `--placement-stable-frames` | `PLACEMENT_STABLE_FRAMES` | `2` | Stable sampled frames required after release before confirming placement. |
+| `--min-support-xy-overlap` | `MIN_SUPPORT_XY_OVERLAP` | `0.35` | Minimum smaller-bbox XY overlap for `ON`/support evidence. |
+| `--min-support-vertical-gap-m`, `--max-support-vertical-gap-m` | matching pipeline variables | `-0.01`, `0.025` m | Accepted vertical gap between an upper object and support. |
+| `--min-containment-ratio` | `MIN_CONTAINMENT_RATIO` | `0.5` | Minimum source bbox fraction inside a goal container bbox. |
 | `--grounding-min-side` | — | `512` | Minimum short side for Qwen input images. |
 | `--max-new-tokens` | `DECISION_MAX_NEW_TOKENS` | `1024` | Structured response generation budget. |
 | `--max-retries` | — | `1` | Retry malformed model output. |
@@ -271,6 +283,18 @@ Only within that set does the pipeline prefer the smallest current
 end-effector distance, followed by a consistent approach over `[t-2, t-1, t]`.
 The JSON keeps `model_target_object_id` and `target_selection` diagnostics so
 distance-based adjustments remain inspectable.
+
+Dynamic role reasoning compiles the instruction into an action family and goal
+predicate such as `PRESSED`, `OPEN`, `ON`, `IN`, or `INSERTED_IN`; it does not
+branch on RLBench task names. A short rolling window estimates approach and
+motion, while episode-level deterministic state retains confirmed `GRASPED`,
+`RELEASED`, `PLACED_ON`, and `PLACED_IN` events. Object IDs remain role-neutral:
+for repeated `ON` goals, a released and stable previous target can become the
+top support/reference of the next subgoal. Qwen still supplies semantic identity;
+the deterministic layer validates physical state and prevents target/reference
+from resolving to the same object. Final confidence is calibrated from semantic,
+tracking, gripper-interaction, and relation evidence; the original Qwen value is
+preserved as `model_confidence` with inspectable `confidence_components`.
 
 ### Stage 5: decision overlays (optional)
 

@@ -23,7 +23,14 @@ from PIL import Image, ImageDraw, ImageOps
 
 from camera_geometry import frame_index_from_frame, load_rlbench_observations
 from common_io import atomic_json_dump
+from dynamic_role_reasoning import (
+    DynamicRoleTracker,
+    ReasoningThresholds,
+    apply_dynamic_role_selection,
+    calibrate_decision_confidence,
+)
 from qwen3vl_rlbench_episode_grounding import Qwen3VLRLBenchGrounder
+from task_schema import compile_task_schema
 from visualization_utils import load_font
 
 
@@ -127,6 +134,24 @@ def build_parser() -> argparse.ArgumentParser:
             "the end-effector across the temporal decision window exceeds this threshold."
         ),
     )
+    parser.add_argument(
+        "--dynamic-role-reasoning",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Maintain task-schema, gripper-event and 3D-relation state across the "
+            "episode. Disable only for legacy comparison."
+        ),
+    )
+    parser.add_argument("--grasp-distance-m", type=float, default=0.06)
+    parser.add_argument("--gripper-closed-threshold", type=float, default=0.5)
+    parser.add_argument("--object-moving-distance-m", type=float, default=0.01)
+    parser.add_argument("--object-stable-distance-m", type=float, default=0.008)
+    parser.add_argument("--placement-stable-frames", type=int, default=2)
+    parser.add_argument("--min-support-xy-overlap", type=float, default=0.35)
+    parser.add_argument("--min-support-vertical-gap-m", type=float, default=-0.01)
+    parser.add_argument("--max-support-vertical-gap-m", type=float, default=0.025)
+    parser.add_argument("--min-containment-ratio", type=float, default=0.5)
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -501,6 +526,20 @@ def _extract_end_effector_position(observation: Any) -> np.ndarray | None:
     return arr[:3]
 
 
+def _extract_gripper_open(observation: Any) -> float | None:
+    value = getattr(observation, "gripper_open", None)
+    if value is None and isinstance(observation, Mapping):
+        value = observation.get("gripper_open")
+    if value is None:
+        misc = getattr(observation, "misc", None)
+        if isinstance(misc, Mapping):
+            value = misc.get("gripper_open")
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _resolve_temporal_frames(
     frame_inputs: Sequence[Mapping[str, Any]],
     anchor_frame: Mapping[str, Any],
@@ -531,21 +570,31 @@ def _values_stats(values: Sequence[float]) -> dict[str, float | None]:
 def _build_temporal_object_context(
     summary: Mapping[str, Any],
     selected_frames: Sequence[Mapping[str, Any]],
+    observations: Sequence[Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     episode_dir = summary.get("episode_dir")
-    if not episode_dir:
-        ee_by_frame_index: dict[int, np.ndarray] = {}
-    else:
-        observations = load_rlbench_observations(Path(str(episode_dir)).expanduser().resolve(), None)
-        ee_by_frame_index = {}
-        for frame in selected_frames:
-            source_frame_index = frame_index_from_frame(frame)
-            if source_frame_index is None:
-                continue
-            if 0 <= source_frame_index < len(observations):
-                ee = _extract_end_effector_position(observations[source_frame_index])
-                if ee is not None:
-                    ee_by_frame_index[source_frame_index] = ee
+    if observations is None:
+        observations = (
+            load_rlbench_observations(
+                Path(str(episode_dir)).expanduser().resolve(), None
+            )
+            if episode_dir
+            else []
+        )
+    ee_by_frame_index: dict[int, np.ndarray] = {}
+    gripper_open_by_frame_index: dict[int, float] = {}
+    for frame in selected_frames:
+        source_frame_index = frame_index_from_frame(frame)
+        if source_frame_index is None:
+            continue
+        if 0 <= source_frame_index < len(observations):
+            observation = observations[source_frame_index]
+            ee = _extract_end_effector_position(observation)
+            if ee is not None:
+                ee_by_frame_index[source_frame_index] = ee
+            gripper_open = _extract_gripper_open(observation)
+            if gripper_open is not None:
+                gripper_open_by_frame_index[source_frame_index] = gripper_open
 
     frame_ids = {str(frame.get("frame_id")) for frame in selected_frames}
     frame_indices = {
@@ -678,6 +727,15 @@ def _build_temporal_object_context(
         "frame_ids": [str(frame.get("frame_id")) for frame in selected_frames],
         "frame_indices": sorted(frame_indices),
         "end_effector_available_frames": sorted(ee_by_frame_index),
+        "gripper_state_samples": [
+            {
+                "frame_index": frame_index,
+                "gripper_open": gripper_open_by_frame_index.get(frame_index),
+            }
+            for frame_index in sorted(
+                set(ee_by_frame_index) | set(gripper_open_by_frame_index)
+            )
+        ],
     }
     return context_by_object, window_meta
 
@@ -689,6 +747,8 @@ def _build_prompt_payload(
     object_track_context: Mapping[str, Any],
     temporal_window: Mapping[str, Any],
     valid_output_object_ids: set[str],
+    task_schema: Mapping[str, Any] | None = None,
+    dynamic_role_context: Mapping[str, Any] | None = None,
 ) -> str:
     decision_frame_id = str(frame_input.get("frame_id"))
     window_frames = []
@@ -724,6 +784,8 @@ def _build_prompt_payload(
         "current_candidate_objects": [_compact_candidate(item) for item in frame_input.get("candidate_objects", [])],
         "window_frames": window_frames,
         "object_track_context": object_track_context,
+        "task_schema": dict(task_schema or {}),
+        "dynamic_role_context": dict(dynamic_role_context or {}),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -763,6 +825,12 @@ def _decision_prompt(payload_json: str, representative_images: Sequence[Mapping[
         "but visual identity cues from the instruction take precedence.\n"
         "- If online_history is present, use it only as weak continuity evidence. Re-evaluate the current visual window "
         "independently and do not copy a previous choice when current visual evidence contradicts it.\n"
+        "- task_schema expresses the instruction as a generic action and goal predicate; use it to distinguish "
+        "manipulated_object, goal_anchor and interaction_part roles.\n"
+        "- dynamic_role_context contains deterministic gripper events and 3D relations. Treat confirmed GRASPED, "
+        "PLACED_ON and PLACED_IN events as stronger physical evidence than model decision history.\n"
+        "- Object IDs are role-neutral. A previously manipulated target may become the current reference after it "
+        "is released, stable, and is the top support for the next repeated ON subgoal.\n"
         "- If uncertain, set uncertain=true with explicit reason.\n\n"
         "Input evidence JSON:\n"
         f"{payload_json}\n\n"
@@ -778,7 +846,8 @@ def _decision_prompt(payload_json: str, representative_images: Sequence[Mapping[
         "4. Prefer objects with stable multi-view support over tiny/noisy single-view fragments unless evidence strongly contradicts.\n"
         "5. reference_object_id=null can be a confident semantic decision; it does not imply uncertainty.\n"
         "6. Distinguish the manipulated object from its interaction part and from descriptive surroundings.\n"
-        "7. Keep the response strictly as one JSON object.\n\n"
+        "7. target_object_id and reference_object_id must never be the same object.\n"
+        "8. Keep the response strictly as one JSON object.\n\n"
         "Output schema:\n"
         "{\n"
         "  \"instruction_compatible_object_ids\": [\"O1\", \"O2\"],\n"
@@ -969,7 +1038,62 @@ def _run_decision_for_frame(
 ) -> dict[str, Any]:
     ordered = _ordered_frames(frame_inputs)
     temporal_frames = _resolve_temporal_frames(ordered, frame_input, args.decision_window_frames)
-    temporal_context_by_object, temporal_window_meta = _build_temporal_object_context(summary, temporal_frames)
+    observations = getattr(args, "_rlbench_observations", None)
+    temporal_context_by_object, temporal_window_meta = _build_temporal_object_context(
+        summary,
+        temporal_frames,
+        observations=observations,
+    )
+
+    dynamic_tracker = getattr(args, "_dynamic_role_tracker", None)
+    task_schema = getattr(args, "_task_schema", None)
+    dynamic_role_context: dict[str, Any] = {}
+    if dynamic_tracker is not None:
+        source_frame_index = frame_index_from_frame(frame_input)
+        current_observation = (
+            observations[source_frame_index]
+            if observations is not None
+            and source_frame_index is not None
+            and 0 <= source_frame_index < len(observations)
+            else None
+        )
+        gripper_position = (
+            _extract_end_effector_position(current_observation)
+            if current_observation is not None
+            else None
+        )
+        gripper_open = (
+            _extract_gripper_open(current_observation)
+            if current_observation is not None
+            else None
+        )
+        previous_source_frame_index = getattr(
+            args, "_dynamic_last_source_frame_index", None
+        )
+        gripper_open_history = []
+        if observations is not None and source_frame_index is not None:
+            history_start = (
+                previous_source_frame_index + 1
+                if previous_source_frame_index is not None
+                else 0
+            )
+            for observation in observations[
+                max(0, history_start) : source_frame_index + 1
+            ]:
+                value = _extract_gripper_open(observation)
+                if value is not None:
+                    gripper_open_history.append(value)
+            args._dynamic_last_source_frame_index = source_frame_index
+        dynamic_role_context = dynamic_tracker.update(
+            frame_input,
+            temporal_context_by_object,
+            gripper_position,
+            gripper_open,
+            gripper_open_history,
+        )
+        for object_id, state in dynamic_role_context.get("objects", {}).items():
+            if object_id in temporal_context_by_object:
+                temporal_context_by_object[object_id]["dynamic_state"] = state
 
     candidates = list(frame_input.get("candidate_objects", []))
     candidates, filter_stats = _filter_candidates(candidates, args, temporal_context_by_object)
@@ -1001,6 +1125,8 @@ def _run_decision_for_frame(
             "temporal_contact_sheets": [],
             "representative_images": [],
             "online_history": previous_summary,
+            "task_schema": task_schema.to_dict() if task_schema is not None else {},
+            "dynamic_role_context": dynamic_role_context,
             "model_skipped": True,
             "decision": {
                 "instruction_compatible_object_ids": [],
@@ -1036,6 +1162,8 @@ def _run_decision_for_frame(
         object_track_context,
         temporal_window_meta,
         candidate_ids,
+        task_schema.to_dict() if task_schema is not None else {},
+        dynamic_role_context,
     )
     if previous_summary:
         payload = json.loads(payload_json)
@@ -1085,7 +1213,21 @@ def _run_decision_for_frame(
         candidates,
         temporal_context_by_object,
     )
+    if dynamic_tracker is not None:
+        result = apply_dynamic_role_selection(
+            result,
+            candidates,
+            dynamic_role_context,
+        )
+        result = calibrate_decision_confidence(
+            result,
+            candidates,
+            temporal_context_by_object,
+            dynamic_role_context,
+        )
     _sanitize_decision_ids(result, candidate_ids)
+    if dynamic_tracker is not None:
+        dynamic_tracker.record_decision(result)
 
     return {
         "frame_id": frame_input.get("frame_id"),
@@ -1096,6 +1238,8 @@ def _run_decision_for_frame(
         "temporal_contact_sheets": representative_images,
         "representative_images": representative_images,
         "online_history": previous_summary,
+        "task_schema": task_schema.to_dict() if task_schema is not None else {},
+        "dynamic_role_context": dynamic_role_context,
         "decision": {
             "instruction_compatible_object_ids": result.get(
                 "instruction_compatible_object_ids", []
@@ -1104,7 +1248,10 @@ def _run_decision_for_frame(
             "target_object_id": result.get("target_object_id"),
             "reference_object_id": result.get("reference_object_id"),
             "target_selection": result.get("target_selection"),
+            "dynamic_role_selection": result.get("dynamic_role_selection"),
             "confidence": result.get("confidence"),
+            "model_confidence": result.get("model_confidence"),
+            "confidence_components": result.get("confidence_components", {}),
             "uncertain": bool(result.get("uncertain", False)),
             "uncertain_reason": result.get("uncertain_reason"),
             "evidence": result.get("evidence", []),
@@ -1136,6 +1283,7 @@ def _build_output_document(
         "decision_frame_index": final_entry.get("frame_index"),
         "instruction_prior": summary.get("instruction_prior"),
         "role_spec_prior": summary.get("role_spec_prior"),
+        "task_schema": final_entry.get("task_schema", {}),
         "candidate_ids": final_entry.get("candidate_ids", []),
         "frame_decisions": list(frame_decisions),
     }
@@ -1157,6 +1305,36 @@ def main() -> None:
     )
 
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    args._task_schema = compile_task_schema(
+        summary.get("instruction_prior"),
+        summary.get("role_spec_prior"),
+    )
+    episode_dir_value = summary.get("episode_dir")
+    args._rlbench_observations = (
+        load_rlbench_observations(
+            Path(str(episode_dir_value)).expanduser().resolve(), None
+        )
+        if episode_dir_value
+        else []
+    )
+    args._dynamic_role_tracker = (
+        DynamicRoleTracker(
+            args._task_schema,
+            ReasoningThresholds(
+                gripper_closed_threshold=args.gripper_closed_threshold,
+                grasp_distance_m=args.grasp_distance_m,
+                moving_distance_m=args.object_moving_distance_m,
+                stable_distance_m=args.object_stable_distance_m,
+                placement_stable_frames=max(1, args.placement_stable_frames),
+                min_support_xy_overlap=args.min_support_xy_overlap,
+                min_support_vertical_gap_m=args.min_support_vertical_gap_m,
+                max_support_vertical_gap_m=args.max_support_vertical_gap_m,
+                min_containment_ratio=args.min_containment_ratio,
+            ),
+        )
+        if args.dynamic_role_reasoning
+        else None
+    )
     source_manifest = Path(str(summary.get("source_fused_json", ""))).expanduser()
     if not source_manifest.is_absolute():
         source_manifest = (summary_path.parent / source_manifest).resolve()

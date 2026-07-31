@@ -3,15 +3,17 @@
 
 Produces, per selected frame:
 
-1. Per-camera RGB reprojection overlays. Every fused object's world points
+1. Per-camera RGB reprojection panels. Every fused object's world points
    are re-projected back onto each requested camera view (even cameras that
    did not contribute candidates to that object). If the camera
    intrinsics/extrinsics are correct, the dots should land on the same
    physical object in every view.
-2. A 3D point-cloud scatter plot (matplotlib) of every fused object's
+2. A four-angle 3D point-cloud panel (matplotlib) of every fused object's
    points/centroid in world coordinates, for a quick bird's-eye/side sanity
    check (e.g. objects should sit near the table plane, not scattered).
-3. A ``sanity_report.json`` with, per fused object: point count, bbox size,
+3. One ``<frame_id>_montage.png`` combining all panels; individual camera and
+   point-cloud panels are not written as separate files.
+4. A ``sanity_report.json`` with, per fused object: point count, bbox size,
    and the max pairwise distance between the per-camera centroids that were
    merged into it (large values indicate misaligned cameras/extrinsics).
 
@@ -28,11 +30,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Mapping, Sequence
+from io import BytesIO
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 from camera_geometry import (
     find_rgb_path,
@@ -42,10 +46,12 @@ from camera_geometry import (
     resolve_camera_param_for_frame,
 )
 from common_io import parse_optional_csv as parse_csv
-from fused_candidate_io import iter_fused_frames, load_fused_manifest, load_object_points
-from visualization_utils import OBJECT_COLORS, object_color_for_id
-
-# Re-export OBJECT_COLORS for compatibility; new rendering uses the stable ID map.
+from fused_candidate_io import (
+    iter_fused_frames,
+    load_fused_manifest,
+    load_object_points,
+)
+from visualization_utils import object_color_for_id
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,6 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mask-alpha", type=int, default=80, help="Alpha (0-255) for the semi-transparent reprojected point mask; lower = more transparent.")
     parser.add_argument("--max-frames", type=int, default=None, help="Optional cap on the number of frames to render.")
     parser.add_argument("--skip-pointcloud", action="store_true", help="Skip the matplotlib 3D scatter plot (only render 2D overlays + report).")
+    parser.add_argument("--montage-columns", type=int, default=3, help="Number of panel columns in each per-frame montage.")
+    parser.add_argument("--montage-cell-width", type=int, default=512, help="Width and height of each montage panel in pixels.")
     return parser
 
 
@@ -110,8 +118,8 @@ def layout_object_labels(
         candidates: list[tuple[int, int]] = []
         for radius in (6, 12, 18, 24, 32, 40, 48):
             for dx, dy in directions:
-                x = int(round(cx + dx * radius))
-                y = int(round(cy + dy * radius - text_height / 2))
+                x = round(cx + dx * radius)
+                y = round(cy + dy * radius - text_height / 2)
                 x = min(max(0, x), max(0, width - text_width))
                 y = min(max(0, y), max(0, height - text_height))
                 position = (x, y)
@@ -151,7 +159,7 @@ def layout_object_labels(
     return placements
 
 
-def draw_overlay(
+def render_overlay(
     rgb_path: Path,
     frame: Mapping[str, Any],
     objects: Sequence[Mapping[str, Any]],
@@ -159,9 +167,8 @@ def draw_overlay(
     extrinsics: np.ndarray,
     point_stride: int,
     point_radius: int,
-    out_path: Path,
     mask_alpha: int = 80,
-) -> None:
+) -> Image.Image:
     image = Image.open(rgb_path).convert("RGBA")
     width, height = image.size
     mask_layer = np.zeros((height, width, 4), dtype=np.uint8)
@@ -230,8 +237,33 @@ def draw_overlay(
         draw.text((x, y), label, fill=(*color, 230))
 
     image = Image.alpha_composite(image, annotation_layer)
+    return image.convert("RGB")
+
+
+def draw_overlay(
+    rgb_path: Path,
+    frame: Mapping[str, Any],
+    objects: Sequence[Mapping[str, Any]],
+    intrinsics: np.ndarray,
+    extrinsics: np.ndarray,
+    point_stride: int,
+    point_radius: int,
+    out_path: Path,
+    mask_alpha: int = 80,
+) -> None:
+    """Compatibility wrapper for callers that explicitly request one overlay."""
+    image = render_overlay(
+        rgb_path,
+        frame,
+        objects,
+        intrinsics,
+        extrinsics,
+        point_stride,
+        point_radius,
+        mask_alpha,
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    image.convert("RGB").save(out_path)
+    image.save(out_path)
 
 
 def sanity_report_for_object(frame: Mapping[str, Any], obj: Mapping[str, Any]) -> dict[str, Any]:
@@ -266,7 +298,7 @@ def sanity_report_for_object(frame: Mapping[str, Any], obj: Mapping[str, Any]) -
     return {
         "id": obj["id"],
         "role_evidence": obj.get("role_evidence", {}),
-        "num_points": int(len(points)),
+        "num_points": len(points),
         "centroid_world": obj["centroid_world"],
         "recomputed_centroid_world": (
             recomputed_centroid.tolist() if len(points) > 0 else None
@@ -304,7 +336,9 @@ def set_axes_equal_3d(ax, points: np.ndarray) -> None:
         pass  # older matplotlib without set_box_aspect; limits above still help.
 
 
-def plot_pointcloud(frame: Mapping[str, Any], objects: Sequence[Mapping[str, Any]], out_path: Path) -> None:
+def render_pointcloud(
+    frame: Mapping[str, Any], objects: Sequence[Mapping[str, Any]]
+) -> Image.Image:
     """Render the fused point cloud from several viewing angles into one PNG.
 
     A single default-angle 3D scatter is easy to misread (e.g. a flat object
@@ -364,9 +398,69 @@ def plot_pointcloud(frame: Mapping[str, Any], objects: Sequence[Mapping[str, Any
         if view_index == 0:
             ax.legend(loc="upper left", fontsize=7)
     fig.tight_layout()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150)
+    buffer = BytesIO()
+    fig.savefig(buffer, format="png", dpi=110)
     plt.close(fig)
+    buffer.seek(0)
+    with Image.open(buffer) as rendered:
+        return rendered.convert("RGB").copy()
+
+
+def plot_pointcloud(
+    frame: Mapping[str, Any], objects: Sequence[Mapping[str, Any]], out_path: Path
+) -> None:
+    """Compatibility wrapper for callers that explicitly request one plot."""
+    image = render_pointcloud(frame, objects)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(out_path)
+
+
+def compose_frame_montage(
+    panels: Sequence[tuple[str, Image.Image]],
+    frame_id: str,
+    out_path: Path,
+    columns: int = 3,
+    cell_width: int = 512,
+    label_height: int = 28,
+    gap: int = 8,
+) -> Image.Image:
+    """Combine all selected camera overlays and the point cloud into one PNG."""
+    if not panels:
+        raise ValueError("Cannot compose a visualization montage without panels")
+    columns = max(1, min(int(columns), len(panels)))
+    rows = (len(panels) + columns - 1) // columns
+    cell_width = max(64, int(cell_width))
+    cell_height = cell_width
+    header_height = 32
+    canvas_width = columns * cell_width + (columns + 1) * gap
+    canvas_height = (
+        header_height
+        + rows * (label_height + cell_height)
+        + (rows + 1) * gap
+    )
+    canvas = Image.new("RGB", (canvas_width, canvas_height), (238, 238, 238))
+    draw = ImageDraw.Draw(canvas)
+    draw.rectangle((0, 0, canvas_width, header_height), fill=(24, 24, 24))
+    draw.text((10, 9), f"Frame {frame_id}: camera reprojections + fused point cloud", fill=(255, 255, 255))
+
+    for index, (title, panel) in enumerate(panels):
+        row, column = divmod(index, columns)
+        x = gap + column * (cell_width + gap)
+        y = header_height + gap + row * (label_height + cell_height + gap)
+        draw.rectangle((x, y, x + cell_width, y + label_height), fill=(35, 35, 35))
+        draw.text((x + 8, y + 7), title, fill=(255, 255, 255))
+        fitted = ImageOps.contain(
+            panel.convert("RGB"),
+            (cell_width, cell_height),
+            Image.Resampling.LANCZOS,
+        )
+        panel_x = x + (cell_width - fitted.width) // 2
+        panel_y = y + label_height + (cell_height - fitted.height) // 2
+        canvas.paste(fitted, (panel_x, panel_y))
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(out_path)
+    return canvas
 
 
 def main() -> None:
@@ -401,6 +495,8 @@ def main() -> None:
 
         available_cameras = sorted({camera for obj in objects for camera in obj.get("visible_camera", [])})
         target_cameras = cameras_filter if cameras_filter is not None else available_cameras
+        panels: list[tuple[str, Image.Image]] = []
+        rendered_cameras: list[str] = []
         for camera in target_cameras:
             rgb_path = find_rgb_path(episode_dir, camera, frame_id)
             if rgb_path is None:
@@ -418,8 +514,7 @@ def main() -> None:
             if params is None:
                 print(f"[warn] frame_id={frame_id} camera={camera}: no camera intrinsics/extrinsics found; skipping overlay.", file=sys.stderr)
                 continue
-            out_path = output_dir / f"{frame_id}_{camera}_reproj.png"
-            draw_overlay(
+            overlay = render_overlay(
                 rgb_path,
                 frame,
                 objects,
@@ -427,25 +522,41 @@ def main() -> None:
                 params["extrinsics"],
                 args.point_stride,
                 args.point_radius,
-                out_path,
                 mask_alpha=args.mask_alpha,
             )
+            panels.append((f"camera: {camera}", overlay))
+            rendered_cameras.append(camera)
 
+        includes_pointcloud = False
         if not args.skip_pointcloud:
             try:
-                plot_pointcloud(frame, objects, output_dir / f"{frame_id}_pointcloud.png")
+                panels.append(("3D fused point cloud", render_pointcloud(frame, objects)))
+                includes_pointcloud = True
             except ImportError:
                 print("[warn] matplotlib not installed; skipping 3D point cloud plot (pip install matplotlib to enable).", file=sys.stderr)
+
+        montage_path = output_dir / f"{frame_id}_montage.png"
+        if panels:
+            compose_frame_montage(
+                panels,
+                frame_id,
+                montage_path,
+                columns=args.montage_columns,
+                cell_width=args.montage_cell_width,
+            )
 
         report["frames"].append({
             "frame_id": frame_id,
             "frame_index": frame_index,
+            "montage_path": str(montage_path) if panels else None,
+            "camera_panels": rendered_cameras,
+            "includes_pointcloud": includes_pointcloud,
             "objects": [sanity_report_for_object(frame, obj) for obj in objects],
         })
 
     report_path = output_dir / "sanity_report.json"
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps({"output_dir": str(output_dir), "sanity_report": str(report_path), "frames_rendered": len(report["frames"])}, ensure_ascii=False, indent=2))
+    print(json.dumps({"output_dir": str(output_dir), "sanity_report": str(report_path), "montages_rendered": sum(bool(item.get("montage_path")) for item in report["frames"]), "frames_rendered": len(report["frames"])}, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
