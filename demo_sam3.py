@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -45,6 +44,13 @@ from PIL import Image, ImageDraw
 
 from sam3.model.sam3_image_processor import Sam3Processor
 from sam3.model_builder import build_sam3_image_model
+from sam3_runtime import (
+    autocast_context,
+    find_checkpoint,
+    normalize_masks as normalize_mask_array,
+    normalize_scores,
+    tensor_to_numpy,
+)
 
 
 MODE_CHOICES = (
@@ -141,57 +147,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def find_checkpoint(model_dir: Path, explicit: str | None) -> Path:
-    if explicit:
-        path = Path(explicit).expanduser().resolve()
-        if not path.is_file():
-            raise FileNotFoundError(f"Checkpoint not found: {path}")
-        return path
-
-    preferred_names = (
-        "sam3.pt",
-        "sam3.pth",
-        "sam3.1_multiplex.pt",
-        "sam3.1_multiplex.pth",
-    )
-    for name in preferred_names:
-        path = model_dir / name
-        if path.is_file():
-            return path
-
-    candidates: list[Path] = []
-    for pattern in ("*.pt", "*.pth"):
-        candidates.extend(model_dir.rglob(pattern))
-
-    # The official builder uses torch.load, so a safetensors-only file is not
-    # directly usable without conversion.
-    candidates = sorted(
-        (p.resolve() for p in candidates),
-        key=lambda p: (
-            "sam3.1" not in p.name.lower(),
-            "multiplex" not in p.name.lower(),
-            len(str(p)),
-        ),
-    )
-    if not candidates:
-        raise FileNotFoundError(
-            f"No .pt or .pth checkpoint found below {model_dir}. "
-            "Expected a file such as sam3.1_multiplex.pt."
-        )
-    return candidates[0]
-
-
-def autocast_context(device: str, no_bf16: bool):
-    if (
-        device == "cuda"
-        and not no_bf16
-        and torch.cuda.is_available()
-        and torch.cuda.is_bf16_supported()
-    ):
-        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-    return nullcontext()
-
-
 def to_float_box(raw: Sequence[str]) -> np.ndarray:
     values = np.asarray([float(v) for v in raw], dtype=np.float32)
     x1, y1, x2, y2 = values.tolist()
@@ -235,32 +190,6 @@ def xyxy_to_normalized_cxcywh(
     bh = (y2 - y1) / height
     values = np.clip([cx, cy, bw, bh], 0.0, 1.0)
     return values.astype(float).tolist()
-
-
-def tensor_to_numpy(value: Any) -> np.ndarray:
-    if isinstance(value, torch.Tensor):
-        return value.detach().float().cpu().numpy()
-    return np.asarray(value)
-
-
-def normalize_mask_array(masks: Any) -> np.ndarray:
-    masks_np = tensor_to_numpy(masks)
-    if masks_np.ndim == 4 and masks_np.shape[1] == 1:
-        masks_np = masks_np[:, 0]
-    elif masks_np.ndim == 2:
-        masks_np = masks_np[None]
-    if masks_np.ndim != 3:
-        raise ValueError(f"Expected masks as NxHxW, got shape {masks_np.shape}")
-    return masks_np > 0.5
-
-
-def normalize_scores(scores: Any, count: int) -> np.ndarray:
-    if scores is None:
-        return np.ones((count,), dtype=np.float32)
-    scores_np = tensor_to_numpy(scores).reshape(-1)
-    if len(scores_np) != count:
-        raise ValueError(f"Mask/score count mismatch: {count} masks, {len(scores_np)} scores")
-    return scores_np
 
 
 def sort_and_limit(

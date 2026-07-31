@@ -27,6 +27,10 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 import numpy as np
 import torch
 from PIL import Image, ImageDraw
+
+from common_io import atomic_json_dump, natural_sort_key, parse_csv
+from visualization_utils import load_font
+
 try:
     from transformers import (
         AutoProcessor,
@@ -541,28 +545,6 @@ DEFAULT_CAMERAS = ("front", "left_shoulder", "right_shoulder")
 DEFAULT_ROLES = ("target", "reference")
 
 
-def natural_sort_key(value: str | Path) -> list[Any]:
-    """Sort frame names numerically when possible: 2.png before 10.png."""
-    text = Path(value).stem if isinstance(value, Path) else str(value)
-    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", text)]
-
-
-def atomic_json_dump(data: Any, path: str | Path) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8") as file:
-        json.dump(data, file, ensure_ascii=False, indent=2)
-    temporary.replace(path)
-
-
-def parse_csv(value: str) -> tuple[str, ...]:
-    values = tuple(item.strip() for item in value.split(",") if item.strip())
-    if not values:
-        raise argparse.ArgumentTypeError("Expected a comma-separated non-empty list.")
-    return values
-
-
 def normalize_instruction_candidates(value: Any) -> list[str]:
     """Extract instruction strings from common RLBench pickle/JSON layouts."""
     if value is None:
@@ -834,20 +816,6 @@ def role_display_text(role_spec: Mapping[str, Any], role_name: str) -> str:
     if not cues:
         return name
     return f"{name} — {'; '.join(cues)}"
-
-
-def load_font(size: int):
-    from PIL import ImageFont
-
-    for candidate in (
-        "DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ):
-        try:
-            return ImageFont.truetype(candidate, size=size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
 
 
 def draw_text_with_background(

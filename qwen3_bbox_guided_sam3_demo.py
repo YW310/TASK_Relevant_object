@@ -45,15 +45,24 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import re
 import traceback
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
+
+from common_io import atomic_json_dump, natural_sort_key, parse_csv
+from mask_geometry import mask_bbox
+from sam3_runtime import (
+    autocast_context,
+    find_checkpoint,
+    normalize_masks,
+    normalize_scores,
+    tensor_to_numpy,
+)
+from visualization_utils import load_font
 
 try:
     from sam3.model.sam3_image_processor import Sam3Processor
@@ -70,13 +79,6 @@ ROLE_STYLE: dict[str, dict[str, Any]] = {
     "reference": {"label": "Reference", "color": (255, 170, 30)},
     "interaction_part": {"label": "Interaction", "color": (80, 170, 255)},
 }
-
-
-def parse_csv(value: str) -> tuple[str, ...]:
-    items = tuple(item.strip() for item in value.split(",") if item.strip())
-    if not items:
-        raise argparse.ArgumentTypeError("Expected a non-empty comma-separated list.")
-    return items
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -191,97 +193,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Validate paths and print the processing plan without loading SAM 3.",
     )
     return parser
-
-
-def atomic_json_dump(value: Any, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8") as file:
-        json.dump(value, file, ensure_ascii=False, indent=2)
-    temporary.replace(path)
-
-
-def natural_sort_key(value: str | Path) -> list[Any]:
-    text = Path(value).stem if isinstance(value, Path) else str(value)
-    return [
-        int(part) if part.isdigit() else part.lower()
-        for part in re.split(r"(\d+)", text)
-    ]
-
-
-def find_checkpoint(model_dir: Path, explicit: str | None) -> Path:
-    if explicit:
-        path = Path(explicit).expanduser().resolve()
-        if not path.is_file():
-            raise FileNotFoundError(f"SAM checkpoint not found: {path}")
-        return path
-
-    preferred_names = (
-        "sam3.pt",
-        "sam3.pth",
-        "sam3.1_multiplex.pt",
-        "sam3.1_multiplex.pth",
-    )
-    for name in preferred_names:
-        path = model_dir / name
-        if path.is_file():
-            return path.resolve()
-
-    candidates: list[Path] = []
-    for pattern in ("*.pt", "*.pth"):
-        candidates.extend(model_dir.rglob(pattern))
-    candidates = sorted(
-        (path.resolve() for path in candidates),
-        key=lambda path: (
-            "sam3.1" not in path.name.lower(),
-            "multiplex" not in path.name.lower(),
-            len(str(path)),
-        ),
-    )
-    if not candidates:
-        raise FileNotFoundError(
-            f"No SAM 3 .pt/.pth checkpoint found below {model_dir}."
-        )
-    return candidates[0]
-
-
-def autocast_context(device: str, no_bf16: bool):
-    if (
-        device == "cuda"
-        and not no_bf16
-        and torch.cuda.is_available()
-        and torch.cuda.is_bf16_supported()
-    ):
-        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-    return nullcontext()
-
-
-def tensor_to_numpy(value: Any) -> np.ndarray:
-    if isinstance(value, torch.Tensor):
-        return value.detach().float().cpu().numpy()
-    return np.asarray(value)
-
-
-def normalize_masks(value: Any) -> np.ndarray:
-    masks = tensor_to_numpy(value)
-    if masks.ndim == 4 and masks.shape[1] == 1:
-        masks = masks[:, 0]
-    elif masks.ndim == 2:
-        masks = masks[None]
-    if masks.ndim != 3:
-        raise ValueError(f"Expected SAM masks as NxHxW, got {masks.shape}")
-    return masks > 0.5
-
-
-def normalize_scores(value: Any, count: int) -> np.ndarray:
-    if value is None:
-        return np.ones((count,), dtype=np.float32)
-    scores = tensor_to_numpy(value).reshape(-1)
-    if len(scores) != count:
-        raise ValueError(
-            f"SAM mask/score mismatch: {count} masks and {len(scores)} scores"
-        )
-    return scores.astype(np.float32)
 
 
 def run_box_prompt(
@@ -535,30 +446,6 @@ def expand_bbox(
         min(image_width, x2 + pad_x),
         min(image_height, y2 + pad_y),
     ]
-
-
-def mask_bbox(mask: np.ndarray) -> list[int] | None:
-    ys, xs = np.nonzero(mask)
-    if len(xs) == 0:
-        return None
-    return [
-        int(xs.min()),
-        int(ys.min()),
-        int(xs.max()) + 1,
-        int(ys.max()) + 1,
-    ]
-
-
-def load_font(size: int) -> ImageFont.ImageFont:
-    for candidate in (
-        "DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ):
-        try:
-            return ImageFont.truetype(candidate, size=size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
 
 
 def draw_transparent_label(

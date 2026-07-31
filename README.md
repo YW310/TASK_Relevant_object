@@ -22,6 +22,26 @@ Qwen3-VL can subsequently select the current target and reference objects.
 
 Stages 1–3 run by default. Stage 4 and its visualizations are opt-in.
 
+## Code organization
+
+The command-line scripts remain stable entrypoints, while reusable logic lives
+in small dependency-oriented modules:
+
+| Module | Responsibility |
+| --- | --- |
+| `common_io.py` | Atomic JSON output, CSV parsing, and natural filename sorting. |
+| `sam3_runtime.py` | SAM3 checkpoint discovery, autocast, and tensor normalization. |
+| `mask_geometry.py` | Binary-mask, component, and 2D bbox geometry. |
+| `camera_geometry.py` | RLBench depth decoding, camera metadata, backprojection, and reprojection. |
+| `fusion_types.py` | Shared fusion data structures and role constants. |
+| `fusion_matching.py` | Same-camera NMS, cross-camera compatibility, and Hungarian assignment. |
+| `fused_candidate_io.py` | Versioned fusion artifact readers and point-cloud loading. |
+| `visualization_utils.py` | Annotation primitives shared by generation and visualization stages. |
+
+For backward compatibility, the main fusion entrypoint still re-exports its
+previously public geometry and matching helpers. New library-style callers
+should import the focused modules directly.
+
 ## Stage details and parameters
 
 The shell pipeline exposes the most common settings as environment variables.

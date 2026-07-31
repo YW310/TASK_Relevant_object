@@ -34,14 +34,15 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PIL import Image, ImageDraw
 
-from fused_candidate_io import iter_fused_frames, load_fused_manifest, load_object_points
-
-from multiview_candidate_fusion import (
+from camera_geometry import (
+    find_rgb_path,
     load_camera_params,
     load_rlbench_observations,
-    parse_csv,
+    project_points,
     resolve_camera_param_for_frame,
 )
+from common_io import parse_optional_csv as parse_csv
+from fused_candidate_io import iter_fused_frames, load_fused_manifest, load_object_points
 
 # Distinct, high-contrast colors cycled across fused objects within a frame.
 OBJECT_COLORS: tuple[tuple[int, int, int], ...] = (
@@ -67,30 +68,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-frames", type=int, default=None, help="Optional cap on the number of frames to render.")
     parser.add_argument("--skip-pointcloud", action="store_true", help="Skip the matplotlib 3D scatter plot (only render 2D overlays + report).")
     return parser
-
-
-def find_rgb_path(episode_dir: Path, camera: str, frame_id: str) -> Path | None:
-    for suffix in (".png", ".jpg", ".jpeg", ".bmp"):
-        path = episode_dir / f"{camera}_rgb" / f"{frame_id}{suffix}"
-        if path.is_file():
-            return path
-    return None
-
-
-def project_points(points_world: np.ndarray, intrinsics: np.ndarray, extrinsics: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Project world points into pixel coordinates. ``extrinsics`` is T_world_camera."""
-    if len(points_world) == 0:
-        return np.empty((0, 2)), np.empty((0,), dtype=bool)
-    world_to_cam = np.linalg.inv(extrinsics)
-    hom = np.concatenate([points_world, np.ones((len(points_world), 1))], axis=1)
-    points_cam = (hom @ world_to_cam.T)[:, :3]
-    z = points_cam[:, 2]
-    valid = z > 1e-6
-    safe_z = np.where(valid, z, 1.0)
-    fx, fy, cx, cy = intrinsics[0, 0], intrinsics[1, 1], intrinsics[0, 2], intrinsics[1, 2]
-    u = points_cam[:, 0] * fx / safe_z + cx
-    v = points_cam[:, 1] * fy / safe_z + cy
-    return np.stack([u, v], axis=1), valid
 
 
 def _rectangle_overlap_area(

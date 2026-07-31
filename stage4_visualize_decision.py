@@ -23,15 +23,16 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PIL import Image, ImageDraw
 
-from fused_candidate_io import load_fused_frame, load_fused_manifest, load_object_points
-
-from multiview_candidate_fusion import (
+from camera_geometry import (
+    find_rgb_path,
     load_camera_params,
     load_rlbench_observations,
-    parse_csv,
+    project_points,
     resolve_camera_param_for_frame,
 )
-from visualize_fused_candidates import OBJECT_COLORS, find_rgb_path, project_points
+from common_io import parse_optional_csv as parse_csv
+from fused_candidate_io import load_fused_frame, load_fused_manifest, load_object_points
+from visualize_fused_candidates import OBJECT_COLORS
 
 ROLE_COLORS = {
     "target": (255, 80, 80),

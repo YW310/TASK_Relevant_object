@@ -22,10 +22,16 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageOps
 
-from qwen3_bbox_guided_sam3_demo import (
+from common_io import atomic_json_dump, parse_csv
+from mask_geometry import (
+    bbox_iou_2d,
+    mask_bbox,
+    mask_overlap_metrics,
+    split_mask_components,
+)
+from sam3_runtime import (
     autocast_context,
     find_checkpoint,
-    load_font,
     normalize_masks,
     normalize_scores,
     tensor_to_numpy,
@@ -34,16 +40,15 @@ from qwen3vl_rlbench_episode_grounding import (
     DEFAULT_CAMERAS,
     Qwen3VLRLBenchGrounder,
     ROLE_PROMPT,
-    atomic_json_dump,
     collect_camera_frames,
     discover_instruction,
     extract_json,
-    parse_csv,
     role_identity_cues,
     role_display_text,
     select_frame_ids,
     resolve_role_frame,
 )
+from visualization_utils import load_font
 
 
 def color_for_index(index: int) -> tuple[int, int, int]:
@@ -295,35 +300,6 @@ def text_prompts_for_role(role_spec: Mapping[str, Any], role: str, max_variants:
     return prompts[:cap]
 
 
-def mask_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
-    intersection = int(np.logical_and(mask_a, mask_b).sum())
-    if intersection == 0:
-        return 0.0
-    union = int(np.logical_or(mask_a, mask_b).sum())
-    return intersection / union if union else 0.0
-
-
-def mask_overlap_metrics(mask_a: np.ndarray, mask_b: np.ndarray) -> tuple[float, float]:
-    """Return IoU and coverage of the smaller mask (containment)."""
-    intersection = int(np.logical_and(mask_a, mask_b).sum())
-    area_a, area_b = int(mask_a.sum()), int(mask_b.sum())
-    union = area_a + area_b - intersection
-    return (intersection / union if union else 0.0,
-            intersection / min(area_a, area_b) if min(area_a, area_b) else 0.0)
-
-
-def bbox_iou_2d(a: Sequence[float] | None, b: Sequence[float] | None) -> float:
-    if not a or not b:
-        return 0.0
-    ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
-    ix1, iy1 = min(a[2], b[2]), min(a[3], b[3])
-    inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
-    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
-    area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
-    union = area_a + area_b - inter
-    return inter / union if union else 0.0
-
-
 def canonicalize_candidates(
     candidates: Sequence[dict[str, Any]], iou_threshold: float,
     containment_threshold: float, bbox_iou_threshold: float = 0.0,
@@ -449,82 +425,6 @@ def canonicalize_candidates(
                 retained.append(candidate)
         canonical = retained
     return canonical, suppressed
-
-
-def mask_iou_nms(candidates: Sequence[dict[str, Any]], iou_threshold: float, top_k: int) -> list[dict[str, Any]]:
-    kept: list[dict[str, Any]] = []
-    for candidate in sorted(candidates, key=lambda item: float(item["score"]), reverse=True):
-        if top_k > 0 and len(kept) >= top_k:
-            break
-        mask = candidate["mask"]
-        if any(mask_iou(mask, kept_candidate["mask"]) > iou_threshold for kept_candidate in kept):
-            continue
-        kept.append(candidate)
-    return kept
-
-
-def mask_bbox(mask: np.ndarray) -> list[int] | None:
-    ys, xs = np.nonzero(mask)
-    if len(xs) == 0:
-        return None
-    return [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
-
-
-def split_mask_components(
-    mask: np.ndarray,
-    min_area: int,
-    max_components: int = 0,
-) -> list[np.ndarray]:
-    """Return the significant 8-connected regions of a binary mask.
-
-    SAM3 occasionally emits one mask containing several disconnected object
-    instances. Computing a single min/max bbox around that mask makes those
-    instances appear to be one candidate. Splitting here preserves each region
-    as an independent candidate before canonicalization and 3D fusion.
-    """
-    foreground = np.asarray(mask, dtype=bool)
-    if foreground.ndim != 2:
-        raise ValueError(f"Expected a 2D mask, got shape {foreground.shape}.")
-
-    height, width = foreground.shape
-    visited = np.zeros_like(foreground, dtype=bool)
-    components: list[np.ndarray] = []
-    min_area = max(1, int(min_area))
-
-    for start_y, start_x in np.argwhere(foreground):
-        y0, x0 = int(start_y), int(start_x)
-        if visited[y0, x0]:
-            continue
-        visited[y0, x0] = True
-        stack = [(y0, x0)]
-        pixels: list[tuple[int, int]] = []
-        while stack:
-            y, x = stack.pop()
-            pixels.append((y, x))
-            for dy in (-1, 0, 1):
-                for dx in (-1, 0, 1):
-                    if dy == 0 and dx == 0:
-                        continue
-                    ny, nx = y + dy, x + dx
-                    if (
-                        0 <= ny < height
-                        and 0 <= nx < width
-                        and foreground[ny, nx]
-                        and not visited[ny, nx]
-                    ):
-                        visited[ny, nx] = True
-                        stack.append((ny, nx))
-        if len(pixels) < min_area:
-            continue
-        component = np.zeros_like(foreground, dtype=bool)
-        ys, xs = zip(*pixels)
-        component[np.asarray(ys), np.asarray(xs)] = True
-        components.append(component)
-
-    components.sort(key=lambda item: int(item.sum()), reverse=True)
-    if max_components > 0:
-        components = components[: int(max_components)]
-    return components
 
 
 def candidate_generation_parameters(
