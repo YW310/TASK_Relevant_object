@@ -7,11 +7,33 @@ from multiview_candidate_fusion import (
     Observation3D,
     assign_object_ids,
     cluster_observations,
+    filter_candidates_by_mask_area,
     filter_clusters_by_camera_support,
     filter_small_clusters,
     frame_index_from_frame,
     suppress_same_camera_duplicates,
 )
+
+
+class CandidateMaskAreaFilterTest(unittest.TestCase):
+    def test_candidates_below_threshold_are_removed(self) -> None:
+        candidates = [
+            {"id": "C-small", "mask_area_pixels": 39},
+            {"id": "C-boundary", "mask_area_pixels": 40},
+            {"id": "C-large", "mask_area_pixels": 100},
+        ]
+
+        kept, suppressed = filter_candidates_by_mask_area(candidates, 40)
+
+        self.assertEqual(["C-boundary", "C-large"], [item["id"] for item in kept])
+        self.assertEqual("C-small", suppressed[0]["candidate_id"])
+        self.assertEqual("mask_area_pixels_below_threshold", suppressed[0]["reason"])
+
+    def test_zero_threshold_disables_filter(self) -> None:
+        candidates = [{"id": "C1", "mask_area_pixels": 1}]
+        kept, suppressed = filter_candidates_by_mask_area(candidates, 0)
+        self.assertEqual(candidates, kept)
+        self.assertEqual([], suppressed)
 
 
 def _observation(name: str, camera: str, bbox: list[list[float]]) -> Observation3D:

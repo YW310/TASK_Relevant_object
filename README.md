@@ -122,6 +122,7 @@ ties); remaining cameras use the same confidence-first, name-tiebroken order.
 | `--depth-mode` | — | `auto` | Decode `auto`, packed `rlbench-rgb`, or single-channel `raw` depth. |
 | `--depth-scale` | — | `1.0` | Divisor for raw/single-channel depth values. |
 | `--max-points-per-candidate` | — | `4096` | Bound point-cloud size and memory use per observation. |
+| `--min-candidate-mask-area-pixels` | `MIN_CANDIDATE_MASK_AREA_PIXELS` | follows `MIN_MASK_AREA` (`4`) | Drop cached/raw candidates whose `mask_area_pixels` is below this value before backprojection; `0` disables it. |
 | `--cluster-distance-m` | `CLUSTER_DISTANCE_M` | `0.03` m | Maximum pairwise centroid distance in a completed hypothesis. |
 | `--bbox-iou-threshold` | — | `0.0` (off) | Optional minimum pairwise 3D bbox IoU during full validation. |
 | `--nearest-distance-m` | — | unset | Optional maximum robust symmetric surface distance during validation. |

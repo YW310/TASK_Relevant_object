@@ -84,6 +84,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--max-points-per-candidate", type=int, default=4096)
+    parser.add_argument(
+        "--min-candidate-mask-area-pixels",
+        type=int,
+        default=0,
+        help=(
+            "Drop 2D candidates whose mask_area_pixels is below this value before "
+            "depth loading/backprojection (0 disables)."
+        ),
+    )
     parser.add_argument("--cluster-distance-m", type=float, default=0.03, help="Centroid threshold, e.g. 0.02-0.05 m.")
     parser.add_argument(
         "--bbox-iou-threshold",
@@ -398,6 +407,36 @@ def canonicalize_legacy_candidates(
                                "role_scores": role_scores, "prompt_provenance": provenance})
         output.append(representative)
     return output, suppressed
+
+
+def filter_candidates_by_mask_area(
+    candidates: Sequence[Mapping[str, Any]],
+    min_area_pixels: int,
+) -> tuple[list[Mapping[str, Any]], list[dict[str, Any]]]:
+    """Remove raw 2D candidates below a configured mask-area threshold."""
+    threshold = max(0, int(min_area_pixels))
+    if threshold <= 0:
+        return list(candidates), []
+
+    kept: list[Mapping[str, Any]] = []
+    suppressed: list[dict[str, Any]] = []
+    for candidate in candidates:
+        try:
+            area = int(candidate.get("mask_area_pixels") or 0)
+        except (TypeError, ValueError):
+            area = 0
+        if area < threshold:
+            suppressed.append(
+                {
+                    "candidate_id": candidate.get("id"),
+                    "mask_area_pixels": area,
+                    "threshold_pixels": threshold,
+                    "reason": "mask_area_pixels_below_threshold",
+                }
+            )
+            continue
+        kept.append(candidate)
+    return kept, suppressed
 
 
 def filter_clusters_by_camera_support(
@@ -1232,6 +1271,7 @@ def fuse_frame(
     track_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     observations: list[Observation3D] = []
+    mask_area_suppressed: list[dict[str, Any]] = []
     canonicalization_suppressed: list[dict[str, Any]] = []
     same_camera_nms_suppressed: list[dict[str, Any]] = []
     camera_contexts: dict[str, dict[str, np.ndarray]] = {}
@@ -1265,8 +1305,20 @@ def fuse_frame(
             "depth": depth,
         }
         data = json.loads(Path(view["candidates_json"]).read_text(encoding="utf-8"))
-        canonical_candidates, legacy_suppressed = canonicalize_legacy_candidates(
+        area_filtered_candidates, area_suppressed = filter_candidates_by_mask_area(
             data.get("candidates", []),
+            args.min_candidate_mask_area_pixels,
+        )
+        mask_area_suppressed.extend({"camera": camera, **item} for item in area_suppressed)
+        if area_suppressed:
+            print(
+                f"[info] frame_id={frame_id} camera={camera}: mask-area filter suppressed "
+                f"{len(area_suppressed)} candidates below "
+                f"{args.min_candidate_mask_area_pixels} pixels",
+                file=sys.stderr,
+            )
+        canonical_candidates, legacy_suppressed = canonicalize_legacy_candidates(
+            area_filtered_candidates,
             iou_threshold=args.legacy_canonical_iou,
             containment_threshold=args.legacy_canonical_containment,
         )
@@ -1323,7 +1375,8 @@ def fuse_frame(
         track_state.clear()
         track_state.update(updated_track_state)
     return {"frame_index": frame.get("frame_index"), "frame_id": frame_id, "objects": objects,
-            "diagnostics": {"canonicalization_suppressed": canonicalization_suppressed,
+            "diagnostics": {"mask_area_suppressed": mask_area_suppressed,
+                            "canonicalization_suppressed": canonicalization_suppressed,
                             "same_camera_nms_suppressed": same_camera_nms_suppressed,
                             "attempted_same_camera_cluster_insertions": same_camera_diagnostics,
                             "camera_support": camera_support_diagnostics,
@@ -1364,6 +1417,7 @@ def _fusion_parameters(args: argparse.Namespace, rlbench_low_dim_path: Path, has
         "legacy_canonical_iou": args.legacy_canonical_iou,
         "legacy_canonical_containment": args.legacy_canonical_containment,
         "max_points_per_candidate": args.max_points_per_candidate,
+        "min_candidate_mask_area_pixels": args.min_candidate_mask_area_pixels,
         "depth_mode": args.depth_mode,
         "depth_scale": args.depth_scale,
         "cameras": list(parse_csv(args.cameras) or []),
