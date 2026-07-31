@@ -2,7 +2,7 @@ import argparse
 import json
 import sys
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 import qwen3vl_object_role_decision as decision_module
 from qwen3vl_object_role_decision import (
@@ -10,6 +10,7 @@ from qwen3vl_object_role_decision import (
     _apply_two_stage_target_selection,
     _build_temporal_object_context,
     _candidate_observation_cards,
+    _collect_temporal_scene_montages,
     _collect_temporal_contact_sheets,
     _current_dynamic_events,
     _decision_prompt,
@@ -37,7 +38,7 @@ def _payload_from_call(call):
     prompt = call[0][0]["content"][-1]["text"]
     return json.loads(
         prompt.split("Input evidence JSON:\n", 1)[1].split(
-            "\n\nChronological object contact sheets", 1
+            "\n\nChronological ", 1
         )[0]
     )
 
@@ -45,6 +46,15 @@ def _payload_from_call(call):
 def test_temporal_window_at_middle_frame():
     frames = _frames()
     assert [item["frame_id"] for item in _resolve_temporal_frames(frames, frames[4], 3)] == ["f2", "f3", "f4"]
+
+
+def test_scene_visual_mode_is_the_cli_default():
+    args = decision_module.build_parser().parse_args(
+        ["--object-summary-json", "object_summary.json"]
+    )
+    assert args.decision_visual_mode == "scene"
+    assert args.decision_scene_window_frames == 2
+    assert args.decision_scene_cameras == "front,left_shoulder,right_shoulder"
 
 
 def test_current_dynamic_events_reads_tracker_event_field():
@@ -136,6 +146,7 @@ def _run_main_with_grounder(
     frames,
     grounder,
     *extra_args,
+    summary_overrides=None,
 ):
     manifest_path = tmp_path / "frame_fused_candidates.json"
     manifest_path.write_text(
@@ -143,17 +154,15 @@ def _run_main_with_grounder(
     )
     summary_path = tmp_path / "object_summary.json"
     output_path = tmp_path / "decision.json"
-    summary_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "generation_id": "g1",
-                "source_fused_json": str(manifest_path),
-                "frame_decision_inputs": frames,
-                "object_tracks": [],
-            }
-        )
-    )
+    summary = {
+        "schema_version": 1,
+        "generation_id": "g1",
+        "source_fused_json": str(manifest_path),
+        "frame_decision_inputs": frames,
+        "object_tracks": [],
+    }
+    summary.update(summary_overrides or {})
+    summary_path.write_text(json.dumps(summary))
     monkeypatch.setattr(
         decision_module,
         "Qwen3VLRLBenchGrounder",
@@ -283,6 +292,8 @@ def test_adaptive_policy_emits_every_frame_but_refreshes_every_five(
         grounder,
         "--decision-policy",
         "adaptive",
+        "--decision-visual-mode",
+        "patches",
         "--decision-refresh-interval",
         "5",
         "--no-dynamic-role-reasoning",
@@ -320,6 +331,8 @@ def test_adaptive_policy_refreshes_when_new_candidate_appears(
         grounder,
         "--decision-policy",
         "adaptive",
+        "--decision-visual-mode",
+        "patches",
         "--decision-refresh-interval",
         "10",
         "--no-dynamic-role-reasoning",
@@ -359,6 +372,8 @@ def test_adaptive_propagation_skips_contact_sheet_creation(tmp_path, monkeypatch
         grounder,
         "--decision-policy",
         "adaptive",
+        "--decision-visual-mode",
+        "patches",
         "--decision-refresh-interval",
         "10",
         "--no-dynamic-role-reasoning",
@@ -506,6 +521,228 @@ def test_contact_sheet_limits_views_and_visual_pixels(tmp_path):
         sheets[0]["width"],
         sheets[0]["height"],
     )
+
+
+def test_scene_montages_use_latest_two_frames_and_fixed_camera_layout(tmp_path):
+    episode_dir = tmp_path / "episode0"
+    front_dir = episode_dir / "front_rgb"
+    front_dir.mkdir(parents=True)
+    mask_path = tmp_path / "mask.png"
+    mask = Image.new("L", (64, 64), 0)
+    ImageDraw.Draw(mask).rectangle((8, 10, 30, 34), fill=255)
+    mask.save(mask_path)
+
+    frames = _frames(3)
+    for index, frame in enumerate(frames):
+        Image.new("RGB", (64, 64), (30 + index * 20, 45, 60)).save(
+            front_dir / f"f{index}.png"
+        )
+        frame["candidate_objects"] = [
+            {
+                "object_id": "O1",
+                "observations": [
+                    {
+                        "camera": "front",
+                        "sam_score": 0.9,
+                        "mask_path": str(mask_path),
+                        "mask_bbox_xyxy": [8, 10, 30, 34],
+                    }
+                ],
+            },
+            {
+                "object_id": "O2",
+                "observations": [
+                    {
+                        "camera": "front",
+                        "sam_score": 0.99,
+                        "mask_path": str(mask_path),
+                        "mask_bbox_xyxy": [35, 35, 55, 55],
+                    }
+                ],
+            },
+        ]
+
+    montages = _collect_temporal_scene_montages(
+        frames,
+        episode_dir,
+        tmp_path / "artifacts",
+        2,
+        ["front", "left_shoulder", "right_shoulder"],
+        {"O1"},
+        [],
+        max_visual_pixels=4096,
+        cache={},
+    )
+
+    assert [item["frame_id"] for item in montages] == ["f1", "f2"]
+    assert all(item["kind"] == "scene_montage" for item in montages)
+    assert all(item["object_ids"] == ["O1"] for item in montages)
+    assert all(
+        item["cameras"] == ["front", "left_shoulder", "right_shoulder"]
+        for item in montages
+    )
+    assert all(
+        item["missing_cameras"] == ["left_shoulder", "right_shoulder"]
+        for item in montages
+    )
+    assert all(item["pixel_count"] <= 4096 for item in montages)
+
+
+def test_default_scene_mode_sends_scene_only_and_first_frame_has_one_image(
+    tmp_path,
+    monkeypatch,
+):
+    episode_dir = tmp_path / "episode0"
+    cameras = ("front", "left_shoulder", "right_shoulder")
+    for camera in cameras:
+        camera_dir = episode_dir / f"{camera}_rgb"
+        camera_dir.mkdir(parents=True)
+        for frame_id in ("f0", "f1"):
+            Image.new("RGB", (64, 64), (35, 55, 75)).save(
+                camera_dir / f"{frame_id}.png"
+            )
+    mask_path = tmp_path / "scene_mask.png"
+    Image.new("L", (64, 64), 255).save(mask_path)
+    frames = _frames(2)
+    for frame in frames:
+        frame["candidate_objects"] = [
+            {
+                "object_id": "O1",
+                "camera_count": 3,
+                "point_count": 20,
+                "sam_score": 0.9,
+                "observations": [
+                    {
+                        "camera": camera,
+                        "sam_score": 0.9,
+                        "mask_path": str(mask_path),
+                        "mask_bbox_xyxy": [8, 8, 42, 42],
+                    }
+                    for camera in cameras
+                ],
+            }
+        ]
+    grounder = _MockGrounder()
+
+    output = _run_main_with_grounder(
+        tmp_path,
+        monkeypatch,
+        frames,
+        grounder,
+        "--no-dynamic-role-reasoning",
+        "--decision-max-visual-pixels",
+        "4096",
+        summary_overrides={"episode_dir": str(episode_dir)},
+    )
+
+    first_content = grounder.calls[0][0][0]["content"]
+    second_content = grounder.calls[1][0][0]["content"]
+    assert sum(item["type"] == "image" for item in first_content) == 1
+    assert sum(item["type"] == "image" for item in second_content) == 2
+    assert output["decision_visual_mode"] == "scene"
+    assert output["performance"]["total_scene_image_count"] == 3
+    assert output["performance"]["total_patch_image_count"] == 0
+    assert all(
+        image["kind"] == "scene_montage"
+        for frame in output["frame_decisions"]
+        for image in frame["representative_images"]
+    )
+    prompt = second_content[-1]["text"].lower()
+    assert "full-scene montages" in prompt
+    assert "object contact sheet" not in prompt
+    assert "labelled object crops" not in prompt
+
+
+def test_adaptive_scene_propagation_does_not_render_next_frame(
+    tmp_path,
+    monkeypatch,
+):
+    episode_dir = tmp_path / "episode0"
+    front_dir = episode_dir / "front_rgb"
+    front_dir.mkdir(parents=True)
+    for frame_id in ("f0", "f1"):
+        Image.new("RGB", (48, 48), (40, 50, 60)).save(
+            front_dir / f"{frame_id}.png"
+        )
+    frames = _frames(2)
+    for frame in frames:
+        frame["candidate_objects"] = [
+            {
+                "object_id": "O1",
+                "camera_count": 1,
+                "point_count": 20,
+                "sam_score": 0.9,
+                "observations": [
+                    {
+                        "camera": "front",
+                        "sam_score": 0.9,
+                        "mask_bbox_xyxy": [6, 6, 30, 30],
+                    }
+                ],
+            }
+        ]
+    grounder = _MockGrounder()
+
+    output = _run_main_with_grounder(
+        tmp_path,
+        monkeypatch,
+        frames,
+        grounder,
+        "--decision-policy",
+        "adaptive",
+        "--decision-refresh-interval",
+        "10",
+        "--no-dynamic-role-reasoning",
+        summary_overrides={"episode_dir": str(episode_dir)},
+    )
+
+    assert len(grounder.calls) == 1
+    assert output["frame_decisions"][0]["performance"]["scene_image_count"] == 1
+    assert output["frame_decisions"][1]["decision_source"] == "temporal_propagation"
+    assert output["frame_decisions"][1]["representative_images"] == []
+    assert output["frame_decisions"][1]["performance"]["scene_image_count"] == 0
+    assert not list((tmp_path / "decision_inputs" / "scenes").glob("*f1*_scene.png"))
+
+
+def test_patches_mode_preserves_contact_sheet_input(tmp_path, monkeypatch):
+    crop_path = tmp_path / "crop.png"
+    Image.new("RGB", (48, 48), (100, 30, 20)).save(crop_path)
+    frames = _frames(1)
+    frames[0]["candidate_objects"] = [
+        {
+            "object_id": "O1",
+            "camera_count": 1,
+            "point_count": 20,
+            "sam_score": 0.9,
+            "observations": [
+                {
+                    "camera": "front",
+                    "sam_score": 0.9,
+                    "masked_crop_path": str(crop_path),
+                }
+            ],
+        }
+    ]
+    grounder = _MockGrounder()
+
+    output = _run_main_with_grounder(
+        tmp_path,
+        monkeypatch,
+        frames,
+        grounder,
+        "--decision-visual-mode",
+        "patches",
+        "--no-dynamic-role-reasoning",
+    )
+
+    images = output["frame_decisions"][0]["representative_images"]
+    assert output["decision_visual_mode"] == "patches"
+    assert [item["kind"] for item in images] == ["object_contact_sheet"]
+    assert output["frame_decisions"][0]["temporal_scene_montages"] == []
+    assert output["performance"]["total_scene_image_count"] == 0
+    assert output["performance"]["total_patch_image_count"] == 1
+    prompt = grounder.calls[0][0][0]["content"][-1]["text"]
+    assert "object contact sheets" in prompt
 
 
 def test_candidate_contact_sheet_uses_two_distinct_best_camera_views(tmp_path):

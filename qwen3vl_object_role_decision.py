@@ -8,7 +8,7 @@ reference object ids using multi-source evidence:
 - instruction prior and role_spec prior
 - per-object geometric/quality stats
 - per-frame pairwise relations
-- representative object crops/masks (when available)
+- labelled full-scene views or representative object crops/masks
 """
 
 from __future__ import annotations
@@ -23,7 +23,13 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps
 
-from camera_geometry import frame_index_from_frame, load_rlbench_observations
+from camera_geometry import (
+    find_rgb_path,
+    frame_index_from_frame,
+    load_rlbench_observations,
+    project_points,
+    resolve_camera_param_for_frame,
+)
 from common_io import atomic_json_dump
 from dynamic_role_reasoning import (
     DynamicRoleTracker,
@@ -33,7 +39,14 @@ from dynamic_role_reasoning import (
 )
 from qwen3vl_rlbench_episode_grounding import Qwen3VLRLBenchGrounder
 from task_schema import compile_task_schema
-from visualization_utils import load_font
+from visualization_utils import load_font, object_color_for_id
+
+
+DEFAULT_DECISION_SCENE_CAMERAS = (
+    "front",
+    "left_shoulder",
+    "right_shoulder",
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -87,6 +100,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-retries", type=int, default=0)
     parser.add_argument("--max-new-tokens", type=int, default=384)
     parser.add_argument(
+        "--decision-visual-mode",
+        choices=("scene", "patches"),
+        default="scene",
+        help=(
+            "scene attaches labelled full-scene camera montages; patches preserves "
+            "the legacy object contact-sheet input. The two modes are mutually exclusive."
+        ),
+    )
+    parser.add_argument(
+        "--decision-scene-cameras",
+        default=",".join(DEFAULT_DECISION_SCENE_CAMERAS),
+        help="Comma-separated cameras in each scene montage.",
+    )
+    parser.add_argument(
+        "--decision-scene-window-frames",
+        type=int,
+        default=2,
+        help="Number of latest temporal frames rendered as scene montages.",
+    )
+    parser.add_argument(
         "--max-candidate-images",
         type=int,
         default=3,
@@ -105,7 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--decision-max-visual-pixels",
         type=int,
         default=393216,
-        help="Maximum pixels in each Stage-4 contact sheet; 0 disables resizing.",
+        help="Maximum pixels in each Stage-4 visual input; 0 disables resizing.",
     )
     parser.add_argument(
         "--attention-backend",
@@ -115,7 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--decision-artifacts-dir",
         default=None,
-        help="Directory for temporal object contact sheets. Default: decision_inputs next to --output-json.",
+        help="Directory for Stage-4 visual inputs. Default: decision_inputs next to --output-json.",
     )
     parser.add_argument(
         "--use-decision-history",
@@ -243,6 +276,22 @@ def _object_id_sort_key(candidate: Mapping[str, Any]) -> tuple[int, int | str]:
 def _safe_path_segment(value: Any) -> str:
     text = str(value) if value is not None else "unknown"
     return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in text) or "unknown"
+
+
+def _resize_to_pixel_limit(
+    image: Image.Image,
+    max_visual_pixels: int,
+) -> Image.Image:
+    if max_visual_pixels <= 0 or image.width * image.height <= max_visual_pixels:
+        return image
+    scale = (max_visual_pixels / float(image.width * image.height)) ** 0.5
+    return image.resize(
+        (
+            max(1, int(image.width * scale)),
+            max(1, int(image.height * scale)),
+        ),
+        Image.Resampling.LANCZOS,
+    )
 
 
 def _semantic_role_score(candidate: Mapping[str, Any], role_name: str) -> float:
@@ -420,13 +469,7 @@ def _build_object_contact_sheet(
     output_dir.mkdir(parents=True, exist_ok=True)
     frame_key = f"{_safe_path_segment(frame_index)}_{_safe_path_segment(frame_id)}"
     output_path = output_dir / f"{frame_key}_objects.png"
-    if max_visual_pixels > 0 and canvas.width * canvas.height > max_visual_pixels:
-        scale = (max_visual_pixels / float(canvas.width * canvas.height)) ** 0.5
-        resized_size = (
-            max(1, int(canvas.width * scale)),
-            max(1, int(canvas.height * scale)),
-        )
-        canvas = canvas.resize(resized_size, Image.Resampling.LANCZOS)
+    canvas = _resize_to_pixel_limit(canvas, max_visual_pixels)
     canvas.save(output_path)
     return {
         "kind": "object_contact_sheet",
@@ -468,6 +511,339 @@ def _collect_temporal_contact_sheets(
                 candidate_views_per_object=candidate_views_per_object,
                 max_visual_pixels=max_visual_pixels,
                 allowed_object_ids=allowed_object_ids,
+            )
+            if cache is not None:
+                cache[cache_key] = metadata
+        if metadata is not None:
+            results.append(metadata)
+    return results
+
+
+def _parse_scene_cameras(value: str | Sequence[str] | None) -> list[str]:
+    if isinstance(value, str):
+        cameras = [item.strip() for item in value.split(",") if item.strip()]
+    elif value is None:
+        cameras = []
+    else:
+        cameras = [str(item).strip() for item in value if str(item).strip()]
+    return list(dict.fromkeys(cameras)) or list(DEFAULT_DECISION_SCENE_CAMERAS)
+
+
+def _best_scene_observations(
+    frame_input: Mapping[str, Any],
+    camera: str,
+    allowed_object_ids: set[str],
+) -> list[tuple[str, Mapping[str, Any]]]:
+    selected = []
+    for candidate in sorted(
+        frame_input.get("candidate_objects", []),
+        key=_object_id_sort_key,
+    ):
+        object_id = str(candidate.get("object_id"))
+        if object_id not in allowed_object_ids:
+            continue
+        matching = [
+            observation
+            for observation in candidate.get("observations", [])
+            if str(observation.get("camera")) == camera
+        ]
+        if not matching:
+            continue
+        best = max(
+            matching,
+            key=lambda item: float(item.get("sam_score") or 0.0),
+        )
+        selected.append((object_id, best))
+    return selected
+
+
+def _scene_placeholder(camera: str, size: int = 384) -> Image.Image:
+    image = Image.new("RGB", (size, size), (225, 225, 225))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, size - 1, size - 1), outline=(145, 145, 145), width=1)
+    draw.multiline_text(
+        (16, 16),
+        f"{camera}\nRGB unavailable",
+        fill=(65, 65, 65),
+        font=load_font(16),
+        spacing=4,
+    )
+    return image
+
+
+def _observation_mask(
+    observation: Mapping[str, Any],
+    image_size: tuple[int, int],
+) -> Image.Image | None:
+    value = observation.get("mask_path")
+    if not value:
+        return None
+    path = Path(str(value)).expanduser()
+    if not path.is_file():
+        return None
+    with Image.open(path) as source:
+        mask = source.convert("L")
+    if mask.size != image_size:
+        mask = mask.resize(image_size, Image.Resampling.NEAREST)
+    return mask
+
+
+def _observation_bbox(
+    observation: Mapping[str, Any],
+    mask: Image.Image | None,
+    image_size: tuple[int, int],
+) -> tuple[int, int, int, int] | None:
+    raw_bbox = observation.get("mask_bbox_xyxy")
+    if isinstance(raw_bbox, Sequence) and len(raw_bbox) == 4:
+        try:
+            values = [int(round(float(value))) for value in raw_bbox]
+        except (TypeError, ValueError):
+            values = []
+        if values:
+            x1, y1, x2, y2 = values
+        else:
+            return None
+    elif mask is not None and mask.getbbox() is not None:
+        x1, y1, x2, y2 = mask.getbbox()
+    else:
+        return None
+    width, height = image_size
+    if width < 2 or height < 2:
+        return None
+    x1 = max(0, min(x1, width - 2))
+    y1 = max(0, min(y1, height - 2))
+    x2 = max(x1 + 1, min(x2, width - 1))
+    y2 = max(y1 + 1, min(y2, height - 1))
+    return x1, y1, x2, y2
+
+
+def _render_decision_scene_panel(
+    rgb_path: Path,
+    camera: str,
+    frame_input: Mapping[str, Any],
+    allowed_object_ids: set[str],
+    episode_dir: Path,
+    rlbench_observations: Sequence[Any],
+) -> tuple[Image.Image, list[str], bool]:
+    with Image.open(rgb_path) as source:
+        image = source.convert("RGBA")
+    annotations = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(annotations, "RGBA")
+    rendered_ids = []
+    for object_id, observation in _best_scene_observations(
+        frame_input,
+        camera,
+        allowed_object_ids,
+    ):
+        color = object_color_for_id(object_id)
+        mask = _observation_mask(observation, image.size)
+        if mask is not None:
+            tint = Image.new("RGBA", image.size, (*color, 0))
+            tint.putalpha(mask.point(lambda value: 36 if value > 127 else 0))
+            annotations = Image.alpha_composite(annotations, tint)
+            draw = ImageDraw.Draw(annotations, "RGBA")
+        bbox = _observation_bbox(observation, mask, image.size)
+        if bbox is None:
+            continue
+        x1, y1, x2, y2 = bbox
+        draw.rectangle(bbox, outline=(*color, 190), width=1)
+        label_y = y1 - 15 if y1 >= 16 else min(image.height - 14, y1 + 2)
+        draw.text(
+            (x1 + 2, label_y),
+            object_id,
+            fill=(*color, 240),
+            font=load_font(13),
+            stroke_width=1,
+            stroke_fill=(0, 0, 0, 220),
+        )
+        rendered_ids.append(object_id)
+
+    ee_rendered = False
+    frame_index = frame_index_from_frame(frame_input)
+    if (
+        frame_index is not None
+        and 0 <= frame_index < len(rlbench_observations)
+    ):
+        end_effector = _extract_end_effector_position(
+            rlbench_observations[frame_index]
+        )
+        if end_effector is not None:
+            try:
+                params = resolve_camera_param_for_frame(
+                    camera,
+                    frame_index,
+                    str(frame_input.get("frame_id")),
+                    {},
+                    rlbench_observations,
+                    episode_dir,
+                )
+                if params is not None:
+                    uv, valid = project_points(
+                        np.asarray([end_effector], dtype=np.float64),
+                        params["intrinsics"],
+                        params["extrinsics"],
+                    )
+                    if valid[0]:
+                        u, v = float(uv[0, 0]), float(uv[0, 1])
+                        if 0 <= u < image.width and 0 <= v < image.height:
+                            radius = 5
+                            draw.line(
+                                (u - radius, v, u + radius, v),
+                                fill=(255, 255, 255, 235),
+                                width=1,
+                            )
+                            draw.line(
+                                (u, v - radius, u, v + radius),
+                                fill=(255, 255, 255, 235),
+                                width=1,
+                            )
+                            draw.text(
+                                (u + 6, v - 8),
+                                "EE",
+                                fill=(255, 255, 255, 245),
+                                font=load_font(12),
+                                stroke_width=1,
+                                stroke_fill=(0, 0, 0, 220),
+                            )
+                            ee_rendered = True
+            except (IndexError, KeyError, ValueError, np.linalg.LinAlgError):
+                pass
+
+    return (
+        Image.alpha_composite(image, annotations).convert("RGB"),
+        sorted(set(rendered_ids)),
+        ee_rendered,
+    )
+
+
+def _build_scene_montage(
+    frame_input: Mapping[str, Any],
+    episode_dir: Path,
+    output_dir: Path,
+    cameras: Sequence[str],
+    allowed_object_ids: set[str],
+    rlbench_observations: Sequence[Any],
+    max_visual_pixels: int = 393216,
+) -> dict[str, Any] | None:
+    frame_id = str(frame_input.get("frame_id"))
+    frame_index = frame_input.get("frame_index")
+    cameras = list(cameras)
+    if not cameras:
+        return None
+
+    panels = []
+    missing_cameras = []
+    object_ids = set()
+    ee_cameras = []
+    for camera in cameras:
+        rgb_path = find_rgb_path(episode_dir, camera, frame_id)
+        if rgb_path is None:
+            panels.append((camera, _scene_placeholder(camera)))
+            missing_cameras.append(camera)
+            continue
+        panel, panel_object_ids, ee_rendered = _render_decision_scene_panel(
+            rgb_path,
+            camera,
+            frame_input,
+            allowed_object_ids,
+            episode_dir,
+            rlbench_observations,
+        )
+        panels.append((camera, panel))
+        object_ids.update(panel_object_ids)
+        if ee_rendered:
+            ee_cameras.append(camera)
+
+    cell_width = 384
+    cell_height = 384
+    gap = 6
+    title_height = 28
+    panel_title_height = 22
+    canvas_width = len(panels) * cell_width + (len(panels) + 1) * gap
+    canvas_height = title_height + panel_title_height + cell_height + 2 * gap
+    canvas = Image.new("RGB", (canvas_width, canvas_height), (235, 235, 235))
+    draw = ImageDraw.Draw(canvas)
+    draw.rectangle((0, 0, canvas_width, title_height), fill=(25, 25, 25))
+    draw.text(
+        (8, 7),
+        f"Frame {frame_id} (index={frame_index}) scene",
+        fill=(255, 255, 255),
+        font=load_font(13),
+    )
+    for index, (camera, panel) in enumerate(panels):
+        x = gap + index * (cell_width + gap)
+        y = title_height + gap
+        draw.rectangle(
+            (x, y, x + cell_width, y + panel_title_height),
+            fill=(38, 38, 38),
+        )
+        draw.text(
+            (x + 6, y + 5),
+            camera,
+            fill=(255, 255, 255),
+            font=load_font(12),
+        )
+        fitted = ImageOps.contain(
+            panel,
+            (cell_width, cell_height),
+            Image.Resampling.LANCZOS,
+        )
+        panel_x = x + (cell_width - fitted.width) // 2
+        panel_y = y + panel_title_height + (cell_height - fitted.height) // 2
+        canvas.paste(fitted, (panel_x, panel_y))
+
+    canvas = _resize_to_pixel_limit(canvas, max_visual_pixels)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frame_key = f"{_safe_path_segment(frame_index)}_{_safe_path_segment(frame_id)}"
+    output_path = output_dir / f"{frame_key}_scene.png"
+    canvas.save(output_path)
+    return {
+        "kind": "scene_montage",
+        "frame_id": frame_id,
+        "frame_index": frame_index,
+        "object_ids": sorted(object_ids),
+        "cameras": cameras,
+        "missing_cameras": missing_cameras,
+        "end_effector_cameras": ee_cameras,
+        "image_path": str(output_path.resolve()),
+        "width": canvas.width,
+        "height": canvas.height,
+        "pixel_count": canvas.width * canvas.height,
+    }
+
+
+def _collect_temporal_scene_montages(
+    temporal_frames: Sequence[Mapping[str, Any]],
+    episode_dir: Path | None,
+    output_dir: Path | None,
+    window_frames: int,
+    cameras: Sequence[str],
+    allowed_object_ids: set[str],
+    rlbench_observations: Sequence[Any],
+    max_visual_pixels: int = 393216,
+    cache: dict[str, dict[str, Any] | None] | None = None,
+) -> list[dict[str, Any]]:
+    if episode_dir is None or output_dir is None or window_frames <= 0:
+        return []
+    results = []
+    for frame in list(temporal_frames)[-window_frames:]:
+        cache_key = (
+            f"scene::{frame.get('frame_index')}::{frame.get('frame_id')}::"
+            f"cameras={','.join(cameras)}::pixels={max_visual_pixels}::"
+            f"ids={','.join(sorted(allowed_object_ids))}"
+        )
+        if cache is not None and cache_key in cache:
+            metadata = cache[cache_key]
+        else:
+            metadata = _build_scene_montage(
+                frame,
+                episode_dir,
+                output_dir / "scenes",
+                cameras,
+                allowed_object_ids,
+                rlbench_observations,
+                max_visual_pixels=max_visual_pixels,
             )
             if cache is not None:
                 cache[cache_key] = metadata
@@ -856,17 +1232,47 @@ def _build_prompt_payload(
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
-def _decision_prompt(payload_json: str, representative_images: Sequence[Mapping[str, Any]]) -> str:
+def _decision_prompt(
+    payload_json: str,
+    representative_images: Sequence[Mapping[str, Any]],
+    decision_visual_mode: str = "scene",
+) -> str:
     image_list = [
         {
             "kind": item.get("kind"),
             "frame_id": item.get("frame_id"),
             "frame_index": item.get("frame_index"),
             "object_ids": item.get("object_ids", []),
+            "cameras": item.get("cameras", []),
+            "missing_cameras": item.get("missing_cameras", []),
             "image_path": item.get("image_path"),
         }
         for item in representative_images
     ]
+
+    if decision_visual_mode == "patches":
+        identity_guidance = (
+            "Match instruction identity cues against the labelled object crops "
+            "before using proximity.\n"
+        )
+        visual_guidance = (
+            "- The chronological object contact sheets contain isolated candidate "
+            "views. A repeated O-id is one physical candidate, not multiple objects.\n"
+        )
+        visual_heading = "Chronological object contact sheets (if any):"
+    else:
+        identity_guidance = (
+            "Match instruction identity cues against the labelled full-scene camera "
+            "views before using proximity.\n"
+        )
+        visual_guidance = (
+            "- The chronological scene montages contain full front, left-shoulder, "
+            "and right-shoulder views. The same O-id and color denote one fused object "
+            "across cameras and frames. EE marks the projected end-effector when available.\n"
+            "- Use the full scene to compare the gripper, objects, supports, containers, "
+            "and their spatial context. A missing-camera panel is not negative evidence.\n"
+        )
+        visual_heading = "Chronological labelled full-scene montages (if any):"
 
     return (
         "You are deciding current RLBench object roles from fused object evidence.\n\n"
@@ -877,13 +1283,13 @@ def _decision_prompt(payload_json: str, representative_images: Sequence[Mapping[
         "- Set reference_object_id=null when no separate reference exists. A color, base, "
         "support, or part mentioned only to identify the target is not automatically a reference.\n"
         "- Treat explicit instruction identity cues such as color, shape, and named spatial position "
-        "as primary evidence. Match those cues against the labelled object crops before using proximity.\n"
+        "as primary evidence. "
+        f"{identity_guidance}"
         "- For push/press tasks, the target is the specifically commanded button or pressable object. "
         "Do not select the gripper, a nearby button, or a large supporting panel merely because it is closer.\n"
         "- Use not only instruction text, but also geometric relations, temporal evidence, camera visibility,"
-        " mask/point quality, and the chronological object contact sheets.\n"
-        "- A contact sheet can contain two camera views of the same O-id. Use the repeated O-id to compare "
-        "appearance across views; it is one physical candidate, not two candidates.\n"
+        " mask/point quality, and the chronological visual evidence.\n"
+        f"{visual_guidance}"
         "- This is an online decision: the current frame must be judged together with previous frames in the temporal window.\n"
         "- Treat window_frames as chronological evidence ending at is_decision_frame=true. "
         "Use earlier frames to resolve occlusion and appearance, but output only a current valid object ID.\n"
@@ -900,7 +1306,7 @@ def _decision_prompt(payload_json: str, representative_images: Sequence[Mapping[
         "- If uncertain, set uncertain=true with explicit reason.\n\n"
         "Input evidence JSON:\n"
         f"{payload_json}\n\n"
-        "Chronological object contact sheets (if any):\n"
+        f"{visual_heading}\n"
         f"{json.dumps(image_list, ensure_ascii=False, separators=(',', ':'))}\n\n"
         "Rules:\n"
         "1. Any non-null target_object_id/reference_object_id must be in valid_output_object_ids.\n"
@@ -1239,6 +1645,9 @@ def _run_decision_for_frame(
     previous_frame_decisions: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     frame_started = time.perf_counter()
+    decision_visual_mode = str(
+        getattr(args, "decision_visual_mode", "scene")
+    )
     adaptive_state = _adaptive_state(args)
     ordered = _ordered_frames(frame_inputs)
     temporal_frames = _resolve_temporal_frames(ordered, frame_input, args.decision_window_frames)
@@ -1367,7 +1776,9 @@ def _run_decision_for_frame(
             "candidate_filter_stats": filter_stats,
             "temporal_window": temporal_window_meta,
             "temporal_contact_sheets": [],
+            "temporal_scene_montages": [],
             "representative_images": [],
+            "decision_visual_mode": decision_visual_mode,
             "online_history": previous_summary,
             "task_schema": task_schema.to_dict() if task_schema is not None else {},
             "dynamic_role_context": dynamic_role_context,
@@ -1379,8 +1790,12 @@ def _run_decision_for_frame(
             "performance": {
                 "frame_total_seconds": round(time.perf_counter() - frame_started, 6),
                 "contact_sheet_seconds": 0.0,
+                "scene_montage_seconds": 0.0,
+                "visual_preparation_seconds": 0.0,
                 "model_seconds": 0.0,
                 "input_image_count": 0,
+                "scene_image_count": 0,
+                "patch_image_count": 0,
                 "input_visual_pixels": 0,
             },
             "decision": empty_decision,
@@ -1418,34 +1833,64 @@ def _run_decision_for_frame(
 
     representative_images: list[dict[str, Any]] = []
     contact_sheet_seconds = 0.0
+    scene_montage_seconds = 0.0
     payload_json = ""
     messages: list[dict[str, Any]] = []
     if invoke_model:
         artifacts_value = getattr(args, "decision_artifacts_dir", None)
         artifacts_dir = Path(artifacts_value) if artifacts_value else None
-        contact_started = time.perf_counter()
-        representative_images = _collect_temporal_contact_sheets(
-            temporal_frames,
-            artifacts_dir,
-            max(
-                0,
-                min(
-                    int(getattr(args, "max_candidate_images", 3)),
-                    max(1, int(getattr(args, "decision_window_frames", 3))),
-                ),
-            ),
-            cache=getattr(args, "_contact_sheet_cache", None),
-            candidate_views_per_object=max(
-                1,
-                int(getattr(args, "candidate_views_per_object", 1)),
-            ),
-            max_visual_pixels=max(
-                0,
-                int(getattr(args, "decision_max_visual_pixels", 393216)),
-            ),
-            allowed_object_ids=candidate_ids,
+        visual_started = time.perf_counter()
+        max_visual_pixels = max(
+            0,
+            int(getattr(args, "decision_max_visual_pixels", 393216)),
         )
-        contact_sheet_seconds = time.perf_counter() - contact_started
+        if decision_visual_mode == "patches":
+            representative_images = _collect_temporal_contact_sheets(
+                temporal_frames,
+                artifacts_dir,
+                max(
+                    0,
+                    min(
+                        int(getattr(args, "max_candidate_images", 3)),
+                        max(1, int(getattr(args, "decision_window_frames", 3))),
+                    ),
+                ),
+                cache=getattr(args, "_contact_sheet_cache", None),
+                candidate_views_per_object=max(
+                    1,
+                    int(getattr(args, "candidate_views_per_object", 1)),
+                ),
+                max_visual_pixels=max_visual_pixels,
+                allowed_object_ids=candidate_ids,
+            )
+            contact_sheet_seconds = time.perf_counter() - visual_started
+        else:
+            episode_dir_value = summary.get("episode_dir")
+            episode_dir = (
+                Path(str(episode_dir_value)).expanduser().resolve()
+                if episode_dir_value
+                else None
+            )
+            representative_images = _collect_temporal_scene_montages(
+                temporal_frames,
+                episode_dir,
+                artifacts_dir,
+                max(
+                    0,
+                    min(
+                        int(getattr(args, "decision_scene_window_frames", 2)),
+                        max(1, int(getattr(args, "decision_window_frames", 3))),
+                    ),
+                ),
+                _parse_scene_cameras(
+                    getattr(args, "decision_scene_cameras", None)
+                ),
+                candidate_ids,
+                observations or [],
+                max_visual_pixels=max_visual_pixels,
+                cache=getattr(args, "_scene_montage_cache", None),
+            )
+            scene_montage_seconds = time.perf_counter() - visual_started
         payload_json = _build_prompt_payload(
             summary,
             frame_input,
@@ -1464,17 +1909,31 @@ def _run_decision_for_frame(
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
-        prompt_text = _decision_prompt(payload_json, representative_images)
+        prompt_text = _decision_prompt(
+            payload_json,
+            representative_images,
+            decision_visual_mode=decision_visual_mode,
+        )
 
         content: list[dict[str, Any]] = []
         for item in representative_images:
+            if item.get("kind") == "scene_montage":
+                visual_label = (
+                    f"SCENE_MONTAGE_CAMERAS={','.join(item.get('cameras', []))} "
+                    f"VISIBLE_OBJECT_IDS={','.join(item.get('object_ids', []))}"
+                )
+            else:
+                visual_label = (
+                    "OBJECT_CONTACT_SHEET="
+                    f"{','.join(item.get('object_ids', []))}"
+                )
             content.append(
                 {
                     "type": "text",
                     "text": (
                         f"TEMPORAL_FRAME={item.get('frame_id')} "
                         f"FRAME_INDEX={item.get('frame_index')} "
-                        f"OBJECT_CONTACT_SHEET={','.join(item.get('object_ids', []))}"
+                        f"{visual_label}"
                     ),
                 }
             )
@@ -1485,10 +1944,25 @@ def _run_decision_for_frame(
     visual_pixels = sum(
         int(item.get("pixel_count") or 0) for item in representative_images
     )
+    scene_image_count = sum(
+        1 for item in representative_images if item.get("kind") == "scene_montage"
+    )
+    patch_image_count = sum(
+        1
+        for item in representative_images
+        if item.get("kind") == "object_contact_sheet"
+    )
     base_performance = {
         "contact_sheet_seconds": round(contact_sheet_seconds, 6),
+        "scene_montage_seconds": round(scene_montage_seconds, 6),
+        "visual_preparation_seconds": round(
+            contact_sheet_seconds + scene_montage_seconds,
+            6,
+        ),
         "model_seconds": 0.0,
         "input_image_count": len(representative_images),
+        "scene_image_count": scene_image_count,
+        "patch_image_count": patch_image_count,
         "input_visual_pixels": visual_pixels,
         "prompt_characters": len(payload_json),
         "input_tokens": None,
@@ -1506,8 +1980,18 @@ def _run_decision_for_frame(
             "candidate_ids": sorted(candidate_ids),
             "candidate_filter_stats": filter_stats,
             "temporal_window": temporal_window_meta,
-            "temporal_contact_sheets": representative_images,
+            "temporal_contact_sheets": [
+                item
+                for item in representative_images
+                if item.get("kind") == "object_contact_sheet"
+            ],
+            "temporal_scene_montages": [
+                item
+                for item in representative_images
+                if item.get("kind") == "scene_montage"
+            ],
             "representative_images": representative_images,
+            "decision_visual_mode": decision_visual_mode,
             "online_history": previous_summary,
             "messages": messages,
             "model_invoked": False,
@@ -1619,8 +2103,18 @@ def _run_decision_for_frame(
         "candidate_ids": sorted(candidate_ids),
         "candidate_filter_stats": filter_stats,
         "temporal_window": temporal_window_meta,
-        "temporal_contact_sheets": representative_images,
+        "temporal_contact_sheets": [
+            item
+            for item in representative_images
+            if item.get("kind") == "object_contact_sheet"
+        ],
+        "temporal_scene_montages": [
+            item
+            for item in representative_images
+            if item.get("kind") == "scene_montage"
+        ],
         "representative_images": representative_images,
+        "decision_visual_mode": decision_visual_mode,
         "online_history": previous_summary,
         "task_schema": task_schema.to_dict() if task_schema is not None else {},
         "dynamic_role_context": dynamic_role_context,
@@ -1664,6 +2158,7 @@ def _build_output_document(
     decision_scope: str,
     dry_run: bool,
     decision_policy: str = "every-frame",
+    decision_visual_mode: str = "scene",
     model_runtime: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not frame_decisions:
@@ -1673,6 +2168,7 @@ def _build_output_document(
         "object_summary_json": str(summary_path),
         "decision_scope": decision_scope,
         "decision_policy": decision_policy,
+        "decision_visual_mode": decision_visual_mode,
         "decision_frame_id": final_entry.get("frame_id"),
         "decision_frame_index": final_entry.get("frame_index"),
         "instruction_prior": summary.get("instruction_prior"),
@@ -1706,6 +2202,20 @@ def _build_output_document(
         "total_contact_sheet_seconds": round(
             sum(float(item.get("contact_sheet_seconds") or 0.0) for item in performance_rows),
             6,
+        ),
+        "total_scene_montage_seconds": round(
+            sum(float(item.get("scene_montage_seconds") or 0.0) for item in performance_rows),
+            6,
+        ),
+        "total_visual_preparation_seconds": round(
+            sum(float(item.get("visual_preparation_seconds") or 0.0) for item in performance_rows),
+            6,
+        ),
+        "total_scene_image_count": sum(
+            int(item.get("scene_image_count") or 0) for item in performance_rows
+        ),
+        "total_patch_image_count": sum(
+            int(item.get("patch_image_count") or 0) for item in performance_rows
         ),
         "total_input_tokens": sum(
             int(item.get("input_tokens") or 0) for item in performance_rows
@@ -1799,6 +2309,7 @@ def main() -> None:
     )
     args.decision_artifacts_dir = str(artifacts_path)
     args._contact_sheet_cache = {}
+    args._scene_montage_cache = {}
     grounder = None if args.dry_run else Qwen3VLRLBenchGrounder(
         model_path=args.model_path,
         grounding_min_side=args.grounding_min_side,
@@ -1832,6 +2343,7 @@ def main() -> None:
             effective_scope,
             args.dry_run,
             decision_policy=args.decision_policy,
+            decision_visual_mode=args.decision_visual_mode,
             model_runtime=model_runtime,
         )
         atomic_json_dump(output, output_path)
@@ -1857,6 +2369,7 @@ def main() -> None:
                 "decision_frame_id": final_decision_entry.get("frame_id"),
                 "frame_count": len(frame_decisions),
                 "decision_policy": args.decision_policy,
+                "decision_visual_mode": args.decision_visual_mode,
                 "model_call_count": sum(
                     1 for item in frame_decisions if item.get("model_invoked")
                 ),

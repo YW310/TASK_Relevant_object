@@ -64,9 +64,12 @@
 #   USE_DECISION_HISTORY (default: 0)       Feed prior model outputs into later prompts (off avoids error propagation).
 #   DECISION_MAX_NEW_TOKENS (default: 384)  Stage-4 JSON generation budget per Qwen keyframe.
 #   DECISION_OUTPUT_JSON                     Optional explicit output path for object_predictions.json.
-#   DECISION_ARTIFACTS_DIR                   Optional output directory for temporal object contact sheets.
+#   DECISION_ARTIFACTS_DIR                   Optional output directory for Stage-4 visual inputs.
+#   DECISION_VISUAL_MODE (default: scene)    scene=full RGB montages; patches=legacy object contact sheets.
+#   DECISION_SCENE_CAMERAS (default: front,left_shoulder,right_shoulder) Fixed scene montage cameras.
+#   DECISION_SCENE_WINDOW_FRAMES (default: 2) Latest temporal frames rendered in scene mode.
 #   CANDIDATE_VIEWS_PER_OBJECT (default: 1) Best camera crops per object in Stage-4 contact sheets.
-#   DECISION_MAX_VISUAL_PIXELS (default: 393216) Maximum pixels per Stage-4 contact sheet.
+#   DECISION_MAX_VISUAL_PIXELS (default: 393216) Maximum pixels per Stage-4 visual input.
 #   DECISION_ATTENTION_BACKEND (default: auto) auto|flash_attention_2|sdpa|eager.
 #   MAX_CANDIDATE_IMAGES (default: 3)       Max temporal contact sheets attached to each Qwen keyframe prompt.
 #   MAX_CANDIDATES_FOR_DECISION (default: 12) Max candidates kept for stage-4 prompt after filtering.
@@ -224,6 +227,9 @@ DECISION_MAX_RETRIES="${DECISION_MAX_RETRIES:-0}"
 DECISION_DRY_RUN="${DECISION_DRY_RUN:-0}"
 DECISION_OUTPUT_JSON="${DECISION_OUTPUT_JSON:-}"
 DECISION_ARTIFACTS_DIR="${DECISION_ARTIFACTS_DIR:-}"
+DECISION_VISUAL_MODE="${DECISION_VISUAL_MODE:-scene}"
+DECISION_SCENE_CAMERAS="${DECISION_SCENE_CAMERAS:-front,left_shoulder,right_shoulder}"
+DECISION_SCENE_WINDOW_FRAMES="${DECISION_SCENE_WINDOW_FRAMES:-2}"
 MAX_CANDIDATE_IMAGES="${MAX_CANDIDATE_IMAGES:-3}"
 CANDIDATE_VIEWS_PER_OBJECT="${CANDIDATE_VIEWS_PER_OBJECT:-1}"
 DECISION_MAX_VISUAL_PIXELS="${DECISION_MAX_VISUAL_PIXELS:-393216}"
@@ -420,6 +426,9 @@ else
     --grounding-min-side "${DECISION_GROUNDING_MIN_SIDE}"
     --max-retries "${DECISION_MAX_RETRIES}"
     --max-new-tokens "${DECISION_MAX_NEW_TOKENS}"
+    --decision-visual-mode "${DECISION_VISUAL_MODE}"
+    --decision-scene-cameras "${DECISION_SCENE_CAMERAS}"
+    --decision-scene-window-frames "${DECISION_SCENE_WINDOW_FRAMES}"
     --max-candidate-images "${MAX_CANDIDATE_IMAGES}"
     --candidate-views-per-object "${CANDIDATE_VIEWS_PER_OBJECT}"
     --decision-max-visual-pixels "${DECISION_MAX_VISUAL_PIXELS}"

@@ -243,6 +243,10 @@ model call while recalculating current `t-2 -> t` geometry, gripper state, and
 dynamic roles. Direct CLI use defaults to `every-frame` for compatibility. The
 top-level `decision` remains the last frame's result, while `frame_decisions`
 contains the complete episode and per-frame performance/source metadata.
+Visual input defaults to labelled full-scene montages. Each Qwen keyframe sees
+the latest two available frames, with fixed `front`, `left_shoulder`, and
+`right_shoulder` panels. Set `DECISION_VISUAL_MODE=patches` to restore the
+previous object contact-sheet input; the two modes are never mixed.
 
 | Python argument | Pipeline variable | Default | Purpose |
 | --- | --- | --- | --- |
@@ -257,10 +261,13 @@ contains the complete episode and per-frame performance/source metadata.
 | `--decision-frame-id` | `DECISION_FRAME_ID` | unset | Explicit frame ID; when set it forces a single-frame decision. |
 | `--decision-window-frames` | `DECISION_WINDOW_FRAMES` | `3` | Current frame `t` plus its two preceding frames `[t-2, t-1, t]` (when available), evaluated in one model call; `1` is single-frame mode. |
 | `--[no-]use-decision-history` | `USE_DECISION_HISTORY` | off / `0` | Optionally feed recent model outputs back into the prompt. Off by default so an early wrong target does not propagate. |
-| `--max-candidate-images` | `MAX_CANDIDATE_IMAGES` | `3` | Maximum chronological contact sheets attached to each Qwen keyframe. |
-| `--candidate-views-per-object` | `CANDIDATE_VIEWS_PER_OBJECT` | `1` | Best-scoring camera crop count per object in each contact sheet. |
-| `--decision-max-visual-pixels` | `DECISION_MAX_VISUAL_PIXELS` | `393216` | Maximum pixels per contact sheet before model input. |
-| `--decision-artifacts-dir` | `DECISION_ARTIFACTS_DIR` | `decision_inputs/` | Contact-sheet output directory. |
+| `--decision-visual-mode` | `DECISION_VISUAL_MODE` | `scene` | `scene` uses labelled full RGB montages; `patches` restores legacy object contact sheets. |
+| `--decision-scene-cameras` | `DECISION_SCENE_CAMERAS` | `front,left_shoulder,right_shoulder` | Fixed camera panels in each scene montage. |
+| `--decision-scene-window-frames` | `DECISION_SCENE_WINDOW_FRAMES` | `2` | Latest temporal frames rendered in scene mode (`t-1`, `t` when available). |
+| `--max-candidate-images` | `MAX_CANDIDATE_IMAGES` | `3` | Maximum chronological contact sheets in `patches` mode. |
+| `--candidate-views-per-object` | `CANDIDATE_VIEWS_PER_OBJECT` | `1` | Best-scoring camera crop count per object in `patches` mode. |
+| `--decision-max-visual-pixels` | `DECISION_MAX_VISUAL_PIXELS` | `393216` | Maximum pixels per scene montage or contact sheet. |
+| `--decision-artifacts-dir` | `DECISION_ARTIFACTS_DIR` | `decision_inputs/` | Scene montage/contact-sheet output directory. |
 | `--max-candidates-for-decision` | `MAX_CANDIDATES_FOR_DECISION` | `12` | Candidate cap after filtering. |
 | `--min-candidate-point-count` | `MIN_CANDIDATE_POINT_COUNT` | `0` (off) | Remove sparse fused objects. |
 | `--min-candidate-camera-count` | `MIN_CANDIDATE_CAMERA_COUNT` | `1` | Require support from this many cameras. |
@@ -290,7 +297,8 @@ themselves create a separate reference object.
 Each frame records `model_invoked`, `decision_source`,
 `source_model_frame_id`, `refresh_reasons`, and preprocessing/generation token
 statistics. The top-level `performance` block aggregates model calls, propagated
-frames, contact-sheet time, model time, visual pixels, and input/output tokens.
+frames, scene/patch image counts, visual preparation time, model time, visual
+pixels, and input/output tokens.
 Malformed JSON is marked uncertain and schedules another adaptive refresh on
 the next frame instead of immediately repeating an expensive call.
 
@@ -448,6 +456,8 @@ used options include:
 | `SKIP_DECISION` | `1` | Set to `0` to run object-level role selection |
 | `DECISION_SCOPE` | `all` | Run one rolling-window decision per frame; use `single` for debugging |
 | `DECISION_POLICY` | `adaptive` | Emit every-frame decisions while limiting Qwen calls to keyframes/events |
+| `DECISION_VISUAL_MODE` | `scene` | Use full-scene montages; set `patches` for the previous contact-sheet input |
+| `DECISION_SCENE_WINDOW_FRAMES` | `2` | Render `t-1` and `t` as scene montages on Qwen keyframes |
 | `SKIP_DECISION_VIZ` | `0` | Disable decision overlays when selection runs |
 | `SKIP_STAGE_COMPARE` | `1` | Set to `0` to create comparison montages |
 
