@@ -107,6 +107,14 @@ ties); remaining cameras use the same confidence-first, name-tiebroken order.
 | `--nearest-distance-m` | — | unset | Optional maximum robust symmetric surface distance during validation. |
 | `--max-hypothesis-diameter-m` | — | `0.50` m | Maximum robust pooled point-cloud diameter. |
 | `--max-size-ratio` | — | `4.0` | Maximum axis-wise box-size ratio. |
+| `--same-camera-nms-mask-iou` | `SAME_CAMERA_NMS_MASK_IOU` | `0.55` | Same-view mask IoU cue for strict 2D+3D duplicate suppression. |
+| `--same-camera-nms-containment` | `SAME_CAMERA_NMS_CONTAINMENT` | `0.85` | Alternative smaller-mask coverage cue for same-view NMS. |
+| `--same-camera-nms-centroid-distance-m` | `SAME_CAMERA_NMS_CENTROID_DISTANCE_M` | `0.02` m | Required 3D centroid proximity for same-view NMS; `<=0` disables it. |
+| `--same-camera-nms-max-size-ratio` | `SAME_CAMERA_NMS_MAX_SIZE_RATIO` | `2.5` | Required 3D bbox size consistency for same-view NMS. |
+| `--min-fused-camera-count` | `MIN_FUSED_CAMERA_COUNT` | `2` | Drop low-support objects only when enough missing cameras could see their cloud. |
+| `--camera-visibility-depth-tolerance-m` | `CAMERA_VISIBILITY_DEPTH_TOLERANCE_M` | `0.03` m | Depth tolerance for missing-view visibility/occlusion checks. |
+| `--camera-visibility-min-point-fraction` | `CAMERA_VISIBILITY_MIN_POINT_FRACTION` | `0.05` | Minimum projected cloud fraction required to call a missing view observable. |
+| `--single-camera-keep-score` | `SINGLE_CAMERA_KEEP_SCORE` | `0.0` (off) | Optional confidence exception to the camera-support filter. |
 | `--legacy-union-find` | — | off | Deprecated one-release debug path for old transitive pairwise clustering. |
 | `--track-distance-m` | — | `0.15` m | Maximum inter-frame centroid movement for retaining an object ID. |
 | `--track-max-missed-frames` | `TRACK_MAX_MISSED_FRAMES` | `2` | Preserve dormant tracks through short processed-frame occlusions. |
@@ -122,6 +130,13 @@ ties); remaining cameras use the same confidence-first, name-tiebroken order.
 | `--save-object-summary` | `SAVE_OBJECT_SUMMARY` | off | Export trajectories and decision-ready object evidence. |
 | `--object-summary-json` | `OBJECT_SUMMARY_JSON` | `object_summary.json` | Override the summary path. |
 
+Before anchor assignment, each camera independently runs strict duplicate NMS:
+a lower-confidence mask is suppressed only when mask IoU/containment, 3D
+centroid distance, and bbox size consistency all agree. Suppressed semantic
+role evidence is retained on the winning observation and the frame diagnostic
+records every decision. This prevents multiple masks for one physical object
+in the anchor camera from seeding multiple `O*` hypotheses.
+
 Pairwise centroid, bbox-IoU, and nearest-point tests remain alternative cheap
 compatibility gates only. They never define the final transitive partition.
 Every insertion is jointly validated against the complete hypothesis for
@@ -129,6 +144,11 @@ centroid spread, robust diameter, box size, and enabled IoU/surface limits. A
 per-camera Hungarian assignment includes explicit dummy columns, so an
 incompatible observation creates a new hypothesis instead of being forced into
 one; consequently every hypothesis has at most one observation per camera.
+After clustering, the camera-support filter reprojects low-support clouds into
+missing views and checks scene depth. It removes an object only when enough
+other cameras could have observed it; out-of-frame, missing-depth, or occluded
+objects are retained. `--single-camera-keep-score` provides an optional
+additional confidence exception.
 Appearance embeddings are intentionally not part of this geometry-only MVP.
 `object_summary.json` is generated
 automatically when Stage 4 is enabled.
@@ -167,6 +187,9 @@ depth decoding, camera transforms, bad masks, or incorrect clustering. Its
 `sanity_report.json` includes the stored/recomputed centroid residual and the
 centroid-to-nearest-cloud-point distance for every retained object. Retained
 objects also report voxel component counts, ratios, and the main-component gap.
+Dense `O*` labels are placed with overlap avoidance and connected to their
+centroids by translucent leader lines; boxes and annotations are rendered on a
+transparent layer.
 
 | Python argument | Pipeline variable | Default | Purpose |
 | --- | --- | --- | --- |

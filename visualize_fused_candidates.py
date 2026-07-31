@@ -93,6 +93,91 @@ def project_points(points_world: np.ndarray, intrinsics: np.ndarray, extrinsics:
     return np.stack([u, v], axis=1), valid
 
 
+def _rectangle_overlap_area(
+    first: tuple[int, int, int, int],
+    second: tuple[int, int, int, int],
+) -> int:
+    x0, y0 = max(first[0], second[0]), max(first[1], second[1])
+    x1, y1 = min(first[2], second[2]), min(first[3], second[3])
+    return max(0, x1 - x0) * max(0, y1 - y0)
+
+
+def layout_object_labels(
+    draw: ImageDraw.ImageDraw,
+    labels: Sequence[tuple[tuple[float, float], str, tuple[int, int, int]]],
+    width: int,
+    height: int,
+    min_gap: int = 2,
+) -> list[
+    tuple[
+        tuple[float, float],
+        tuple[int, int],
+        tuple[int, int, int, int],
+        str,
+        tuple[int, int, int],
+    ]
+]:
+    """Place dense O-ID labels without allowing their text boxes to overlap."""
+    occupied: list[tuple[int, int, int, int]] = []
+    placements = []
+    directions = (
+        (1, -1),
+        (1, 1),
+        (-1, -1),
+        (-1, 1),
+        (0, -1),
+        (0, 1),
+        (1, 0),
+        (-1, 0),
+    )
+    for (cx, cy), label, color in labels:
+        sample_bbox = draw.textbbox((0, 0), label)
+        text_width = max(1, sample_bbox[2] - sample_bbox[0])
+        text_height = max(1, sample_bbox[3] - sample_bbox[1])
+        candidates: list[tuple[int, int]] = []
+        for radius in (6, 12, 18, 24, 32, 40, 48):
+            for dx, dy in directions:
+                x = int(round(cx + dx * radius))
+                y = int(round(cy + dy * radius - text_height / 2))
+                x = min(max(0, x), max(0, width - text_width))
+                y = min(max(0, y), max(0, height - text_height))
+                position = (x, y)
+                if position not in candidates:
+                    candidates.append(position)
+
+        best: tuple[tuple[int, float], tuple[int, int], tuple[int, int, int, int]] | None = None
+        for x, y in candidates:
+            rect = (x, y, x + text_width, y + text_height)
+            padded = (
+                rect[0] - min_gap,
+                rect[1] - min_gap,
+                rect[2] + min_gap,
+                rect[3] + min_gap,
+            )
+            overlap = sum(
+                _rectangle_overlap_area(padded, existing)
+                for existing in occupied
+            )
+            distance = float(np.hypot(x - cx, y + text_height / 2 - cy))
+            rank = (overlap, distance)
+            if best is None or rank < best[0]:
+                best = (rank, (x, y), rect)
+            if overlap == 0:
+                break
+        assert best is not None
+        _, position, rect = best
+        occupied.append(
+            (
+                rect[0] - min_gap,
+                rect[1] - min_gap,
+                rect[2] + min_gap,
+                rect[3] + min_gap,
+            )
+        )
+        placements.append(((cx, cy), position, rect, label, color))
+    return placements
+
+
 def draw_overlay(
     rgb_path: Path,
     frame: Mapping[str, Any],
@@ -146,14 +231,32 @@ def draw_overlay(
             labels.append(((float(cu), float(cv)), str(obj["id"]), color))
 
     image = Image.alpha_composite(image, Image.fromarray(mask_layer, mode="RGBA"))
-    draw = ImageDraw.Draw(image, "RGBA")
+    annotation_layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(annotation_layer, "RGBA")
     for (u_min, v_min, u_max, v_max), color in bboxes:
-        draw.rectangle([u_min, v_min, u_max, v_max], outline=(*color, 255), width=2)
-    for (cu, cv), label, color in labels:
+        draw.rectangle(
+            [u_min, v_min, u_max, v_max],
+            outline=(*color, 175),
+            width=1,
+        )
+    for (cu, cv), _, color in labels:
         r = 1.25  # 25% of the original 5px centroid marker radius.
-        draw.ellipse([cu - r, cv - r, cu + r, cv + r], outline=(255, 255, 255, 255), width=1)
-        draw.text((cu + 6, cv - 6), label, fill=(*color, 230))
+        draw.ellipse(
+            [cu - r, cv - r, cu + r, cv + r],
+            outline=(255, 255, 255, 220),
+            width=1,
+        )
+    for (cu, cv), (x, y), rect, label, color in layout_object_labels(
+        draw,
+        labels,
+        width,
+        height,
+    ):
+        label_center = (rect[0], (rect[1] + rect[3]) / 2)
+        draw.line([(cu, cv), label_center], fill=(*color, 110), width=1)
+        draw.text((x, y), label, fill=(*color, 230))
 
+    image = Image.alpha_composite(image, annotation_layer)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     image.convert("RGB").save(out_path)
 

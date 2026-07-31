@@ -94,6 +94,81 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-size-ratio", type=float, default=4.0,
                         help="Maximum non-degenerate axis-wise 3D-box size ratio within a hypothesis.")
     parser.add_argument(
+        "--same-camera-nms-mask-iou",
+        type=float,
+        default=0.55,
+        help=(
+            "Before cross-camera fusion, suppress a lower-confidence candidate from "
+            "the same camera when mask IoU reaches this value and the enabled 3D "
+            "centroid/size checks also pass. Set <=0 to disable the IoU cue."
+        ),
+    )
+    parser.add_argument(
+        "--same-camera-nms-containment",
+        type=float,
+        default=0.85,
+        help=(
+            "Alternative same-camera NMS cue: minimum fraction of the smaller mask "
+            "covered by the larger mask. Set <=0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--same-camera-nms-centroid-distance-m",
+        type=float,
+        default=0.02,
+        help=(
+            "Maximum 3D centroid distance for same-camera duplicate suppression. "
+            "Set <=0 to disable same-camera NMS entirely."
+        ),
+    )
+    parser.add_argument(
+        "--same-camera-nms-max-size-ratio",
+        type=float,
+        default=2.5,
+        help=(
+            "Maximum non-degenerate axis-wise 3D bbox size ratio for same-camera "
+            "duplicate suppression."
+        ),
+    )
+    parser.add_argument(
+        "--min-fused-camera-count",
+        type=int,
+        default=2,
+        help=(
+            "Minimum supporting cameras for a fused object. A lower-support object "
+            "is retained when too few missing cameras could geometrically observe it. "
+            "Set <=1 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--camera-visibility-depth-tolerance-m",
+        type=float,
+        default=0.03,
+        help=(
+            "Depth tolerance used to decide whether a fused cloud should have been "
+            "visible from a missing camera."
+        ),
+    )
+    parser.add_argument(
+        "--camera-visibility-min-point-fraction",
+        type=float,
+        default=0.05,
+        help=(
+            "Minimum fraction of valid projected cloud samples that must pass the "
+            "depth visibility test for a missing camera to count as observable."
+        ),
+    )
+    parser.add_argument(
+        "--single-camera-keep-score",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional confidence exception for clusters below --min-fused-camera-count. "
+            "0 disables this exception; values such as 0.90 keep only very high-score "
+            "single-view candidates."
+        ),
+    )
+    parser.add_argument(
         "--legacy-canonical-iou",
         type=float,
         default=0.35,
@@ -632,6 +707,166 @@ def symmetric_percentile_nearest_distance(a: np.ndarray, b: np.ndarray, percenti
     return float(np.percentile(directed, percentile))
 
 
+def mask_overlap_metrics(mask_a: np.ndarray, mask_b: np.ndarray) -> tuple[float, float]:
+    """Return mask IoU and coverage of the smaller mask."""
+    a = np.asarray(mask_a, dtype=bool)
+    b = np.asarray(mask_b, dtype=bool)
+    if a.shape != b.shape:
+        return 0.0, 0.0
+    intersection = int(np.logical_and(a, b).sum())
+    if intersection == 0:
+        return 0.0, 0.0
+    area_a, area_b = int(a.sum()), int(b.sum())
+    union = area_a + area_b - intersection
+    smaller = min(area_a, area_b)
+    return (
+        intersection / union if union > 0 else 0.0,
+        intersection / smaller if smaller > 0 else 0.0,
+    )
+
+
+def bbox_max_axis_size_ratio(a: np.ndarray, b: np.ndarray) -> float:
+    """Return the largest meaningful axis-wise bbox size ratio."""
+    sizes_a = np.maximum(np.asarray(a[1]) - np.asarray(a[0]), 1e-6)
+    sizes_b = np.maximum(np.asarray(b[1]) - np.asarray(b[0]), 1e-6)
+    valid_axes = np.maximum(sizes_a, sizes_b) >= 1e-3
+    if not np.any(valid_axes):
+        return 1.0
+    ratios = np.maximum(
+        sizes_a[valid_axes] / sizes_b[valid_axes],
+        sizes_b[valid_axes] / sizes_a[valid_axes],
+    )
+    return float(ratios.max())
+
+
+def _merge_same_camera_role_evidence(
+    primary: Observation3D,
+    duplicate: Observation3D,
+) -> None:
+    """Retain semantic evidence from a geometry duplicate without duplicating points."""
+    roles = set(primary.role_evidence).union(duplicate.role_evidence)
+    primary.role_evidence = {
+        role: 1.0
+        - (1.0 - float(primary.role_evidence.get(role, 0.0)))
+        * (1.0 - float(duplicate.role_evidence.get(role, 0.0)))
+        for role in roles
+    }
+    provenance = dict(primary.provenance)
+    suppressed = list(provenance.get("same_camera_nms_suppressed", []))
+    suppressed.append(
+        {
+            "observation_id": duplicate.observation_id,
+            "candidate_id": duplicate.candidate.get("id"),
+            "role_evidence": dict(duplicate.role_evidence),
+            "provenance": dict(duplicate.provenance),
+        }
+    )
+    provenance["same_camera_nms_suppressed"] = suppressed
+    primary.provenance = provenance
+
+
+def suppress_same_camera_duplicates(
+    observations_with_masks: Sequence[tuple[Observation3D, np.ndarray]],
+    args: argparse.Namespace,
+) -> tuple[list[Observation3D], list[dict[str, Any]]]:
+    """Greedily suppress strict 2D+3D duplicates within one camera.
+
+    Cross-camera hypotheses intentionally allow at most one observation from a
+    camera. Without this pre-pass, every duplicate from the anchor camera seeds
+    a separate O-ID. A duplicate must satisfy a 2D overlap cue *and* the 3D
+    centroid and bbox-size gates, so adjacent/touching objects remain separate.
+    """
+    centroid_threshold = float(
+        getattr(args, "same_camera_nms_centroid_distance_m", 0.0)
+    )
+    mask_iou_threshold = float(getattr(args, "same_camera_nms_mask_iou", 0.0))
+    containment_threshold = float(
+        getattr(args, "same_camera_nms_containment", 0.0)
+    )
+    max_size_ratio = float(
+        getattr(args, "same_camera_nms_max_size_ratio", 0.0)
+    )
+    if (
+        centroid_threshold <= 0.0
+        or (mask_iou_threshold <= 0.0 and containment_threshold <= 0.0)
+    ):
+        return [item[0] for item in observations_with_masks], []
+
+    ranked = sorted(
+        observations_with_masks,
+        key=lambda item: (-_confidence(item[0]), item[0].observation_id),
+    )
+    kept: list[tuple[Observation3D, np.ndarray]] = []
+    diagnostics: list[dict[str, Any]] = []
+    for observation, mask in ranked:
+        best_match: tuple[
+            tuple[float, float, float],
+            Observation3D,
+            float,
+            float,
+            float,
+            float,
+        ] | None = None
+        for primary, primary_mask in kept:
+            iou, containment = mask_overlap_metrics(mask, primary_mask)
+            overlap_ok = (
+                (mask_iou_threshold > 0.0 and iou >= mask_iou_threshold)
+                or (
+                    containment_threshold > 0.0
+                    and containment >= containment_threshold
+                )
+            )
+            if not overlap_ok:
+                continue
+            centroid_distance = float(
+                np.linalg.norm(
+                    observation.centroid_world - primary.centroid_world
+                )
+            )
+            if centroid_distance > centroid_threshold:
+                continue
+            size_ratio = bbox_max_axis_size_ratio(
+                observation.bbox3d_world,
+                primary.bbox3d_world,
+            )
+            if max_size_ratio > 0.0 and size_ratio > max_size_ratio:
+                continue
+            rank = (-max(iou, containment), centroid_distance, size_ratio)
+            if best_match is None or rank < best_match[0]:
+                best_match = (
+                    rank,
+                    primary,
+                    iou,
+                    containment,
+                    centroid_distance,
+                    size_ratio,
+                )
+
+        if best_match is None:
+            kept.append((observation, mask))
+            continue
+
+        _, primary, iou, containment, centroid_distance, size_ratio = best_match
+        _merge_same_camera_role_evidence(primary, observation)
+        diagnostics.append(
+            {
+                "camera": observation.camera,
+                "kept_observation_id": primary.observation_id,
+                "kept_candidate_id": primary.candidate.get("id"),
+                "suppressed_observation_id": observation.observation_id,
+                "suppressed_candidate_id": observation.candidate.get("id"),
+                "mask_iou": iou,
+                "smaller_mask_coverage": containment,
+                "centroid_distance_m": centroid_distance,
+                "max_bbox_axis_size_ratio": size_ratio,
+                "kept_confidence": _confidence(primary),
+                "suppressed_confidence": _confidence(observation),
+                "reason": "same_camera_2d_3d_nms",
+            }
+        )
+    return [item[0] for item in kept], diagnostics
+
+
 def pairwise_should_merge(a: Observation3D, b: Observation3D, args: argparse.Namespace) -> bool:
     centroid_ok = np.linalg.norm(a.centroid_world - b.centroid_world) <= args.cluster_distance_m
     iou_ok = args.bbox_iou_threshold > 0 and bbox_iou_3d(a.bbox3d_world, b.bbox3d_world) >= args.bbox_iou_threshold
@@ -757,6 +992,192 @@ def cluster_observations(observations: Sequence[Observation3D], args: argparse.N
                     clusters.append([camera_obs[row]])
     warn_near_miss_unmerged_clusters(clusters, args)
     return clusters
+
+
+def cloud_observability_in_camera(
+    points_world: np.ndarray,
+    camera_context: Mapping[str, np.ndarray],
+    depth_tolerance_m: float,
+    min_visible_fraction: float,
+    max_samples: int = 256,
+) -> dict[str, Any]:
+    """Estimate whether an existing 3D cloud should be visible in another view."""
+    points = np.asarray(points_world, dtype=np.float64)
+    if len(points) == 0:
+        return {"observable": False, "reason": "empty_cloud"}
+    if max_samples > 0 and len(points) > max_samples:
+        indices = np.linspace(0, len(points) - 1, max_samples).astype(int)
+        points = points[indices]
+
+    intrinsics = np.asarray(camera_context["intrinsics"], dtype=np.float64)
+    extrinsics = np.asarray(camera_context["extrinsics"], dtype=np.float64)
+    depth = np.asarray(camera_context["depth"], dtype=np.float64)
+    world_to_camera = np.linalg.inv(extrinsics)
+    homogeneous = np.concatenate(
+        [points, np.ones((len(points), 1), dtype=np.float64)],
+        axis=1,
+    )
+    points_camera = (homogeneous @ world_to_camera.T)[:, :3]
+    z = points_camera[:, 2]
+    positive = z > 1e-6
+    safe_z = np.where(positive, z, 1.0)
+    fx, fy = intrinsics[0, 0], intrinsics[1, 1]
+    cx, cy = intrinsics[0, 2], intrinsics[1, 2]
+    u = points_camera[:, 0] * fx / safe_z + cx
+    v = points_camera[:, 1] * fy / safe_z + cy
+    xs = np.rint(u).astype(int)
+    ys = np.rint(v).astype(int)
+    in_bounds = (
+        positive
+        & (xs >= 0)
+        & (xs < depth.shape[1])
+        & (ys >= 0)
+        & (ys < depth.shape[0])
+    )
+    projected_count = int(in_bounds.sum())
+    if projected_count == 0:
+        return {
+            "observable": False,
+            "reason": "outside_image",
+            "sampled_points": int(len(points)),
+            "projected_points": 0,
+        }
+
+    projected_indices = np.flatnonzero(in_bounds)
+    observed_depth = depth[ys[in_bounds], xs[in_bounds]]
+    valid_depth = np.isfinite(observed_depth) & (observed_depth > 0)
+    valid_depth_count = int(valid_depth.sum())
+    if valid_depth_count == 0:
+        return {
+            "observable": False,
+            "reason": "missing_depth",
+            "sampled_points": int(len(points)),
+            "projected_points": projected_count,
+            "valid_depth_points": 0,
+        }
+
+    point_depth = z[projected_indices][valid_depth]
+    scene_depth = observed_depth[valid_depth]
+    visible = point_depth <= scene_depth + max(0.0, float(depth_tolerance_m))
+    visible_count = int(visible.sum())
+    visible_fraction = float(visible_count / valid_depth_count)
+    required_fraction = min(1.0, max(0.0, float(min_visible_fraction)))
+    return {
+        "observable": visible_fraction >= required_fraction,
+        "reason": (
+            "depth_visible"
+            if visible_fraction >= required_fraction
+            else "occluded_by_depth"
+        ),
+        "sampled_points": int(len(points)),
+        "projected_points": projected_count,
+        "valid_depth_points": valid_depth_count,
+        "visible_points": visible_count,
+        "visible_fraction": visible_fraction,
+    }
+
+
+def filter_clusters_by_camera_support(
+    clusters: Sequence[Sequence[Observation3D]],
+    args: argparse.Namespace,
+    camera_contexts: Mapping[str, Mapping[str, np.ndarray]],
+) -> list[list[Observation3D]]:
+    """Remove unsupported clusters only when enough other views could see them."""
+    min_camera_count = max(
+        1, int(getattr(args, "min_fused_camera_count", 1))
+    )
+    if min_camera_count <= 1:
+        return [list(cluster) for cluster in clusters]
+
+    depth_tolerance = float(
+        getattr(args, "camera_visibility_depth_tolerance_m", 0.03)
+    )
+    min_visible_fraction = float(
+        getattr(args, "camera_visibility_min_point_fraction", 0.05)
+    )
+    single_camera_keep_score = float(
+        getattr(args, "single_camera_keep_score", 0.0)
+    )
+    support_diagnostics = getattr(args, "_camera_support_diagnostics", None)
+    filtered_diagnostics = getattr(args, "_filtered_cluster_diagnostics", None)
+    kept: list[list[Observation3D]] = []
+
+    for raw_cluster in clusters:
+        cluster = list(raw_cluster)
+        supporting_cameras = sorted({obs.camera for obs in cluster})
+        if len(supporting_cameras) >= min_camera_count:
+            kept.append(cluster)
+            continue
+
+        points = np.concatenate([obs.points_world for obs in cluster], axis=0)
+        checks: dict[str, Any] = {}
+        observable_missing_cameras: list[str] = []
+        for camera, context in camera_contexts.items():
+            if camera in supporting_cameras:
+                continue
+            check = cloud_observability_in_camera(
+                points,
+                context,
+                depth_tolerance,
+                min_visible_fraction,
+            )
+            checks[camera] = check
+            if check["observable"]:
+                observable_missing_cameras.append(camera)
+
+        potential_camera_count = (
+            len(supporting_cameras) + len(observable_missing_cameras)
+        )
+        confidence = max((_confidence(obs) for obs in cluster), default=0.0)
+        high_confidence_exception = (
+            single_camera_keep_score > 0.0
+            and confidence >= single_camera_keep_score
+        )
+        visibility_exception = potential_camera_count < min_camera_count
+        diagnostic = {
+            "supporting_cameras": supporting_cameras,
+            "supporting_camera_count": len(supporting_cameras),
+            "required_camera_count": min_camera_count,
+            "observable_missing_cameras": sorted(observable_missing_cameras),
+            "potential_camera_count": potential_camera_count,
+            "confidence": confidence,
+            "single_camera_keep_score": single_camera_keep_score,
+            "visibility_checks": checks,
+        }
+        if visibility_exception or high_confidence_exception:
+            diagnostic.update(
+                {
+                    "action": "kept",
+                    "reason": (
+                        "insufficient_observable_cameras"
+                        if visibility_exception
+                        else "single_camera_high_confidence"
+                    ),
+                }
+            )
+            if isinstance(support_diagnostics, list):
+                support_diagnostics.append(diagnostic)
+            kept.append(cluster)
+            continue
+
+        diagnostic.update(
+            {
+                "action": "dropped",
+                "reason": "min_fused_camera_count",
+            }
+        )
+        if isinstance(support_diagnostics, list):
+            support_diagnostics.append(diagnostic)
+        if isinstance(filtered_diagnostics, list):
+            filtered_diagnostics.append(diagnostic)
+        print(
+            f"[info] dropping under-supported observation cluster "
+            f"(cameras {supporting_cameras}): {len(supporting_cameras)} < "
+            f"--min-fused-camera-count {min_camera_count}; observable from "
+            f"{sorted(observable_missing_cameras)}.",
+            file=sys.stderr,
+        )
+    return kept
 
 
 def warn_near_miss_unmerged_clusters(clusters: list[list[Observation3D]], args: argparse.Namespace) -> None:
@@ -1569,6 +1990,8 @@ def fuse_frame(
 ) -> dict[str, Any]:
     observations: list[Observation3D] = []
     canonicalization_suppressed: list[dict[str, Any]] = []
+    same_camera_nms_suppressed: list[dict[str, Any]] = []
+    camera_contexts: dict[str, dict[str, np.ndarray]] = {}
     frame_id = str(frame["frame_id"])
     frame_index = frame_index_from_frame(frame)
     for camera, view in frame.get("views", {}).items():
@@ -1593,6 +2016,11 @@ def fuse_frame(
         depth_near_far = resolve_rlbench_near_far(camera, frame_index, rlbench_observations)
         near, far = depth_near_far if depth_near_far is not None else (None, None)
         depth = read_depth(resolve_depth_path(episode_dir, camera, frame_id), args.depth_scale, near=near, far=far, mode=args.depth_mode)
+        camera_contexts[camera] = {
+            "intrinsics": params["intrinsics"],
+            "extrinsics": params["extrinsics"],
+            "depth": depth,
+        }
         data = json.loads(Path(view["candidates_json"]).read_text(encoding="utf-8"))
         canonical_candidates, legacy_suppressed = canonicalize_legacy_candidates(
             data.get("candidates", []),
@@ -1603,6 +2031,7 @@ def fuse_frame(
         if legacy_suppressed:
             print(f"[info] frame_id={frame_id} camera={camera}: legacy canonicalization suppressed "
                   f"{len(legacy_suppressed)} duplicate candidates", file=sys.stderr)
+        camera_observations: list[tuple[Observation3D, np.ndarray]] = []
         for cand in canonical_candidates:
             mask = load_mask(Path(cand["mask_path"]))
             points_cam = backproject_mask(depth, mask, params["intrinsics"], args.max_points_per_candidate)
@@ -1611,21 +2040,50 @@ def fuse_frame(
                 continue
             centroid = points_world.mean(axis=0)
             bbox = np.stack([points_world.min(axis=0), points_world.max(axis=0)])
-            observations.append(candidate_to_observation(cand, camera, frame_id, points_world, centroid, bbox))
+            camera_observations.append(
+                (
+                    candidate_to_observation(
+                        cand,
+                        camera,
+                        frame_id,
+                        points_world,
+                        centroid,
+                        bbox,
+                    ),
+                    mask,
+                )
+            )
+        kept_camera_observations, nms_diagnostics = suppress_same_camera_duplicates(
+            camera_observations,
+            args,
+        )
+        observations.extend(kept_camera_observations)
+        same_camera_nms_suppressed.extend(nms_diagnostics)
+        if nms_diagnostics:
+            print(
+                f"[info] frame_id={frame_id} camera={camera}: same-camera 2D/3D "
+                f"NMS suppressed {len(nms_diagnostics)} duplicate candidates",
+                file=sys.stderr,
+            )
 
     same_camera_diagnostics: list[dict[str, Any]] = []
     filtered_cluster_diagnostics: list[dict[str, Any]] = []
+    camera_support_diagnostics: list[dict[str, Any]] = []
     args._same_camera_diagnostics = same_camera_diagnostics
     args._filtered_cluster_diagnostics = filtered_cluster_diagnostics
+    args._camera_support_diagnostics = camera_support_diagnostics
     clusters = cluster_observations(observations, args)
     clusters = filter_small_clusters(clusters, args)
+    clusters = filter_clusters_by_camera_support(clusters, args, camera_contexts)
     objects, updated_track_state = assign_object_ids(clusters, track_state or {}, args, frame_id)
     if track_state is not None:
         track_state.clear()
         track_state.update(updated_track_state)
     return {"frame_index": frame.get("frame_index"), "frame_id": frame_id, "objects": objects,
             "diagnostics": {"canonicalization_suppressed": canonicalization_suppressed,
+                            "same_camera_nms_suppressed": same_camera_nms_suppressed,
                             "attempted_same_camera_cluster_insertions": same_camera_diagnostics,
+                            "camera_support": camera_support_diagnostics,
                             "filtered_clusters": filtered_cluster_diagnostics,
                             "tracking_state": updated_track_state}}
 
@@ -1652,13 +2110,21 @@ def _fusion_parameters(args: argparse.Namespace, rlbench_low_dim_path: Path, has
         "min_component_points": args.min_component_points,
         "max_hypothesis_diameter_m": args.max_hypothesis_diameter_m,
         "max_size_ratio": args.max_size_ratio,
+        "same_camera_nms_mask_iou": args.same_camera_nms_mask_iou,
+        "same_camera_nms_containment": args.same_camera_nms_containment,
+        "same_camera_nms_centroid_distance_m": args.same_camera_nms_centroid_distance_m,
+        "same_camera_nms_max_size_ratio": args.same_camera_nms_max_size_ratio,
+        "min_fused_camera_count": args.min_fused_camera_count,
+        "camera_visibility_depth_tolerance_m": args.camera_visibility_depth_tolerance_m,
+        "camera_visibility_min_point_fraction": args.camera_visibility_min_point_fraction,
+        "single_camera_keep_score": args.single_camera_keep_score,
         "legacy_canonical_iou": args.legacy_canonical_iou,
         "legacy_canonical_containment": args.legacy_canonical_containment,
         "max_points_per_candidate": args.max_points_per_candidate,
         "depth_mode": args.depth_mode,
         "depth_scale": args.depth_scale,
         "cameras": list(parse_csv(args.cameras) or []),
-        "fusion_algorithm": "legacy_pairwise_union_find" if args.legacy_union_find else "anchor_gated_assignment_v1",
+        "fusion_algorithm": "legacy_pairwise_union_find" if args.legacy_union_find else "same_camera_nms_anchor_gated_assignment_v2",
         "rlbench_low_dim_obs": str(rlbench_low_dim_path) if has_rlbench_observations else None,
         "invert_rlbench_extrinsics": bool(args.invert_rlbench_extrinsics),
     }

@@ -30,6 +30,14 @@
 #   CANONICAL_BBOX_IOU (default: 0.0)        Optional Stage-1 bbox IoU support (0=off).
 #   SUPPRESS_MULTI_INSTANCE_MASKS (default: 1) Drop broad masks containing 2+ same-role instances.
 #   CLUSTER_DISTANCE_M (default: 0.03)      Fusion clustering centroid distance threshold.
+#   SAME_CAMERA_NMS_MASK_IOU (default: 0.55) Same-view mask IoU for strict 2D+3D duplicate suppression.
+#   SAME_CAMERA_NMS_CONTAINMENT (default: 0.85) Same-view smaller-mask coverage NMS cue.
+#   SAME_CAMERA_NMS_CENTROID_DISTANCE_M (default: 0.02) Same-view 3D centroid NMS gate.
+#   SAME_CAMERA_NMS_MAX_SIZE_RATIO (default: 2.5) Same-view 3D bbox size-consistency gate.
+#   MIN_FUSED_CAMERA_COUNT (default: 2)      Require multi-view support when other cameras could see the object.
+#   CAMERA_VISIBILITY_DEPTH_TOLERANCE_M (default: 0.03) Occlusion tolerance for missing-view checks.
+#   CAMERA_VISIBILITY_MIN_POINT_FRACTION (default: 0.05) Visible cloud fraction for observability.
+#   SINGLE_CAMERA_KEEP_SCORE (default: 0.0)  Optional high-confidence single-view exception (0=off).
 #   LEGACY_CANONICAL_IOU (default: 0.35)     Stage-2 IoU for deduplicating legacy candidate JSON.
 #   LEGACY_CANONICAL_CONTAINMENT (default: 0.50) Stage-2 smaller-mask coverage for legacy JSON.
 #   TRACK_MAX_MISSED_FRAMES (default: 2) Keep object IDs through short processed-frame occlusions.
@@ -151,6 +159,14 @@ CANDIDATE_RESUME="${CANDIDATE_RESUME:-1}"
 CANDIDATE_PROGRESS="${CANDIDATE_PROGRESS:-1}"
 CANDIDATE_DRY_RUN="${CANDIDATE_DRY_RUN:-0}"
 CLUSTER_DISTANCE_M="${CLUSTER_DISTANCE_M:-0.03}"
+SAME_CAMERA_NMS_MASK_IOU="${SAME_CAMERA_NMS_MASK_IOU:-0.55}"
+SAME_CAMERA_NMS_CONTAINMENT="${SAME_CAMERA_NMS_CONTAINMENT:-0.85}"
+SAME_CAMERA_NMS_CENTROID_DISTANCE_M="${SAME_CAMERA_NMS_CENTROID_DISTANCE_M:-0.02}"
+SAME_CAMERA_NMS_MAX_SIZE_RATIO="${SAME_CAMERA_NMS_MAX_SIZE_RATIO:-2.5}"
+MIN_FUSED_CAMERA_COUNT="${MIN_FUSED_CAMERA_COUNT:-2}"
+CAMERA_VISIBILITY_DEPTH_TOLERANCE_M="${CAMERA_VISIBILITY_DEPTH_TOLERANCE_M:-0.03}"
+CAMERA_VISIBILITY_MIN_POINT_FRACTION="${CAMERA_VISIBILITY_MIN_POINT_FRACTION:-0.05}"
+SINGLE_CAMERA_KEEP_SCORE="${SINGLE_CAMERA_KEEP_SCORE:-0.0}"
 LEGACY_CANONICAL_IOU="${LEGACY_CANONICAL_IOU:-0.35}"
 LEGACY_CANONICAL_CONTAINMENT="${LEGACY_CANONICAL_CONTAINMENT:-0.50}"
 RLBENCH_LOW_DIM_OBS="${RLBENCH_LOW_DIM_OBS:-}"
@@ -315,6 +331,14 @@ else
     --bbox-iou-threshold "${BBOX_IOU_THRESHOLD}"
     --max-hypothesis-diameter-m "${MAX_HYPOTHESIS_DIAMETER_M}"
     --max-size-ratio "${MAX_SIZE_RATIO}"
+    --same-camera-nms-mask-iou "${SAME_CAMERA_NMS_MASK_IOU}"
+    --same-camera-nms-containment "${SAME_CAMERA_NMS_CONTAINMENT}"
+    --same-camera-nms-centroid-distance-m "${SAME_CAMERA_NMS_CENTROID_DISTANCE_M}"
+    --same-camera-nms-max-size-ratio "${SAME_CAMERA_NMS_MAX_SIZE_RATIO}"
+    --min-fused-camera-count "${MIN_FUSED_CAMERA_COUNT}"
+    --camera-visibility-depth-tolerance-m "${CAMERA_VISIBILITY_DEPTH_TOLERANCE_M}"
+    --camera-visibility-min-point-fraction "${CAMERA_VISIBILITY_MIN_POINT_FRACTION}"
+    --single-camera-keep-score "${SINGLE_CAMERA_KEEP_SCORE}"
     --legacy-canonical-iou "${LEGACY_CANONICAL_IOU}"
     --legacy-canonical-containment "${LEGACY_CANONICAL_CONTAINMENT}"
     --track-distance-m "${TRACK_DISTANCE_M}"

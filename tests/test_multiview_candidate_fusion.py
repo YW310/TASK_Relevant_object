@@ -7,8 +7,10 @@ from multiview_candidate_fusion import (
     Observation3D,
     assign_object_ids,
     cluster_observations,
+    filter_clusters_by_camera_support,
     filter_small_clusters,
     frame_index_from_frame,
+    suppress_same_camera_duplicates,
 )
 
 
@@ -54,6 +56,186 @@ class CrossCameraFusionTest(unittest.TestCase):
         clusters = cluster_observations([first, second], self.args)
 
         self.assertEqual([1, 1], sorted(len(cluster) for cluster in clusters))
+
+
+class SameCameraNmsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.args = SimpleNamespace(
+            same_camera_nms_mask_iou=0.55,
+            same_camera_nms_containment=0.85,
+            same_camera_nms_centroid_distance_m=0.02,
+            same_camera_nms_max_size_ratio=2.5,
+        )
+
+    def test_strict_2d_3d_duplicate_is_suppressed_and_evidence_retained(self) -> None:
+        primary = _observation(
+            "front:C1",
+            "front",
+            [[0.0, 0.0, 1.0], [0.10, 0.10, 1.10]],
+        )
+        duplicate = _observation(
+            "front:C2",
+            "front",
+            [[0.005, 0.0, 1.0], [0.105, 0.10, 1.10]],
+        )
+        duplicate.role_evidence = {"reference": 0.8}
+        duplicate.candidate = {"id": "C2", "score": 0.8}
+        primary.candidate = {"id": "C1", "score": 0.9}
+        mask_a = np.zeros((16, 16), dtype=bool)
+        mask_a[2:12, 2:12] = True
+        mask_b = np.zeros_like(mask_a)
+        mask_b[3:12, 3:12] = True
+
+        kept, diagnostics = suppress_same_camera_duplicates(
+            [(duplicate, mask_b), (primary, mask_a)],
+            self.args,
+        )
+
+        self.assertEqual(1, len(kept))
+        self.assertIs(primary, kept[0])
+        self.assertEqual(1, len(diagnostics))
+        self.assertEqual("same_camera_2d_3d_nms", diagnostics[0]["reason"])
+        self.assertAlmostEqual(0.8, primary.role_evidence["reference"])
+        self.assertEqual(
+            "front:C2",
+            primary.provenance["same_camera_nms_suppressed"][0][
+                "observation_id"
+            ],
+        )
+
+    def test_overlapping_masks_at_different_depths_remain_separate(self) -> None:
+        near = _observation(
+            "front:C1",
+            "front",
+            [[0.0, 0.0, 0.8], [0.10, 0.10, 0.9]],
+        )
+        far = _observation(
+            "front:C2",
+            "front",
+            [[0.0, 0.0, 1.0], [0.10, 0.10, 1.1]],
+        )
+        mask = np.zeros((12, 12), dtype=bool)
+        mask[2:10, 2:10] = True
+
+        kept, diagnostics = suppress_same_camera_duplicates(
+            [(near, mask), (far, mask.copy())],
+            self.args,
+        )
+
+        self.assertEqual(2, len(kept))
+        self.assertEqual([], diagnostics)
+
+    def test_adjacent_objects_remain_separate(self) -> None:
+        left = _observation(
+            "front:C1",
+            "front",
+            [[0.0, 0.0, 1.0], [0.04, 0.04, 1.04]],
+        )
+        right = _observation(
+            "front:C2",
+            "front",
+            [[0.05, 0.0, 1.0], [0.09, 0.04, 1.04]],
+        )
+        mask_a = np.zeros((12, 12), dtype=bool)
+        mask_a[2:6, 2:6] = True
+        mask_b = np.zeros_like(mask_a)
+        mask_b[2:6, 7:11] = True
+
+        kept, diagnostics = suppress_same_camera_duplicates(
+            [(left, mask_a), (right, mask_b)],
+            self.args,
+        )
+
+        self.assertEqual(2, len(kept))
+        self.assertEqual([], diagnostics)
+
+
+class CameraSupportFilterTest(unittest.TestCase):
+    @staticmethod
+    def _args(
+        *,
+        keep_score: float = 0.0,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            min_fused_camera_count=2,
+            camera_visibility_depth_tolerance_m=0.03,
+            camera_visibility_min_point_fraction=0.05,
+            single_camera_keep_score=keep_score,
+            _camera_support_diagnostics=[],
+            _filtered_cluster_diagnostics=[],
+        )
+
+    @staticmethod
+    def _context(depth_value: float) -> dict[str, np.ndarray]:
+        return {
+            "intrinsics": np.asarray(
+                [[20.0, 0.0, 8.0], [0.0, 20.0, 8.0], [0.0, 0.0, 1.0]]
+            ),
+            "extrinsics": np.eye(4),
+            "depth": np.full((16, 16), depth_value, dtype=np.float64),
+        }
+
+    def test_single_camera_cluster_drops_when_missing_view_could_see_it(self) -> None:
+        candidate = _observation(
+            "front:C1",
+            "front",
+            [[-0.05, -0.05, 1.0], [0.05, 0.05, 1.05]],
+        )
+        args = self._args()
+
+        kept = filter_clusters_by_camera_support(
+            [[candidate]],
+            args,
+            {"front": self._context(1.0), "left": self._context(2.0)},
+        )
+
+        self.assertEqual([], kept)
+        self.assertEqual(
+            "min_fused_camera_count",
+            args._camera_support_diagnostics[0]["reason"],
+        )
+
+    def test_occluded_single_camera_cluster_is_kept(self) -> None:
+        candidate = _observation(
+            "front:C1",
+            "front",
+            [[-0.05, -0.05, 1.0], [0.05, 0.05, 1.05]],
+        )
+        args = self._args()
+
+        kept = filter_clusters_by_camera_support(
+            [[candidate]],
+            args,
+            {"front": self._context(1.0), "left": self._context(0.5)},
+        )
+
+        self.assertEqual(1, len(kept))
+        self.assertIs(candidate, kept[0][0])
+        self.assertEqual(
+            "insufficient_observable_cameras",
+            args._camera_support_diagnostics[0]["reason"],
+        )
+
+    def test_high_confidence_exception_is_configurable(self) -> None:
+        candidate = _observation(
+            "front:C1",
+            "front",
+            [[-0.05, -0.05, 1.0], [0.05, 0.05, 1.05]],
+        )
+        args = self._args(keep_score=0.85)
+
+        kept = filter_clusters_by_camera_support(
+            [[candidate]],
+            args,
+            {"front": self._context(1.0), "left": self._context(2.0)},
+        )
+
+        self.assertEqual(1, len(kept))
+        self.assertIs(candidate, kept[0][0])
+        self.assertEqual(
+            "single_camera_high_confidence",
+            args._camera_support_diagnostics[0]["reason"],
+        )
 
 
 class TemporalObjectTrackingTest(unittest.TestCase):

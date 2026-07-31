@@ -423,3 +423,12 @@ prompt masks for the same object are normally collapsed. Both thresholds remain
 configurable with `--legacy-canonical-iou` and
 `--legacy-canonical-containment`; inspect the suppressed-candidate diagnostics
 when tuning them further to avoid merging adjacent instances.
+
+Current canonical artifacts also receive a strict same-camera 2D+3D NMS pass
+before cross-camera assignment. This closes the anchor-camera duplication case:
+two masks are treated as duplicates only when mask overlap, world-centroid
+distance, and 3D bbox size all agree. Frame diagnostics expose every removal in
+`same_camera_nms_suppressed`. Low-support fused clusters are then checked for
+visibility in missing cameras using reprojection plus depth; the default
+`MIN_FUSED_CAMERA_COUNT=2` drops them only when another camera should have seen
+the cloud, while genuinely out-of-view or occluded single-camera objects remain.
