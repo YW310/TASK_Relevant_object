@@ -816,28 +816,42 @@ def _apply_two_stage_target_selection(
         else None
     )
     raw_compatible = result.get("instruction_compatible_object_ids")
+    ignored_invalid_ids = (
+        [model_target]
+        if model_target is not None and model_target not in valid_ids
+        else []
+    )
 
     if raw_compatible is None:
         compatible_ids = [model_target] if model_target in valid_ids else []
+        final_target = compatible_ids[0] if compatible_ids else None
         selected["instruction_compatible_object_ids"] = compatible_ids
         selected["model_target_object_id"] = model_target
+        selected["target_object_id"] = final_target
         selected["target_selection"] = {
             "strategy": "model_target_fallback_missing_compatibility_list",
             "candidate_order": compatible_ids,
+            "ignored_invalid_object_ids": ignored_invalid_ids,
         }
+        if final_target is None:
+            selected["confidence"] = 0.0
+            selected["uncertain"] = True
+            if not selected.get("uncertain_reason"):
+                selected["uncertain_reason"] = "no_valid_instruction_compatible_candidate"
         return selected
 
-    if not isinstance(raw_compatible, list):
-        raise ValueError("instruction_compatible_object_ids must be a JSON list")
+    compatibility_type_coerced = not isinstance(raw_compatible, list)
+    raw_compatible_values = (
+        raw_compatible if isinstance(raw_compatible, list) else [raw_compatible]
+    )
 
     compatible_ids = []
-    for value in raw_compatible:
+    for value in raw_compatible_values:
         object_id = str(value)
         if object_id not in valid_ids:
-            raise ValueError(
-                "instruction_compatible_object_ids contains invalid object id "
-                f"{object_id!r}; valid ids are {sorted(valid_ids)}"
-            )
+            if object_id not in ignored_invalid_ids:
+                ignored_invalid_ids.append(object_id)
+            continue
         if object_id not in compatible_ids:
             compatible_ids.append(object_id)
 
@@ -890,6 +904,8 @@ def _apply_two_stage_target_selection(
     selected["target_selection"] = {
         "strategy": strategy,
         "candidate_order": candidate_order,
+        "ignored_invalid_object_ids": ignored_invalid_ids,
+        "compatibility_type_coerced": compatibility_type_coerced,
         "selected_proximity_cues": (
             _target_proximity_cues(
                 temporal_context_by_object.get(str(final_target))
@@ -898,16 +914,32 @@ def _apply_two_stage_target_selection(
             else None
         ),
     }
+    if final_target is None:
+        selected["confidence"] = 0.0
+        selected["uncertain"] = True
+        if not selected.get("uncertain_reason"):
+            selected["uncertain_reason"] = "no_valid_instruction_compatible_candidate"
     return selected
 
 
-def _validate_decision_ids(result: dict[str, Any], valid_ids: set[str]) -> None:
+def _sanitize_decision_ids(result: dict[str, Any], valid_ids: set[str]) -> list[dict[str, str]]:
+    """Null invalid selected IDs while preserving diagnostics instead of aborting."""
+    invalid: list[dict[str, str]] = []
     for key in ("target_object_id", "reference_object_id"):
         value = result.get(key)
         if value is None:
             continue
         if str(value) not in valid_ids:
-            raise ValueError(f"{key}={value!r} is not in candidate object ids: {sorted(valid_ids)}")
+            invalid.append({"field": key, "object_id": str(value)})
+            result[key] = None
+    if invalid:
+        result["invalid_selected_object_ids"] = invalid
+        if result.get("target_object_id") is None:
+            result["confidence"] = 0.0
+            result["uncertain"] = True
+            if not result.get("uncertain_reason"):
+                result["uncertain_reason"] = "model_selected_invalid_object_id"
+    return invalid
 
 
 def _summarize_previous_decisions(frame_decisions: Sequence[Mapping[str, Any]], max_items: int = 3) -> list[dict[str, Any]]:
@@ -954,6 +986,41 @@ def _run_decision_for_frame(
     }
 
     candidate_ids = {str(item.get("object_id")) for item in candidates if item.get("object_id") is not None}
+    previous_summary = (
+        _summarize_previous_decisions(previous_frame_decisions)
+        if getattr(args, "use_decision_history", False)
+        else []
+    )
+    if not candidate_ids:
+        return {
+            "frame_id": frame_input.get("frame_id"),
+            "frame_index": frame_input.get("frame_index"),
+            "candidate_ids": [],
+            "candidate_filter_stats": filter_stats,
+            "temporal_window": temporal_window_meta,
+            "temporal_contact_sheets": [],
+            "representative_images": [],
+            "online_history": previous_summary,
+            "model_skipped": True,
+            "decision": {
+                "instruction_compatible_object_ids": [],
+                "model_target_object_id": None,
+                "target_object_id": None,
+                "reference_object_id": None,
+                "target_selection": {
+                    "strategy": "no_valid_candidates_skip_model",
+                    "candidate_order": [],
+                },
+                "confidence": 0.0,
+                "uncertain": True,
+                "uncertain_reason": "no_valid_candidates_for_frame",
+                "evidence": [],
+                "relation_reason": None,
+                "reject_object_ids": [],
+                "rejected_reason": None,
+            },
+            "raw_text": None,
+        }
     artifacts_value = getattr(args, "decision_artifacts_dir", None)
     artifacts_dir = Path(artifacts_value) if artifacts_value else None
     representative_images = _collect_temporal_contact_sheets(
@@ -969,11 +1036,6 @@ def _run_decision_for_frame(
         object_track_context,
         temporal_window_meta,
         candidate_ids,
-    )
-    previous_summary = (
-        _summarize_previous_decisions(previous_frame_decisions)
-        if getattr(args, "use_decision_history", False)
-        else []
     )
     if previous_summary:
         payload = json.loads(payload_json)
@@ -1023,7 +1085,7 @@ def _run_decision_for_frame(
         candidates,
         temporal_context_by_object,
     )
-    _validate_decision_ids(result, candidate_ids)
+    _sanitize_decision_ids(result, candidate_ids)
 
     return {
         "frame_id": frame_input.get("frame_id"),
@@ -1049,6 +1111,9 @@ def _run_decision_for_frame(
             "relation_reason": result.get("relation_reason"),
             "reject_object_ids": result.get("reject_object_ids", []),
             "rejected_reason": result.get("rejected_reason"),
+            "invalid_selected_object_ids": result.get(
+                "invalid_selected_object_ids", []
+            ),
         },
         "raw_text": raw_text,
     }

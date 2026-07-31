@@ -385,6 +385,48 @@ def test_two_stage_selection_uses_approach_trend_when_current_distance_ties():
     assert selected["target_object_id"] == "O2"
 
 
+def test_invalid_compatible_id_is_ignored_when_frame_has_no_candidates():
+    selected = _apply_two_stage_target_selection(
+        {
+            "instruction_compatible_object_ids": ["O14"],
+            "target_object_id": "O14",
+            "reference_object_id": None,
+            "confidence": 0.95,
+        },
+        [],
+        {},
+    )
+
+    assert selected["instruction_compatible_object_ids"] == []
+    assert selected["target_object_id"] is None
+    assert selected["confidence"] == 0.0
+    assert selected["uncertain"] is True
+    assert selected["target_selection"]["ignored_invalid_object_ids"] == ["O14"]
+
+
+def test_empty_candidate_frame_skips_model_call():
+    frames = _frames(1)
+    args = argparse.Namespace(
+        decision_window_frames=3,
+        min_candidate_point_count=0,
+        min_candidate_camera_count=1,
+        min_candidate_sam_score=0.0,
+        max_ee_distance_m=None,
+        max_candidates_for_decision=12,
+        use_decision_history=False,
+        dry_run=False,
+    )
+    grounder = _MockGrounder()
+
+    output = _run_decision_for_frame({}, frames, frames[0], args, grounder, [])
+
+    assert grounder.calls == []
+    assert output["model_skipped"] is True
+    assert output["decision"]["target_object_id"] is None
+    assert output["decision"]["confidence"] == 0.0
+    assert output["decision"]["uncertain_reason"] == "no_valid_candidates_for_frame"
+
+
 def test_temporal_context_computes_current_distance_and_approach_trend(
     tmp_path, monkeypatch
 ):
