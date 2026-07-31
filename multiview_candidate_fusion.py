@@ -51,7 +51,6 @@ from fusion_matching import (
     bbox_iou_3d,
     cluster_observations,
     legacy_union_find_clusters,
-    nearest_mean_distance,
     pairwise_should_merge,
     solve_min_cost_assignment,
     suppress_same_camera_duplicates,
@@ -94,17 +93,23 @@ def build_parser() -> argparse.ArgumentParser:
             "depth loading/backprojection (0 disables)."
         ),
     )
-    parser.add_argument("--cluster-distance-m", type=float, default=0.03, help="Centroid threshold, e.g. 0.02-0.05 m.")
+    parser.add_argument(
+        "--cluster-distance-m",
+        type=float,
+        default=0.03,
+        help=(
+            "Required maximum cross-view centroid distance; optional bbox and "
+            "surface checks can only make this gate stricter."
+        ),
+    )
     parser.add_argument(
         "--bbox-iou-threshold",
         type=float,
         default=0.0,
         help=(
-            "Optional 3D bbox IoU threshold. When > 0, two observations also merge "
-            "whenever their bbox IoU meets this threshold, even if their centroids are farther "
-            "apart than --cluster-distance-m (this is an OR with the centroid check, not an AND: "
-            "it is meant to catch the same physical object whose centroid estimate drifted, e.g. "
-            "because of noisy depth or a partial mask, not to make merging stricter)."
+            "Optional minimum 3D bbox IoU in addition to the required centroid "
+            "gate. Used as the secondary geometry check when "
+            "--nearest-distance-m is not set."
         ),
     )
     parser.add_argument(
@@ -112,10 +117,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help=(
-            "Optional point-cloud nearest-distance threshold. When set, two "
-            "observations also merge whenever their point clouds come within this distance, "
-            "even if their centroids are farther apart than --cluster-distance-m (OR with the "
-            "centroid check, same rationale as --bbox-iou-threshold)."
+            "Optional maximum robust symmetric point-cloud surface distance, "
+            "in addition to the required centroid gate. When set, exceeding "
+            "this threshold is a hard veto even if bbox IoU passes."
         ),
     )
     parser.add_argument("--max-hypothesis-diameter-m", type=float, default=0.50,

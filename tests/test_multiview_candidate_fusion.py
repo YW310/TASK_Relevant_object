@@ -62,14 +62,43 @@ class CrossCameraFusionTest(unittest.TestCase):
             legacy_union_find=False,
         )
 
-    def test_bbox_overlap_can_merge_different_cameras_despite_centroid_drift(self) -> None:
+    def test_bbox_overlap_does_not_bypass_centroid_gate(self) -> None:
         front = _observation("front:C1", "front", [[0, 0, 0], [0.10, 0.10, 0.10]])
         left = _observation("left:C1", "left", [[0.05, 0, 0], [0.15, 0.10, 0.10]])
 
         clusters = cluster_observations([front, left], self.args)
 
+        self.assertEqual([1, 1], sorted(len(cluster) for cluster in clusters))
+
+    def test_centroid_and_bbox_agreement_merge_different_cameras(self) -> None:
+        front = _observation("front:C1", "front", [[0, 0, 0], [0.10, 0.10, 0.10]])
+        left = _observation("left:C1", "left", [[0.01, 0, 0], [0.11, 0.10, 0.10]])
+
+        clusters = cluster_observations([front, left], self.args)
+
         self.assertEqual(1, len(clusters))
         self.assertEqual({"front", "left"}, {item.camera for item in clusters[0]})
+
+    def test_surface_distance_vetoes_nearby_centroids(self) -> None:
+        front = _observation("front:C1", "front", [[0, 0, 0], [0.02, 0.02, 0.02]])
+        left = _observation("left:C1", "left", [[0.015, 0, 0], [0.035, 0.02, 0.02]])
+        self.args.cluster_distance_m = 0.03
+        self.args.bbox_iou_threshold = 0.0
+        self.args.nearest_distance_m = 0.005
+
+        clusters = cluster_observations([front, left], self.args)
+
+        self.assertEqual([1, 1], sorted(len(cluster) for cluster in clusters))
+
+    def test_surface_and_centroid_agreement_merge_different_cameras(self) -> None:
+        front = _observation("front:C1", "front", [[0, 0, 0], [0.02, 0.02, 0.02]])
+        left = _observation("left:C1", "left", [[0.001, 0, 0], [0.021, 0.02, 0.02]])
+        self.args.bbox_iou_threshold = 0.0
+        self.args.nearest_distance_m = 0.01
+
+        clusters = cluster_observations([front, left], self.args)
+
+        self.assertEqual(1, len(clusters))
 
     def test_same_camera_observations_remain_separate(self) -> None:
         first = _observation("front:C1", "front", [[0, 0, 0], [0.10, 0.10, 0.10]])

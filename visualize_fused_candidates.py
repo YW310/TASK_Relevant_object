@@ -53,6 +53,8 @@ from fused_candidate_io import (
 )
 from visualization_utils import object_color_for_id
 
+DEFAULT_MONTAGE_CAMERAS = ("front", "left_shoulder", "right_shoulder")
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -69,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mask-alpha", type=int, default=80, help="Alpha (0-255) for the semi-transparent reprojected point mask; lower = more transparent.")
     parser.add_argument("--max-frames", type=int, default=None, help="Optional cap on the number of frames to render.")
     parser.add_argument("--skip-pointcloud", action="store_true", help="Skip the matplotlib 3D scatter plot (only render 2D overlays + report).")
-    parser.add_argument("--montage-columns", type=int, default=3, help="Number of panel columns in each per-frame montage.")
+    parser.add_argument("--montage-columns", type=int, default=2, help="Number of panel columns in each per-frame montage.")
     parser.add_argument("--montage-cell-width", type=int, default=512, help="Width and height of each montage panel in pixels.")
     return parser
 
@@ -419,7 +421,7 @@ def compose_frame_montage(
     panels: Sequence[tuple[str, Image.Image]],
     frame_id: str,
     out_path: Path,
-    columns: int = 3,
+    columns: int = 2,
     cell_width: int = 512,
     label_height: int = 28,
     gap: int = 8,
@@ -463,6 +465,16 @@ def compose_frame_montage(
     return canvas
 
 
+def placeholder_panel(message: str, size: int = 512) -> Image.Image:
+    """Create a visible panel so the fixed montage layout never collapses."""
+    size = max(64, int(size))
+    image = Image.new("RGB", (size, size), (224, 224, 224))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, size - 1, size - 1), outline=(150, 150, 150), width=2)
+    draw.multiline_text((16, 16), message, fill=(70, 70, 70), spacing=4)
+    return image
+
+
 def main() -> None:
     args = build_parser().parse_args()
     fused_path = Path(args.fused_json).expanduser().resolve()
@@ -490,17 +502,27 @@ def main() -> None:
         frame_id = str(frame["frame_id"])
         frame_index = frame.get("frame_index")
         objects = frame.get("objects", [])
-        if not objects:
-            continue
-
-        available_cameras = sorted({camera for obj in objects for camera in obj.get("visible_camera", [])})
-        target_cameras = cameras_filter if cameras_filter is not None else available_cameras
+        target_cameras = (
+            list(cameras_filter)
+            if cameras_filter is not None
+            else list(DEFAULT_MONTAGE_CAMERAS)
+        )
         panels: list[tuple[str, Image.Image]] = []
         rendered_cameras: list[str] = []
         for camera in target_cameras:
             rgb_path = find_rgb_path(episode_dir, camera, frame_id)
             if rgb_path is None:
                 print(f"[warn] frame_id={frame_id} camera={camera}: RGB image not found; skipping overlay.", file=sys.stderr)
+                panels.append(
+                    (
+                        f"camera: {camera}",
+                        placeholder_panel(
+                            f"{camera}\nRGB image unavailable",
+                            args.montage_cell_width,
+                        ),
+                    )
+                )
+                rendered_cameras.append(camera)
                 continue
             params = resolve_camera_param_for_frame(
                 camera,
@@ -513,6 +535,8 @@ def main() -> None:
             )
             if params is None:
                 print(f"[warn] frame_id={frame_id} camera={camera}: no camera intrinsics/extrinsics found; skipping overlay.", file=sys.stderr)
+                panels.append((f"camera: {camera} (raw)", Image.open(rgb_path).convert("RGB")))
+                rendered_cameras.append(camera)
                 continue
             overlay = render_overlay(
                 rgb_path,
@@ -534,6 +558,15 @@ def main() -> None:
                 includes_pointcloud = True
             except ImportError:
                 print("[warn] matplotlib not installed; skipping 3D point cloud plot (pip install matplotlib to enable).", file=sys.stderr)
+                panels.append(
+                    (
+                        "3D fused point cloud",
+                        placeholder_panel(
+                            "point cloud\nmatplotlib unavailable",
+                            args.montage_cell_width,
+                        ),
+                    )
+                )
 
         montage_path = output_dir / f"{frame_id}_montage.png"
         if panels:

@@ -123,9 +123,9 @@ ties); remaining cameras use the same confidence-first, name-tiebroken order.
 | `--depth-scale` | — | `1.0` | Divisor for raw/single-channel depth values. |
 | `--max-points-per-candidate` | — | `4096` | Bound point-cloud size and memory use per observation. |
 | `--min-candidate-mask-area-pixels` | `MIN_CANDIDATE_MASK_AREA_PIXELS` | follows `MIN_MASK_AREA` (`4`) | Drop cached/raw candidates whose `mask_area_pixels` is below this value before backprojection; `0` disables it. |
-| `--cluster-distance-m` | `CLUSTER_DISTANCE_M` | `0.03` m | Maximum pairwise centroid distance in a completed hypothesis. |
-| `--bbox-iou-threshold` | — | `0.0` (off) | Optional minimum pairwise 3D bbox IoU during full validation. |
-| `--nearest-distance-m` | — | unset | Optional maximum robust symmetric surface distance during validation. |
+| `--cluster-distance-m` | `CLUSTER_DISTANCE_M` | `0.03` m | Required maximum pairwise centroid distance in a completed hypothesis. |
+| `--bbox-iou-threshold` | — | `0.0` (off) | Optional secondary 3D bbox IoU requirement; it cannot bypass the centroid gate. |
+| `--nearest-distance-m` | — | unset | Optional robust symmetric surface-distance requirement; exceeding it vetoes fusion even when bbox IoU passes. |
 | `--max-hypothesis-diameter-m` | — | `0.50` m | Maximum robust pooled point-cloud diameter. |
 | `--max-size-ratio` | — | `4.0` | Maximum axis-wise box-size ratio. |
 | `--same-camera-nms-mask-iou` | `SAME_CAMERA_NMS_MASK_IOU` | `0.55` | Same-view mask IoU cue for strict 2D+3D duplicate suppression. |
@@ -202,8 +202,10 @@ See `schemas/frame_fused_candidates.schema.json`,
 ### Stage 3: fused-object sanity visualization
 
 `visualize_fused_candidates.py` projects fused world points back into each
-camera image and combines every selected camera overlay plus the four-angle 3D
-point-cloud view into one `<frame_id>_montage.png`. It no longer writes separate
+camera image and combines fixed `front`, `left_shoulder`, and `right_shoulder`
+camera panels plus the four-angle 3D point-cloud panel into one 2x2
+`<frame_id>_montage.png`. A missing RGB/calibration dependency produces a labelled
+placeholder/raw-camera panel instead of changing the layout. It no longer writes separate
 `*_reproj.png` or `*_pointcloud.png` panels. This stage does not change fusion
 results; use it to diagnose
 depth decoding, camera transforms, bad masks, or incorrect clustering. Its
@@ -219,14 +221,14 @@ transparent layer.
 | `--fused-json` | derived from `OUTPUT_DIR` | required | Stage 2 output. |
 | `--output-dir` | derived | sibling `viz/` | Visualization destination. |
 | `--frame-ids`, `--max-frames` | — | all | Render a frame subset or cap. |
-| `--cameras` | `CAMERAS` | all available | Select overlay cameras. |
+| `--cameras` | `CAMERAS` | `front,left_shoulder,right_shoulder` | Override the fixed overlay-camera set. |
 | `--camera-params-json` | `CAMERA_PARAMS_JSON` | auto | Use the same camera override as fusion. |
 | `--invert-rlbench-extrinsics` | `INVERT_RLBENCH_EXTRINSICS` | off | Keep projection convention aligned with Stage 2. |
 | `--point-stride` | — | `4` | Render every Nth world point. |
 | `--point-radius` | — | `2` px | Reprojected marker radius. |
 | `--mask-alpha` | — | `80` | Overlay opacity in the range 0–255. |
 | `--skip-pointcloud` | — | off | Omit the matplotlib 3D scatter plot. |
-| `--montage-columns` | `VIZ_MONTAGE_COLUMNS` | `3` | Number of panel columns in the per-frame montage. |
+| `--montage-columns` | `VIZ_MONTAGE_COLUMNS` | `2` | Number of panel columns in the per-frame montage. |
 | `--montage-cell-width` | `VIZ_MONTAGE_CELL_WIDTH` | `512` px | Square cell size used for camera and point-cloud panels. |
 
 Set `SKIP_VIZ=1` in the shell pipeline to omit this stage.

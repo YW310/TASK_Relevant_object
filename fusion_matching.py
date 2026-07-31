@@ -23,16 +23,6 @@ def bbox_iou_3d(a: np.ndarray, b: np.ndarray) -> float:
     return inter / union if union > 0 else 0.0
 
 
-def nearest_mean_distance(a: np.ndarray, b: np.ndarray) -> float:
-    if len(a) == 0 or len(b) == 0:
-        return float("inf")
-    step_a = max(1, len(a) // 512)
-    step_b = max(1, len(b) // 512)
-    aa, bb = a[::step_a], b[::step_b]
-    d2 = ((aa[:, None, :] - bb[None, :, :]) ** 2).sum(axis=2)
-    return float(np.sqrt(d2.min(axis=1)).mean())
-
-
 def symmetric_percentile_nearest_distance(
     a: np.ndarray,
     b: np.ndarray,
@@ -182,21 +172,41 @@ def pairwise_should_merge(
     b: Observation3D,
     args: argparse.Namespace,
 ) -> bool:
-    centroid_ok = (
+    """Check strict cross-view geometric consistency.
+
+    Centroid proximity is always the coarse gate. Optional geometry cues make
+    the gate stricter instead of providing alternate ways around it. An
+    enabled surface-distance check is a hard veto when point clouds disagree.
+    """
+    centroid_ok = bool(
         np.linalg.norm(a.centroid_world - b.centroid_world)
         <= args.cluster_distance_m
     )
+    if not centroid_ok:
+        return False
+
     iou_ok = (
         args.bbox_iou_threshold > 0
         and bbox_iou_3d(a.bbox3d_world, b.bbox3d_world)
         >= args.bbox_iou_threshold
     )
-    nearest_ok = (
-        args.nearest_distance_m is not None
-        and nearest_mean_distance(a.points_world, b.points_world)
-        <= args.nearest_distance_m
-    )
-    return centroid_ok or iou_ok or nearest_ok
+    if args.nearest_distance_m is not None:
+        surface_distance = symmetric_percentile_nearest_distance(
+            a.points_world,
+            b.points_world,
+        )
+        if (
+            not np.isfinite(surface_distance)
+            or surface_distance > args.nearest_distance_m
+        ):
+            return False
+        # Surface agreement is sufficient secondary geometry evidence. Bbox
+        # IoU may be low for partial observations of the same physical object.
+        return True
+
+    if args.bbox_iou_threshold > 0:
+        return iou_ok
+    return True
 
 
 def _hypothesis_is_valid(
@@ -266,7 +276,7 @@ def _association_cost(
         ):
             cue_costs.append(1.0 - bbox_iou)
         if args.nearest_distance_m is not None:
-            nearest = nearest_mean_distance(
+            nearest = symmetric_percentile_nearest_distance(
                 obs.points_world,
                 other.points_world,
             )
@@ -292,8 +302,13 @@ def _association_cost(
         obs.points_world,
         anchor.points_world,
     )
+    surface_scale = (
+        args.nearest_distance_m
+        if args.nearest_distance_m is not None
+        else args.cluster_distance_m
+    )
     surface_term = (
-        min(1.0, surface / max(args.cluster_distance_m, 1e-9))
+        min(1.0, surface / max(surface_scale, 1e-9))
         if np.isfinite(surface)
         else 1.0
     )
@@ -410,11 +425,9 @@ def warn_near_miss_unmerged_clusters(
                 print(
                     "[warn] two observation clusters stayed separate but are "
                     f"only {dist:.3f}m apart (cameras {cams_a} vs {cams_b}); "
-                    "this often means the same physical object got fragmented "
-                    "into duplicate/overlapping boxes. Consider raising "
-                    "--cluster-distance-m or setting "
-                    "--nearest-distance-m/--bbox-iou-threshold to also catch "
-                    "this case.",
+                    "inspect camera calibration, depth, partial masks, and the "
+                    "pairwise geometry diagnostics before relaxing fusion "
+                    "thresholds.",
                     file=sys.stderr,
                 )
 

@@ -138,5 +138,12 @@ def test_main_writes_one_montage_without_separate_panels(tmp_path, monkeypatch):
     assert list(output_dir.glob("*_reproj.png")) == []
     assert list(output_dir.glob("*_pointcloud.png")) == []
     report = json.loads((output_dir / "sanity_report.json").read_text())
-    assert report["frames"][0]["camera_panels"] == ["front", "left"]
+    assert report["frames"][0]["camera_panels"] == [
+        "front",
+        "left_shoulder",
+        "right_shoulder",
+    ]
     assert report["frames"][0]["includes_pointcloud"] is True
+    with Image.open(output_dir / "0_montage.png") as montage:
+        assert montage.width == 1048
+        assert montage.height == 1136
