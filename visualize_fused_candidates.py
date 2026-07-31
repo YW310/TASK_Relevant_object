@@ -43,13 +43,9 @@ from camera_geometry import (
 )
 from common_io import parse_optional_csv as parse_csv
 from fused_candidate_io import iter_fused_frames, load_fused_manifest, load_object_points
+from visualization_utils import OBJECT_COLORS, object_color_for_id
 
-# Distinct, high-contrast colors cycled across fused objects within a frame.
-OBJECT_COLORS: tuple[tuple[int, int, int], ...] = (
-    (230, 25, 75), (60, 180, 75), (255, 225, 25), (0, 130, 200),
-    (245, 130, 48), (145, 30, 180), (70, 240, 240), (240, 50, 230),
-    (210, 245, 60), (250, 190, 212), (0, 128, 128), (220, 190, 255),
-)
+# Re-export OBJECT_COLORS for compatibility; new rendering uses the stable ID map.
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -172,8 +168,8 @@ def draw_overlay(
     bboxes: list[tuple[tuple[int, int, int, int], tuple[int, int, int]]] = []
     labels: list[tuple[tuple[float, float], str, tuple[int, int, int]]] = []
 
-    for index, obj in enumerate(objects):
-        color = OBJECT_COLORS[index % len(OBJECT_COLORS)]
+    for obj in objects:
+        color = object_color_for_id(obj.get("id"))
         points = load_object_points(frame, obj["id"])
         if len(points) == 0:
             continue
@@ -342,11 +338,11 @@ def plot_pointcloud(frame: Mapping[str, Any], objects: Sequence[Mapping[str, Any
     fig = plt.figure(figsize=(6 * cols, 6 * rows))
     for view_index, (title, elev, azim) in enumerate(views):
         ax = fig.add_subplot(rows, cols, view_index + 1, projection="3d")
-        for index, obj in enumerate(objects):
+        for obj in objects:
             points = load_object_points(frame, obj["id"])
             if len(points) == 0:
                 continue
-            color = np.array(OBJECT_COLORS[index % len(OBJECT_COLORS)]) / 255.0
+            color = np.array(object_color_for_id(obj.get("id"))) / 255.0
             evidence = obj.get("role_evidence", {})
             top_role = max(evidence, key=lambda role: evidence[role].get("probability", 0.0)) if evidence else None
             suffix = f" ({top_role} evidence)" if top_role else ""

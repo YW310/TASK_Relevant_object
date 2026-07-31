@@ -32,7 +32,7 @@ from camera_geometry import (
 )
 from common_io import load_json, parse_optional_csv as parse_csv
 from fused_candidate_io import load_fused_frame, load_fused_manifest, load_object_points
-from visualize_fused_candidates import OBJECT_COLORS
+from visualization_utils import object_color_for_id
 
 ROLE_COLORS = {
     "target": (255, 80, 80),
@@ -144,10 +144,11 @@ def _draw_decision_overlay(
         if object_id not in role_by_object_id or role_name == "target":
             role_by_object_id[object_id] = role_name
 
-    for object_index, (object_id, obj) in enumerate(objects_by_id.items()):
+    for object_id, obj in objects_by_id.items():
         role_name = role_by_object_id.get(object_id)
         selected = role_name is not None
-        color = ROLE_COLORS[role_name] if role_name is not None else OBJECT_COLORS[object_index % len(OBJECT_COLORS)]
+        id_color = object_color_for_id(object_id)
+        display_color = ROLE_COLORS[role_name] if role_name is not None else id_color
         points = load_object_points(frame, object_id)
         if len(points) == 0:
             continue
@@ -165,21 +166,21 @@ def _draw_decision_overlay(
         for u, v in visible_uv:
             layer_draw.ellipse(
                 [u - point_radius, v - point_radius, u + point_radius, v + point_radius],
-                fill=(*color, mask_alpha if selected else min(mask_alpha, 55)),
+                fill=(*display_color, mask_alpha if selected else min(mask_alpha, 55)),
             )
         mask_layer = np.maximum(mask_layer, np.asarray(layer))
 
         u_min, v_min = visible_uv.min(axis=0)
         u_max, v_max = visible_uv.max(axis=0)
         label = _display_label(object_id, role_name)
-        boxes.append(((int(u_min), int(v_min), int(u_max), int(v_max)), color, selected))
+        boxes.append(((int(u_min), int(v_min), int(u_max), int(v_max)), id_color, selected))
 
         centroid_uv, centroid_valid = project_points(np.asarray([obj.get("centroid_world", [0.0, 0.0, 0.0])], dtype=np.float64), intrinsics, extrinsics)
         if centroid_valid[0]:
             cu, cv = centroid_uv[0]
         else:
             cu, cv = float(u_min), float(v_min)
-        labels.append((float(cu), float(cv), label, color, selected))
+        labels.append((float(cu), float(cv), label, display_color, selected))
 
     image = Image.alpha_composite(image, Image.fromarray(mask_layer, mode="RGBA"))
     # Draw onto a transparent layer first. Drawing alpha-valued colors directly

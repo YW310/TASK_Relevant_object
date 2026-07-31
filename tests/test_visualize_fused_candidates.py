@@ -4,6 +4,19 @@ from visualize_fused_candidates import (
     _rectangle_overlap_area,
     layout_object_labels,
 )
+from visualization_utils import OBJECT_COLORS, object_color_for_id
+
+
+def test_object_id_color_is_stable_across_frame_orderings():
+    first_frame = ["O2", "O7", "O3"]
+    second_frame = ["O3", "O2"]
+
+    first_colors = {object_id: object_color_for_id(object_id) for object_id in first_frame}
+    second_colors = {object_id: object_color_for_id(object_id) for object_id in second_frame}
+
+    assert first_colors["O2"] == second_colors["O2"] == OBJECT_COLORS[1]
+    assert first_colors["O3"] == second_colors["O3"] == OBJECT_COLORS[2]
+    assert object_color_for_id("O14") != object_color_for_id("O2")
 
 
 def test_dense_object_labels_are_placed_without_overlap():
