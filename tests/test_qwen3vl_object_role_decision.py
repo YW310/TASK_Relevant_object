@@ -6,15 +6,18 @@ from PIL import Image
 
 import qwen3vl_object_role_decision as decision_module
 from qwen3vl_object_role_decision import (
+    _adaptive_refresh_reasons,
     _apply_two_stage_target_selection,
     _build_temporal_object_context,
     _candidate_observation_cards,
     _collect_temporal_contact_sheets,
+    _current_dynamic_events,
     _decision_prompt,
     _filter_candidates,
     _pick_decision_frame,
     _resolve_temporal_frames,
     _run_decision_for_frame,
+    _sanitize_decision_ids,
 )
 
 
@@ -44,6 +47,54 @@ def test_temporal_window_at_middle_frame():
     assert [item["frame_id"] for item in _resolve_temporal_frames(frames, frames[4], 3)] == ["f2", "f3", "f4"]
 
 
+def test_current_dynamic_events_reads_tracker_event_field():
+    context = {
+        "objects": {
+            "O1": {
+                "events": [
+                    {"frame_id": "f1", "event": "GRASPED"},
+                    {"frame_id": "f2", "event": "RELEASED"},
+                ]
+            }
+        }
+    }
+
+    assert _current_dynamic_events(context, "f2") == ["released"]
+
+
+def test_adaptive_refresh_covers_disappearance_confidence_and_gripper_events():
+    args = argparse.Namespace(
+        decision_policy="adaptive",
+        decision_refresh_interval=10,
+        decision_min_propagation_confidence=0.70,
+    )
+    state = {
+        "last_model_result": {"target_object_id": "O1"},
+        "last_candidate_ids": {"O1", "O2"},
+        "last_final_decision": {
+            "target_object_id": "O1",
+            "reference_object_id": "O2",
+        },
+        "frames_since_model": 0,
+        "force_refresh": False,
+    }
+
+    reasons = _adaptive_refresh_reasons(
+        args,
+        state,
+        {"O2"},
+        {"target_object_id": "O2", "confidence": 0.5, "uncertain": False},
+        ["released"],
+        True,
+    )
+
+    assert "target_disappeared" in reasons
+    assert "rule_candidate_changed" in reasons
+    assert "low_propagation_confidence" in reasons
+    assert "gripper_transition" in reasons
+    assert "dynamic_event:released" in reasons
+
+
 def test_temporal_window_at_last_frame():
     frames = _frames()
     assert [item["frame_id"] for item in _resolve_temporal_frames(frames, frames[-1], 3)] == ["f4", "f5", "f6"]
@@ -67,11 +118,61 @@ class _MockGrounder:
 
     def generate_json(self, messages, max_new_tokens):
         self.calls.append((messages, max_new_tokens))
+        self.last_generation_stats = {
+            "attempts": 1,
+            "input_tokens": 100,
+            "output_tokens": 20,
+        }
         return {
             "target_object_id": "O1",
             "reference_object_id": None,
             "confidence": 0.8,
         }, "mock"
+
+
+def _run_main_with_grounder(
+    tmp_path,
+    monkeypatch,
+    frames,
+    grounder,
+    *extra_args,
+):
+    manifest_path = tmp_path / "frame_fused_candidates.json"
+    manifest_path.write_text(
+        json.dumps({"schema_version": 1, "generation_id": "g1"})
+    )
+    summary_path = tmp_path / "object_summary.json"
+    output_path = tmp_path / "decision.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generation_id": "g1",
+                "source_fused_json": str(manifest_path),
+                "frame_decision_inputs": frames,
+                "object_tracks": [],
+            }
+        )
+    )
+    monkeypatch.setattr(
+        decision_module,
+        "Qwen3VLRLBenchGrounder",
+        lambda **kwargs: grounder,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "qwen3vl_object_role_decision.py",
+            "--object-summary-json",
+            str(summary_path),
+            "--output-json",
+            str(output_path),
+            *extra_args,
+        ],
+    )
+    decision_module.main()
+    return json.loads(output_path.read_text())
 
 
 def test_one_frame_call_payload_contains_complete_window_only():
@@ -117,6 +218,7 @@ def test_one_frame_call_payload_contains_complete_window_only():
     assert "lifespan_frames" not in serialized
     assert "episode_wide_camera" not in serialized
     assert payload["object_track_context"]["O1"]["window_motion_path_length_m"] == 2.0
+    assert all("candidate_objects" not in item for item in payload["window_frames"])
 
 
 def test_main_calls_grounder_once_per_frame_with_rolling_windows(tmp_path, monkeypatch):
@@ -158,6 +260,147 @@ def test_main_calls_grounder_once_per_frame_with_rolling_windows(tmp_path, monke
     assert [item["online_step"] for item in output["frame_decisions"]] == list(range(8))
     assert output["decision"] == output["frame_decisions"][-1]["decision"]
     assert all("online_history" not in _payload_from_call(call) for call in grounder.calls)
+
+
+def test_adaptive_policy_emits_every_frame_but_refreshes_every_five(
+    tmp_path, monkeypatch
+):
+    frames = _frames(8)
+    for frame in frames:
+        frame["candidate_objects"] = [
+            {
+                "object_id": "O1",
+                "camera_count": 1,
+                "point_count": 5,
+                "sam_score": 0.9,
+            }
+        ]
+    grounder = _MockGrounder()
+    output = _run_main_with_grounder(
+        tmp_path,
+        monkeypatch,
+        frames,
+        grounder,
+        "--decision-policy",
+        "adaptive",
+        "--decision-refresh-interval",
+        "5",
+        "--no-dynamic-role-reasoning",
+        "--max-candidate-images",
+        "0",
+    )
+    assert len(output["frame_decisions"]) == 8
+    assert len(grounder.calls) == 2
+    assert [
+        item["frame_id"]
+        for item in output["frame_decisions"]
+        if item["model_invoked"]
+    ] == ["f0", "f5"]
+    assert output["performance"]["model_call_count"] == 2
+    assert output["performance"]["propagated_frame_count"] == 6
+    assert all(item["decision"] for item in output["frame_decisions"])
+
+
+def test_adaptive_policy_refreshes_when_new_candidate_appears(
+    tmp_path, monkeypatch
+):
+    frames = _frames(4)
+    for frame in frames:
+        frame["candidate_objects"] = [
+            {"object_id": "O1", "camera_count": 1, "point_count": 5, "sam_score": 0.9}
+        ]
+    frames[2]["candidate_objects"].append(
+        {"object_id": "O2", "camera_count": 1, "point_count": 5, "sam_score": 0.8}
+    )
+    grounder = _MockGrounder()
+    output = _run_main_with_grounder(
+        tmp_path,
+        monkeypatch,
+        frames,
+        grounder,
+        "--decision-policy",
+        "adaptive",
+        "--decision-refresh-interval",
+        "10",
+        "--no-dynamic-role-reasoning",
+        "--max-candidate-images",
+        "0",
+    )
+    assert len(grounder.calls) == 2
+    assert output["frame_decisions"][2]["model_invoked"] is True
+    assert "new_candidate" in output["frame_decisions"][2]["refresh_reasons"]
+
+
+def test_adaptive_propagation_skips_contact_sheet_creation(tmp_path, monkeypatch):
+    crop_path = tmp_path / "crop.png"
+    Image.new("RGB", (64, 64), (120, 40, 20)).save(crop_path)
+    frames = _frames(2)
+    for frame in frames:
+        frame["candidate_objects"] = [
+            {
+                "object_id": "O1",
+                "camera_count": 1,
+                "point_count": 5,
+                "sam_score": 0.9,
+                "observations": [
+                    {
+                        "camera": "front",
+                        "sam_score": 0.9,
+                        "masked_crop_path": str(crop_path),
+                    }
+                ],
+            }
+        ]
+    grounder = _MockGrounder()
+    output = _run_main_with_grounder(
+        tmp_path,
+        monkeypatch,
+        frames,
+        grounder,
+        "--decision-policy",
+        "adaptive",
+        "--decision-refresh-interval",
+        "10",
+        "--no-dynamic-role-reasoning",
+    )
+    assert len(output["frame_decisions"][0]["representative_images"]) == 1
+    assert output["frame_decisions"][1]["decision_source"] == "temporal_propagation"
+    assert output["frame_decisions"][1]["representative_images"] == []
+    assert output["frame_decisions"][1]["performance"]["input_visual_pixels"] == 0
+
+
+def test_adaptive_parse_error_forces_next_frame_refresh(tmp_path, monkeypatch):
+    class FailOnceGrounder(_MockGrounder):
+        def generate_json(self, messages, max_new_tokens):
+            if not self.calls:
+                self.calls.append((messages, max_new_tokens))
+                self.last_generation_stats = {"attempts": 1}
+                raise RuntimeError("malformed JSON")
+            return super().generate_json(messages, max_new_tokens)
+
+    frames = _frames(3)
+    for frame in frames:
+        frame["candidate_objects"] = [
+            {"object_id": "O1", "camera_count": 1, "point_count": 5, "sam_score": 0.9}
+        ]
+    grounder = FailOnceGrounder()
+    output = _run_main_with_grounder(
+        tmp_path,
+        monkeypatch,
+        frames,
+        grounder,
+        "--decision-policy",
+        "adaptive",
+        "--decision-refresh-interval",
+        "10",
+        "--no-dynamic-role-reasoning",
+        "--max-candidate-images",
+        "0",
+    )
+    assert output["frame_decisions"][0]["decision_source"] == "qwen_error"
+    assert output["frame_decisions"][0]["decision"]["uncertain"] is True
+    assert output["frame_decisions"][1]["model_invoked"] is True
+    assert "previous_model_parse_error" in output["frame_decisions"][1]["refresh_reasons"]
 
 
 def test_single_scope_keeps_explicit_debug_behavior(tmp_path, monkeypatch):
@@ -214,6 +457,55 @@ def test_temporal_contact_sheets_include_frame_and_object_ids(tmp_path):
     assert [item["frame_id"] for item in sheets] == ["f0", "f1"]
     assert [item["object_ids"] for item in sheets] == [["O1"], ["O2"]]
     assert all(Image.open(item["image_path"]).size[0] > 0 for item in sheets)
+
+
+def test_contact_sheet_limits_views_and_visual_pixels(tmp_path):
+    image_paths = []
+    for index in range(3):
+        path = tmp_path / f"camera_{index}.png"
+        Image.new("RGB", (128, 128), (40 * index, 80, 120)).save(path)
+        image_paths.append(path)
+    frame = _frames(1)[0]
+    frame["candidate_objects"] = [
+        {
+            "object_id": "O1",
+            "observations": [
+                {
+                    "camera": f"camera_{index}",
+                    "sam_score": 0.9 - index * 0.1,
+                    "masked_crop_path": str(path),
+                }
+                for index, path in enumerate(image_paths)
+            ],
+        },
+        {
+            "object_id": "O2",
+            "observations": [
+                {
+                    "camera": "camera_0",
+                    "sam_score": 0.95,
+                    "masked_crop_path": str(image_paths[0]),
+                }
+            ],
+        },
+    ]
+
+    sheets = _collect_temporal_contact_sheets(
+        [frame],
+        tmp_path / "artifacts",
+        3,
+        {},
+        candidate_views_per_object=1,
+        max_visual_pixels=4096,
+        allowed_object_ids={"O1"},
+    )
+
+    assert sheets[0]["object_ids"] == ["O1"]
+    assert sheets[0]["pixel_count"] <= 4096
+    assert Image.open(sheets[0]["image_path"]).size == (
+        sheets[0]["width"],
+        sheets[0]["height"],
+    )
 
 
 def test_candidate_contact_sheet_uses_two_distinct_best_camera_views(tmp_path):
@@ -402,6 +694,19 @@ def test_invalid_compatible_id_is_ignored_when_frame_has_no_candidates():
     assert selected["confidence"] == 0.0
     assert selected["uncertain"] is True
     assert selected["target_selection"]["ignored_invalid_object_ids"] == ["O14"]
+
+
+def test_sanitizer_never_allows_same_target_and_reference():
+    result = {
+        "target_object_id": "O2",
+        "reference_object_id": "O2",
+    }
+
+    invalid = _sanitize_decision_ids(result, {"O2"})
+
+    assert result["target_object_id"] == "O2"
+    assert result["reference_object_id"] is None
+    assert invalid[-1]["reason"] == "same_as_target_object_id"
 
 
 def test_empty_candidate_frame_skips_model_call():

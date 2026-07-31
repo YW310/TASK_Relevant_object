@@ -55,14 +55,20 @@
 #   SKIP_DECISION (default: 1)              Set to 0 to run stage 4 object-level target/reference decision.
 #   DECISION_MODEL_PATH                      Qwen3-VL model path for stage 4 (default: MODEL_PATH or script default).
 #   DECISION_SCOPE (default: all)           all=one rolling-window decision per frame; single=one selected frame.
+#   DECISION_POLICY (default: adaptive)      adaptive=Qwen keyframes + per-frame temporal propagation; every-frame=legacy behavior.
+#   DECISION_REFRESH_INTERVAL (default: 5)  Maximum propagated frames between Qwen refreshes.
+#   DECISION_MIN_PROPAGATION_CONFIDENCE (default: 0.70) Refresh Qwen below this propagated confidence.
 #   DECISION_FRAME (default: last)          first|last frame when DECISION_SCOPE=single.
 #   DECISION_FRAME_ID                        Optional explicit frame_id; forces a single-frame decision.
 #   DECISION_WINDOW_FRAMES (default: 3)     Current t plus [t-2,t-1] ([t-2,t-1,t]), in one model call.
 #   USE_DECISION_HISTORY (default: 0)       Feed prior model outputs into later prompts (off avoids error propagation).
-#   DECISION_MAX_NEW_TOKENS (default: 1024) Stage-4 JSON generation budget per frame.
+#   DECISION_MAX_NEW_TOKENS (default: 384)  Stage-4 JSON generation budget per Qwen keyframe.
 #   DECISION_OUTPUT_JSON                     Optional explicit output path for object_predictions.json.
 #   DECISION_ARTIFACTS_DIR                   Optional output directory for temporal object contact sheets.
-#   MAX_CANDIDATE_IMAGES (default: 8)       Max temporal contact sheets attached to each decision prompt.
+#   CANDIDATE_VIEWS_PER_OBJECT (default: 1) Best camera crops per object in Stage-4 contact sheets.
+#   DECISION_MAX_VISUAL_PIXELS (default: 393216) Maximum pixels per Stage-4 contact sheet.
+#   DECISION_ATTENTION_BACKEND (default: auto) auto|flash_attention_2|sdpa|eager.
+#   MAX_CANDIDATE_IMAGES (default: 3)       Max temporal contact sheets attached to each Qwen keyframe prompt.
 #   MAX_CANDIDATES_FOR_DECISION (default: 12) Max candidates kept for stage-4 prompt after filtering.
 #   MIN_CANDIDATE_POINT_COUNT (default: 0)   Drop tiny candidates by point count before stage-4 decision.
 #   MIN_CANDIDATE_CAMERA_COUNT (default: 1)  Require at least this many supporting cameras.
@@ -205,17 +211,23 @@ OBJECT_SUMMARY_JSON="${OBJECT_SUMMARY_JSON:-}"
 SKIP_DECISION="${SKIP_DECISION:-1}"
 DECISION_MODEL_PATH="${DECISION_MODEL_PATH:-${MODEL_PATH:-}}"
 DECISION_SCOPE="${DECISION_SCOPE:-all}"
+DECISION_POLICY="${DECISION_POLICY:-adaptive}"
+DECISION_REFRESH_INTERVAL="${DECISION_REFRESH_INTERVAL:-5}"
+DECISION_MIN_PROPAGATION_CONFIDENCE="${DECISION_MIN_PROPAGATION_CONFIDENCE:-0.70}"
 DECISION_FRAME="${DECISION_FRAME:-last}"
 DECISION_FRAME_ID="${DECISION_FRAME_ID:-}"
 DECISION_WINDOW_FRAMES="${DECISION_WINDOW_FRAMES:-3}"
 USE_DECISION_HISTORY="${USE_DECISION_HISTORY:-0}"
-DECISION_MAX_NEW_TOKENS="${DECISION_MAX_NEW_TOKENS:-1024}"
+DECISION_MAX_NEW_TOKENS="${DECISION_MAX_NEW_TOKENS:-384}"
 DECISION_GROUNDING_MIN_SIDE="${DECISION_GROUNDING_MIN_SIDE:-512}"
-DECISION_MAX_RETRIES="${DECISION_MAX_RETRIES:-1}"
+DECISION_MAX_RETRIES="${DECISION_MAX_RETRIES:-0}"
 DECISION_DRY_RUN="${DECISION_DRY_RUN:-0}"
 DECISION_OUTPUT_JSON="${DECISION_OUTPUT_JSON:-}"
 DECISION_ARTIFACTS_DIR="${DECISION_ARTIFACTS_DIR:-}"
-MAX_CANDIDATE_IMAGES="${MAX_CANDIDATE_IMAGES:-8}"
+MAX_CANDIDATE_IMAGES="${MAX_CANDIDATE_IMAGES:-3}"
+CANDIDATE_VIEWS_PER_OBJECT="${CANDIDATE_VIEWS_PER_OBJECT:-1}"
+DECISION_MAX_VISUAL_PIXELS="${DECISION_MAX_VISUAL_PIXELS:-393216}"
+DECISION_ATTENTION_BACKEND="${DECISION_ATTENTION_BACKEND:-auto}"
 MAX_CANDIDATES_FOR_DECISION="${MAX_CANDIDATES_FOR_DECISION:-12}"
 MIN_CANDIDATE_POINT_COUNT="${MIN_CANDIDATE_POINT_COUNT:-0}"
 MIN_CANDIDATE_CAMERA_COUNT="${MIN_CANDIDATE_CAMERA_COUNT:-1}"
@@ -400,12 +412,18 @@ else
   STAGE4_ARGS=(
     --object-summary-json "${SUMMARY_INPUT}"
     --decision-scope "${DECISION_SCOPE}"
+    --decision-policy "${DECISION_POLICY}"
+    --decision-refresh-interval "${DECISION_REFRESH_INTERVAL}"
+    --decision-min-propagation-confidence "${DECISION_MIN_PROPAGATION_CONFIDENCE}"
     --decision-frame "${DECISION_FRAME}"
     --decision-window-frames "${DECISION_WINDOW_FRAMES}"
     --grounding-min-side "${DECISION_GROUNDING_MIN_SIDE}"
     --max-retries "${DECISION_MAX_RETRIES}"
     --max-new-tokens "${DECISION_MAX_NEW_TOKENS}"
     --max-candidate-images "${MAX_CANDIDATE_IMAGES}"
+    --candidate-views-per-object "${CANDIDATE_VIEWS_PER_OBJECT}"
+    --decision-max-visual-pixels "${DECISION_MAX_VISUAL_PIXELS}"
+    --attention-backend "${DECISION_ATTENTION_BACKEND}"
     --max-candidates-for-decision "${MAX_CANDIDATES_FOR_DECISION}"
     --min-candidate-point-count "${MIN_CANDIDATE_POINT_COUNT}"
     --min-candidate-camera-count "${MIN_CANDIDATE_CAMERA_COUNT}"

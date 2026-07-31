@@ -14,7 +14,9 @@ reference object ids using multi-source evidence:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -56,6 +58,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--decision-policy",
+        choices=("every-frame", "adaptive"),
+        default="every-frame",
+        help=(
+            "every-frame invokes Qwen for every selected frame; adaptive keeps "
+            "per-frame outputs but refreshes Qwen only on keyframes/events."
+        ),
+    )
+    parser.add_argument("--decision-refresh-interval", type=int, default=5)
+    parser.add_argument(
+        "--decision-min-propagation-confidence",
+        type=float,
+        default=0.70,
+    )
+    parser.add_argument(
         "--decision-frame",
         choices=("last", "first"),
         default="last",
@@ -67,16 +84,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional explicit frame_id override. If set, --decision-frame is ignored.",
     )
     parser.add_argument("--grounding-min-side", type=int, default=512)
-    parser.add_argument("--max-retries", type=int, default=1)
-    parser.add_argument("--max-new-tokens", type=int, default=1024)
+    parser.add_argument("--max-retries", type=int, default=0)
+    parser.add_argument("--max-new-tokens", type=int, default=384)
     parser.add_argument(
         "--max-candidate-images",
         type=int,
-        default=8,
+        default=3,
         help=(
             "Maximum temporal contact-sheet images attached to one decision prompt. "
             "Set to 0 to disable visual evidence."
         ),
+    )
+    parser.add_argument(
+        "--candidate-views-per-object",
+        type=int,
+        default=1,
+        help="Maximum best-scoring camera crops per object in a contact sheet.",
+    )
+    parser.add_argument(
+        "--decision-max-visual-pixels",
+        type=int,
+        default=393216,
+        help="Maximum pixels in each Stage-4 contact sheet; 0 disables resizing.",
+    )
+    parser.add_argument(
+        "--attention-backend",
+        choices=("auto", "flash_attention_2", "sdpa", "eager"),
+        default="auto",
     )
     parser.add_argument(
         "--decision-artifacts-dir",
@@ -306,11 +340,22 @@ def _candidate_observation_cards(
 def _build_object_contact_sheet(
     frame_input: Mapping[str, Any],
     output_dir: Path,
+    candidate_views_per_object: int = 1,
+    max_visual_pixels: int = 393216,
+    allowed_object_ids: set[str] | None = None,
 ) -> dict[str, Any] | None:
     """Render one object-ID-labelled visual summary for a fused frame."""
     cards = []
     for candidate in sorted(frame_input.get("candidate_objects", []), key=_object_id_sort_key):
-        cards.extend(_candidate_observation_cards(candidate))
+        object_id = str(candidate.get("object_id"))
+        if allowed_object_ids is not None and object_id not in allowed_object_ids:
+            continue
+        cards.extend(
+            _candidate_observation_cards(
+                candidate,
+                max_views=max(1, candidate_views_per_object),
+            )
+        )
     if not cards:
         return None
 
@@ -375,6 +420,13 @@ def _build_object_contact_sheet(
     output_dir.mkdir(parents=True, exist_ok=True)
     frame_key = f"{_safe_path_segment(frame_index)}_{_safe_path_segment(frame_id)}"
     output_path = output_dir / f"{frame_key}_objects.png"
+    if max_visual_pixels > 0 and canvas.width * canvas.height > max_visual_pixels:
+        scale = (max_visual_pixels / float(canvas.width * canvas.height)) ** 0.5
+        resized_size = (
+            max(1, int(canvas.width * scale)),
+            max(1, int(canvas.height * scale)),
+        )
+        canvas = canvas.resize(resized_size, Image.Resampling.LANCZOS)
     canvas.save(output_path)
     return {
         "kind": "object_contact_sheet",
@@ -382,6 +434,9 @@ def _build_object_contact_sheet(
         "frame_index": frame_index,
         "object_ids": sorted({card["object_id"] for card in cards}),
         "image_path": str(output_path.resolve()),
+        "width": canvas.width,
+        "height": canvas.height,
+        "pixel_count": canvas.width * canvas.height,
     }
 
 
@@ -390,17 +445,30 @@ def _collect_temporal_contact_sheets(
     output_dir: Path | None,
     max_images: int,
     cache: dict[str, dict[str, Any] | None] | None = None,
+    candidate_views_per_object: int = 1,
+    max_visual_pixels: int = 393216,
+    allowed_object_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     if output_dir is None or max_images <= 0:
         return []
     selected_frames = list(temporal_frames)[-max_images:]
     results = []
     for frame in selected_frames:
-        cache_key = f"{frame.get('frame_index')}::{frame.get('frame_id')}"
+        cache_key = (
+            f"{frame.get('frame_index')}::{frame.get('frame_id')}::"
+            f"views={candidate_views_per_object}::pixels={max_visual_pixels}::"
+            f"ids={','.join(sorted(allowed_object_ids or []))}"
+        )
         if cache is not None and cache_key in cache:
             metadata = cache[cache_key]
         else:
-            metadata = _build_object_contact_sheet(frame, output_dir / "frames")
+            metadata = _build_object_contact_sheet(
+                frame,
+                output_dir / "frames",
+                candidate_views_per_object=candidate_views_per_object,
+                max_visual_pixels=max_visual_pixels,
+                allowed_object_ids=allowed_object_ids,
+            )
             if cache is not None:
                 cache[cache_key] = metadata
         if metadata is not None:
@@ -755,7 +823,6 @@ def _build_prompt_payload(
     for temporal_frame in temporal_frames:
         is_decision_frame = str(temporal_frame.get("frame_id")) == decision_frame_id
         evidence_frame = frame_input if is_decision_frame else temporal_frame
-        candidates = list(evidence_frame.get("candidate_objects", []))
         relations = list(evidence_frame.get("pairwise_relations", []))
         if is_decision_frame:
             relations = [
@@ -769,7 +836,6 @@ def _build_prompt_payload(
                 "frame_id": evidence_frame.get("frame_id"),
                 "frame_index": evidence_frame.get("frame_index"),
                 "is_decision_frame": is_decision_frame,
-                "candidate_objects": [_compact_candidate(item) for item in candidates],
                 "pairwise_relations": relations,
             }
         )
@@ -787,7 +853,7 @@ def _build_prompt_payload(
         "task_schema": dict(task_schema or {}),
         "dynamic_role_context": dict(dynamic_role_context or {}),
     }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def _decision_prompt(payload_json: str, representative_images: Sequence[Mapping[str, Any]]) -> str:
@@ -835,7 +901,7 @@ def _decision_prompt(payload_json: str, representative_images: Sequence[Mapping[
         "Input evidence JSON:\n"
         f"{payload_json}\n\n"
         "Chronological object contact sheets (if any):\n"
-        f"{json.dumps(image_list, ensure_ascii=False, indent=2)}\n\n"
+        f"{json.dumps(image_list, ensure_ascii=False, separators=(',', ':'))}\n\n"
         "Rules:\n"
         "1. Any non-null target_object_id/reference_object_id must be in valid_output_object_ids.\n"
         "2. First populate instruction_compatible_object_ids using instruction identity only. "
@@ -1008,6 +1074,20 @@ def _sanitize_decision_ids(result: dict[str, Any], valid_ids: set[str]) -> list[
             result["uncertain"] = True
             if not result.get("uncertain_reason"):
                 result["uncertain_reason"] = "model_selected_invalid_object_id"
+    if (
+        result.get("target_object_id") is not None
+        and result.get("reference_object_id") is not None
+        and str(result["target_object_id"]) == str(result["reference_object_id"])
+    ):
+        invalid.append(
+            {
+                "field": "reference_object_id",
+                "object_id": str(result["reference_object_id"]),
+                "reason": "same_as_target_object_id",
+            }
+        )
+        result["reference_object_id"] = None
+        result["invalid_selected_object_ids"] = invalid
     return invalid
 
 
@@ -1028,6 +1108,128 @@ def _summarize_previous_decisions(frame_decisions: Sequence[Mapping[str, Any]], 
     ]
 
 
+def _adaptive_state(args: argparse.Namespace) -> dict[str, Any]:
+    state = getattr(args, "_adaptive_decision_state", None)
+    if state is None:
+        state = {
+            "last_model_result": None,
+            "last_model_frame_id": None,
+            "last_candidate_ids": set(),
+            "last_final_decision": None,
+            "frames_since_model": 0,
+            "force_refresh": False,
+            "force_refresh_reason": None,
+        }
+        args._adaptive_decision_state = state
+    return state
+
+
+def _current_dynamic_events(
+    dynamic_role_context: Mapping[str, Any],
+    frame_id: Any,
+) -> list[str]:
+    current = str(frame_id)
+    events = []
+    for state in dynamic_role_context.get("objects", {}).values():
+        for event in state.get("events", []):
+            name = str(event.get("event") or "")
+            if str(event.get("frame_id")) == current and name in {
+                "GRASPED",
+                "RELEASED",
+                "PLACED_ON",
+                "PLACED_IN",
+            }:
+                events.append(name.lower())
+    return sorted(set(events))
+
+
+def _finalize_decision_result(
+    base_result: Mapping[str, Any],
+    candidates: Sequence[Mapping[str, Any]],
+    temporal_context_by_object: Mapping[str, Mapping[str, Any]],
+    dynamic_tracker: DynamicRoleTracker | None,
+    dynamic_role_context: Mapping[str, Any],
+    candidate_ids: set[str],
+) -> dict[str, Any]:
+    result = _apply_two_stage_target_selection(
+        copy.deepcopy(dict(base_result)),
+        candidates,
+        temporal_context_by_object,
+    )
+    if dynamic_tracker is not None:
+        result = apply_dynamic_role_selection(
+            result,
+            candidates,
+            dynamic_role_context,
+        )
+        result = calibrate_decision_confidence(
+            result,
+            candidates,
+            temporal_context_by_object,
+            dynamic_role_context,
+        )
+    _sanitize_decision_ids(result, candidate_ids)
+    return result
+
+
+def _adaptive_refresh_reasons(
+    args: argparse.Namespace,
+    state: Mapping[str, Any],
+    candidate_ids: set[str],
+    provisional_result: Mapping[str, Any] | None,
+    dynamic_events: Sequence[str],
+    gripper_transition: bool,
+) -> list[str]:
+    if getattr(args, "decision_policy", "every-frame") != "adaptive":
+        return ["policy_every_frame"]
+
+    reasons: list[str] = []
+    if state.get("last_model_result") is None:
+        reasons.append("first_frame")
+    if state.get("force_refresh"):
+        reasons.append(str(state.get("force_refresh_reason") or "forced_refresh"))
+
+    interval = max(1, int(getattr(args, "decision_refresh_interval", 5)))
+    if (
+        state.get("last_model_result") is not None
+        and int(state.get("frames_since_model", 0)) >= interval - 1
+    ):
+        reasons.append("periodic_refresh")
+
+    previous_candidate_ids = set(state.get("last_candidate_ids", set()))
+    if previous_candidate_ids and candidate_ids - previous_candidate_ids:
+        reasons.append("new_candidate")
+
+    previous_decision = state.get("last_final_decision") or {}
+    for role in ("target_object_id", "reference_object_id"):
+        object_id = previous_decision.get(role)
+        if object_id is not None and str(object_id) not in candidate_ids:
+            reasons.append(f"{role.removesuffix('_object_id')}_disappeared")
+
+    if provisional_result is not None:
+        previous_target = previous_decision.get("target_object_id")
+        current_target = provisional_result.get("target_object_id")
+        if (
+            previous_target is not None
+            and current_target is not None
+            and str(previous_target) != str(current_target)
+        ):
+            reasons.append("rule_candidate_changed")
+        try:
+            confidence = float(provisional_result.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence < float(
+            getattr(args, "decision_min_propagation_confidence", 0.70)
+        ) or bool(provisional_result.get("uncertain", False)):
+            reasons.append("low_propagation_confidence")
+
+    if gripper_transition:
+        reasons.append("gripper_transition")
+    reasons.extend(f"dynamic_event:{name}" for name in dynamic_events)
+    return list(dict.fromkeys(reasons))
+
+
 def _run_decision_for_frame(
     summary: Mapping[str, Any],
     frame_inputs: Sequence[Mapping[str, Any]],
@@ -1036,6 +1238,8 @@ def _run_decision_for_frame(
     grounder: Qwen3VLRLBenchGrounder | None,
     previous_frame_decisions: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
+    frame_started = time.perf_counter()
+    adaptive_state = _adaptive_state(args)
     ordered = _ordered_frames(frame_inputs)
     temporal_frames = _resolve_temporal_frames(ordered, frame_input, args.decision_window_frames)
     observations = getattr(args, "_rlbench_observations", None)
@@ -1048,6 +1252,7 @@ def _run_decision_for_frame(
     dynamic_tracker = getattr(args, "_dynamic_role_tracker", None)
     task_schema = getattr(args, "_task_schema", None)
     dynamic_role_context: dict[str, Any] = {}
+    gripper_transition = False
     if dynamic_tracker is not None:
         source_frame_index = frame_index_from_frame(frame_input)
         current_observation = (
@@ -1067,6 +1272,7 @@ def _run_decision_for_frame(
             if current_observation is not None
             else None
         )
+        previous_gripper_open = dynamic_tracker.last_gripper_open
         previous_source_frame_index = getattr(
             args, "_dynamic_last_source_frame_index", None
         )
@@ -1090,6 +1296,20 @@ def _run_decision_for_frame(
             gripper_position,
             gripper_open,
             gripper_open_history,
+        )
+        threshold = float(getattr(args, "gripper_closed_threshold", 0.5))
+        transition_values = (
+            ([previous_gripper_open] if previous_gripper_open is not None else [])
+            + [value for value in gripper_open_history if value is not None]
+        )
+        if gripper_open is not None and (
+            not transition_values or transition_values[-1] != gripper_open
+        ):
+            transition_values.append(gripper_open)
+        gripper_transition = any(
+            (float(transition_values[index - 1]) <= threshold)
+            != (float(transition_values[index]) <= threshold)
+            for index in range(1, len(transition_values))
         )
         for object_id, state in dynamic_role_context.get("objects", {}).items():
             if object_id in temporal_context_by_object:
@@ -1116,6 +1336,30 @@ def _run_decision_for_frame(
         else []
     )
     if not candidate_ids:
+        empty_decision = {
+            "instruction_compatible_object_ids": [],
+            "model_target_object_id": None,
+            "target_object_id": None,
+            "reference_object_id": None,
+            "target_selection": {
+                "strategy": "no_valid_candidates_skip_model",
+                "candidate_order": [],
+            },
+            "confidence": 0.0,
+            "uncertain": True,
+            "uncertain_reason": "no_valid_candidates_for_frame",
+            "evidence": [],
+            "relation_reason": None,
+            "reject_object_ids": [],
+            "rejected_reason": None,
+        }
+        if dynamic_tracker is not None:
+            dynamic_tracker.record_decision(empty_decision)
+        if adaptive_state.get("last_model_result") is not None:
+            adaptive_state["force_refresh"] = True
+            adaptive_state["force_refresh_reason"] = "candidates_reappeared"
+        adaptive_state["last_candidate_ids"] = set()
+        adaptive_state["last_final_decision"] = copy.deepcopy(empty_decision)
         return {
             "frame_id": frame_input.get("frame_id"),
             "frame_index": frame_input.get("frame_index"),
@@ -1128,66 +1372,135 @@ def _run_decision_for_frame(
             "task_schema": task_schema.to_dict() if task_schema is not None else {},
             "dynamic_role_context": dynamic_role_context,
             "model_skipped": True,
-            "decision": {
-                "instruction_compatible_object_ids": [],
-                "model_target_object_id": None,
-                "target_object_id": None,
-                "reference_object_id": None,
-                "target_selection": {
-                    "strategy": "no_valid_candidates_skip_model",
-                    "candidate_order": [],
-                },
-                "confidence": 0.0,
-                "uncertain": True,
-                "uncertain_reason": "no_valid_candidates_for_frame",
-                "evidence": [],
-                "relation_reason": None,
-                "reject_object_ids": [],
-                "rejected_reason": None,
+            "model_invoked": False,
+            "decision_source": "no_valid_candidates",
+            "source_model_frame_id": adaptive_state.get("last_model_frame_id"),
+            "refresh_reasons": ["no_valid_candidates"],
+            "performance": {
+                "frame_total_seconds": round(time.perf_counter() - frame_started, 6),
+                "contact_sheet_seconds": 0.0,
+                "model_seconds": 0.0,
+                "input_image_count": 0,
+                "input_visual_pixels": 0,
             },
+            "decision": empty_decision,
             "raw_text": None,
         }
-    artifacts_value = getattr(args, "decision_artifacts_dir", None)
-    artifacts_dir = Path(artifacts_value) if artifacts_value else None
-    representative_images = _collect_temporal_contact_sheets(
-        temporal_frames,
-        artifacts_dir,
-        args.max_candidate_images,
-        cache=getattr(args, "_contact_sheet_cache", None),
-    )
-    payload_json = _build_prompt_payload(
-        summary,
-        frame_input,
-        temporal_frames,
-        object_track_context,
-        temporal_window_meta,
-        candidate_ids,
-        task_schema.to_dict() if task_schema is not None else {},
-        dynamic_role_context,
-    )
-    if previous_summary:
-        payload = json.loads(payload_json)
-        payload["online_history"] = previous_summary
-        payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
-    prompt_text = _decision_prompt(payload_json, representative_images)
-
-    content: list[dict[str, Any]] = []
-    for item in representative_images:
-        content.append(
-            {
-                "type": "text",
-                "text": (
-                    f"TEMPORAL_FRAME={item.get('frame_id')} "
-                    f"FRAME_INDEX={item.get('frame_index')} "
-                    f"OBJECT_CONTACT_SHEET={','.join(item.get('object_ids', []))}"
-                ),
-            }
+    cached_model_result = adaptive_state.get("last_model_result")
+    provisional_result = (
+        _finalize_decision_result(
+            cached_model_result,
+            candidates,
+            temporal_context_by_object,
+            dynamic_tracker,
+            dynamic_role_context,
+            candidate_ids,
         )
-        content.append({"type": "image", "image": item["image_path"]})
-    content.append({"type": "text", "text": prompt_text})
+        if cached_model_result is not None
+        else None
+    )
+    dynamic_events = _current_dynamic_events(
+        dynamic_role_context,
+        frame_input.get("frame_id"),
+    )
+    refresh_reasons = _adaptive_refresh_reasons(
+        args,
+        adaptive_state,
+        candidate_ids,
+        provisional_result,
+        dynamic_events,
+        gripper_transition,
+    )
+    invoke_model = bool(refresh_reasons)
+    if args.dry_run and not invoke_model:
+        invoke_model = True
+        refresh_reasons = ["dry_run_payload"]
+
+    representative_images: list[dict[str, Any]] = []
+    contact_sheet_seconds = 0.0
+    payload_json = ""
+    messages: list[dict[str, Any]] = []
+    if invoke_model:
+        artifacts_value = getattr(args, "decision_artifacts_dir", None)
+        artifacts_dir = Path(artifacts_value) if artifacts_value else None
+        contact_started = time.perf_counter()
+        representative_images = _collect_temporal_contact_sheets(
+            temporal_frames,
+            artifacts_dir,
+            max(
+                0,
+                min(
+                    int(getattr(args, "max_candidate_images", 3)),
+                    max(1, int(getattr(args, "decision_window_frames", 3))),
+                ),
+            ),
+            cache=getattr(args, "_contact_sheet_cache", None),
+            candidate_views_per_object=max(
+                1,
+                int(getattr(args, "candidate_views_per_object", 1)),
+            ),
+            max_visual_pixels=max(
+                0,
+                int(getattr(args, "decision_max_visual_pixels", 393216)),
+            ),
+            allowed_object_ids=candidate_ids,
+        )
+        contact_sheet_seconds = time.perf_counter() - contact_started
+        payload_json = _build_prompt_payload(
+            summary,
+            frame_input,
+            temporal_frames,
+            object_track_context,
+            temporal_window_meta,
+            candidate_ids,
+            task_schema.to_dict() if task_schema is not None else {},
+            dynamic_role_context,
+        )
+        if previous_summary:
+            payload = json.loads(payload_json)
+            payload["online_history"] = previous_summary
+            payload_json = json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        prompt_text = _decision_prompt(payload_json, representative_images)
+
+        content: list[dict[str, Any]] = []
+        for item in representative_images:
+            content.append(
+                {
+                    "type": "text",
+                    "text": (
+                        f"TEMPORAL_FRAME={item.get('frame_id')} "
+                        f"FRAME_INDEX={item.get('frame_index')} "
+                        f"OBJECT_CONTACT_SHEET={','.join(item.get('object_ids', []))}"
+                    ),
+                }
+            )
+            content.append({"type": "image", "image": item["image_path"]})
+        content.append({"type": "text", "text": prompt_text})
+        messages = [{"role": "user", "content": content}]
+
+    visual_pixels = sum(
+        int(item.get("pixel_count") or 0) for item in representative_images
+    )
+    base_performance = {
+        "contact_sheet_seconds": round(contact_sheet_seconds, 6),
+        "model_seconds": 0.0,
+        "input_image_count": len(representative_images),
+        "input_visual_pixels": visual_pixels,
+        "prompt_characters": len(payload_json),
+        "input_tokens": None,
+        "output_tokens": None,
+    }
 
     if args.dry_run:
-        output = {
+        base_performance["frame_total_seconds"] = round(
+            time.perf_counter() - frame_started,
+            6,
+        )
+        return {
             "frame_id": frame_input.get("frame_id"),
             "frame_index": frame_input.get("frame_index"),
             "candidate_ids": sorted(candidate_ids),
@@ -1196,38 +1509,109 @@ def _run_decision_for_frame(
             "temporal_contact_sheets": representative_images,
             "representative_images": representative_images,
             "online_history": previous_summary,
-            "messages": [{"role": "user", "content": content}],
+            "messages": messages,
+            "model_invoked": False,
+            "decision_source": "dry_run_qwen_payload",
+            "source_model_frame_id": adaptive_state.get("last_model_frame_id"),
+            "refresh_reasons": refresh_reasons,
+            "performance": base_performance,
             "dry_run": True,
         }
-        if grounder is None:
-            return output
-        return output
 
     if grounder is None:
         raise ValueError("grounder is required for non-dry-run decisions")
 
-    messages = [{"role": "user", "content": content}]
-    result, raw_text = grounder.generate_json(messages, max_new_tokens=args.max_new_tokens)
-    result = _apply_two_stage_target_selection(
-        result,
-        candidates,
-        temporal_context_by_object,
-    )
-    if dynamic_tracker is not None:
-        result = apply_dynamic_role_selection(
-            result,
-            candidates,
-            dynamic_role_context,
-        )
-        result = calibrate_decision_confidence(
-            result,
-            candidates,
-            temporal_context_by_object,
-            dynamic_role_context,
-        )
-    _sanitize_decision_ids(result, candidate_ids)
+    raw_text: str | None = None
+    model_error: str | None = None
+    model_seconds = 0.0
+    if invoke_model:
+        model_started = time.perf_counter()
+        try:
+            model_result, raw_text = grounder.generate_json(
+                messages,
+                max_new_tokens=args.max_new_tokens,
+            )
+        except RuntimeError as exc:
+            model_error = str(exc)
+            fallback = copy.deepcopy(cached_model_result or {})
+            fallback.update(
+                {
+                    "confidence": 0.0,
+                    "uncertain": True,
+                    "uncertain_reason": "model_output_parse_error",
+                }
+            )
+            result = _finalize_decision_result(
+                fallback,
+                candidates,
+                temporal_context_by_object,
+                dynamic_tracker,
+                dynamic_role_context,
+                candidate_ids,
+            )
+            adaptive_state["force_refresh"] = True
+            adaptive_state["force_refresh_reason"] = "previous_model_parse_error"
+            decision_source = "qwen_error"
+            source_model_frame_id = adaptive_state.get("last_model_frame_id")
+        else:
+            adaptive_state["last_model_result"] = copy.deepcopy(model_result)
+            adaptive_state["last_model_frame_id"] = frame_input.get("frame_id")
+            adaptive_state["force_refresh"] = False
+            adaptive_state["force_refresh_reason"] = None
+            result = _finalize_decision_result(
+                model_result,
+                candidates,
+                temporal_context_by_object,
+                dynamic_tracker,
+                dynamic_role_context,
+                candidate_ids,
+            )
+            decision_source = (
+                "qwen_keyframe"
+                if getattr(args, "decision_policy", "every-frame") == "adaptive"
+                else "qwen_every_frame"
+            )
+            source_model_frame_id = frame_input.get("frame_id")
+        model_seconds = time.perf_counter() - model_started
+        adaptive_state["frames_since_model"] = 0
+    else:
+        if provisional_result is None:
+            raise RuntimeError("adaptive propagation requires a cached model result")
+        result = provisional_result
+        adaptive_state["frames_since_model"] = int(
+            adaptive_state.get("frames_since_model", 0)
+        ) + 1
+        decision_source = "temporal_propagation"
+        source_model_frame_id = adaptive_state.get("last_model_frame_id")
+
     if dynamic_tracker is not None:
         dynamic_tracker.record_decision(result)
+    adaptive_state["last_candidate_ids"] = set(candidate_ids)
+    adaptive_state["last_final_decision"] = copy.deepcopy(result)
+
+    generation_stats = (
+        dict(getattr(grounder, "last_generation_stats", {}) or {})
+        if invoke_model
+        else {}
+    )
+    base_performance.update(
+        {
+            "model_seconds": round(model_seconds, 6),
+            "input_tokens": generation_stats.get("input_tokens"),
+            "output_tokens": generation_stats.get("output_tokens"),
+            "generation_attempts": generation_stats.get(
+                "attempts",
+                1 if invoke_model else 0,
+            ),
+            "processor_seconds": generation_stats.get("processor_seconds"),
+            "generate_seconds": generation_stats.get("generate_seconds"),
+            "decode_seconds": generation_stats.get("decode_seconds"),
+        }
+    )
+    base_performance["frame_total_seconds"] = round(
+        time.perf_counter() - frame_started,
+        6,
+    )
 
     return {
         "frame_id": frame_input.get("frame_id"),
@@ -1240,6 +1624,13 @@ def _run_decision_for_frame(
         "online_history": previous_summary,
         "task_schema": task_schema.to_dict() if task_schema is not None else {},
         "dynamic_role_context": dynamic_role_context,
+        "model_invoked": invoke_model,
+        "model_skipped": not invoke_model,
+        "decision_source": decision_source,
+        "source_model_frame_id": source_model_frame_id,
+        "refresh_reasons": refresh_reasons,
+        "performance": base_performance,
+        "model_error": model_error,
         "decision": {
             "instruction_compatible_object_ids": result.get(
                 "instruction_compatible_object_ids", []
@@ -1272,6 +1663,8 @@ def _build_output_document(
     frame_decisions: Sequence[Mapping[str, Any]],
     decision_scope: str,
     dry_run: bool,
+    decision_policy: str = "every-frame",
+    model_runtime: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not frame_decisions:
         raise ValueError("Cannot build object predictions without frame decisions")
@@ -1279,6 +1672,7 @@ def _build_output_document(
     output = {
         "object_summary_json": str(summary_path),
         "decision_scope": decision_scope,
+        "decision_policy": decision_policy,
         "decision_frame_id": final_entry.get("frame_id"),
         "decision_frame_index": final_entry.get("frame_index"),
         "instruction_prior": summary.get("instruction_prior"),
@@ -1286,6 +1680,42 @@ def _build_output_document(
         "task_schema": final_entry.get("task_schema", {}),
         "candidate_ids": final_entry.get("candidate_ids", []),
         "frame_decisions": list(frame_decisions),
+    }
+    performance_rows = [
+        dict(item.get("performance", {})) for item in frame_decisions
+    ]
+    output["performance"] = {
+        "frame_count": len(frame_decisions),
+        "model_call_count": sum(
+            1 for item in frame_decisions if item.get("model_invoked")
+        ),
+        "propagated_frame_count": sum(
+            1
+            for item in frame_decisions
+            if item.get("decision_source") == "temporal_propagation"
+        ),
+        "model_load": dict(model_runtime or {}),
+        "total_frame_seconds": round(
+            sum(float(item.get("frame_total_seconds") or 0.0) for item in performance_rows),
+            6,
+        ),
+        "total_model_seconds": round(
+            sum(float(item.get("model_seconds") or 0.0) for item in performance_rows),
+            6,
+        ),
+        "total_contact_sheet_seconds": round(
+            sum(float(item.get("contact_sheet_seconds") or 0.0) for item in performance_rows),
+            6,
+        ),
+        "total_input_tokens": sum(
+            int(item.get("input_tokens") or 0) for item in performance_rows
+        ),
+        "total_output_tokens": sum(
+            int(item.get("output_tokens") or 0) for item in performance_rows
+        ),
+        "total_input_visual_pixels": sum(
+            int(item.get("input_visual_pixels") or 0) for item in performance_rows
+        ),
     }
     if dry_run:
         output["dry_run"] = True
@@ -1373,7 +1803,9 @@ def main() -> None:
         model_path=args.model_path,
         grounding_min_side=args.grounding_min_side,
         max_retries=args.max_retries,
+        attention_backend=args.attention_backend,
     )
+    model_runtime = dict(getattr(grounder, "load_stats", {}) or {})
 
     for online_step, frame_input in enumerate(frames_to_decide):
         print(
@@ -1399,6 +1831,8 @@ def main() -> None:
             frame_decisions,
             effective_scope,
             args.dry_run,
+            decision_policy=args.decision_policy,
+            model_runtime=model_runtime,
         )
         atomic_json_dump(output, output_path)
         if not args.dry_run:
@@ -1408,7 +1842,9 @@ def main() -> None:
                 f"frame_id={frame_decision.get('frame_id')} "
                 f"target={decision.get('target_object_id')} "
                 f"reference={decision.get('reference_object_id')} "
-                f"confidence={decision.get('confidence')}",
+                f"confidence={decision.get('confidence')} "
+                f"source={frame_decision.get('decision_source')} "
+                f"model_invoked={frame_decision.get('model_invoked')}",
                 flush=True,
             )
 
@@ -1420,6 +1856,10 @@ def main() -> None:
                 "decision_scope": effective_scope,
                 "decision_frame_id": final_decision_entry.get("frame_id"),
                 "frame_count": len(frame_decisions),
+                "decision_policy": args.decision_policy,
+                "model_call_count": sum(
+                    1 for item in frame_decisions if item.get("model_invoked")
+                ),
                 "decision_artifacts_dir": str(artifacts_path),
                 "dry_run": bool(args.dry_run),
             },

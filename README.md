@@ -236,23 +236,30 @@ Set `SKIP_VIZ=1` in the shell pipeline to omit this stage.
 ### Stage 4: Qwen3-VL object-level role decision (optional)
 
 `qwen3vl_object_role_decision.py` consumes Stage 2's object summary rather than
-raw SAM role IDs. By default it makes one online decision for every frame. Each
-decision uses a rolling temporal window ending at the current frame, complete
-per-frame candidate/relationship evidence, and chronological object-ID contact
-sheets. The top-level `decision` remains the last frame's result for backward
-compatibility, while `frame_decisions` contains the complete episode.
+raw SAM role IDs. Every sampled frame receives a decision using a rolling
+temporal window ending at the current frame. The pipeline defaults to adaptive
+Qwen keyframes: stable frames reuse semantic compatibility from the latest
+model call while recalculating current `t-2 -> t` geometry, gripper state, and
+dynamic roles. Direct CLI use defaults to `every-frame` for compatibility. The
+top-level `decision` remains the last frame's result, while `frame_decisions`
+contains the complete episode and per-frame performance/source metadata.
 
 | Python argument | Pipeline variable | Default | Purpose |
 | --- | --- | --- | --- |
 | `--object-summary-json` | `OBJECT_SUMMARY_JSON` or derived | required | Decision-ready Stage 2 summary. |
 | `--output-json` | `DECISION_OUTPUT_JSON` | `object_predictions.json` | Selection result path. |
 | `--model-path` | `DECISION_MODEL_PATH` / `MODEL_PATH` | script model path | Qwen3-VL checkpoint for selection. |
-| `--decision-scope` | `DECISION_SCOPE` | `all` | `all` runs one rolling-window model call per frame; `single` selects one frame. |
+| `--decision-scope` | `DECISION_SCOPE` | `all` | `all` emits every frame; `single` selects one frame. |
+| `--decision-policy` | `DECISION_POLICY` | CLI `every-frame`; pipeline `adaptive` | Select per-frame Qwen calls or adaptive keyframe refresh plus temporal propagation. |
+| `--decision-refresh-interval` | `DECISION_REFRESH_INTERVAL` | `5` | Maximum stable sampled-frame interval between adaptive Qwen refreshes. |
+| `--decision-min-propagation-confidence` | `DECISION_MIN_PROPAGATION_CONFIDENCE` | `0.70` | Refresh Qwen when propagated confidence falls below this value. |
 | `--decision-frame` | `DECISION_FRAME` | `last` | Select the `first` or `last` frame when scope is `single`. |
 | `--decision-frame-id` | `DECISION_FRAME_ID` | unset | Explicit frame ID; when set it forces a single-frame decision. |
 | `--decision-window-frames` | `DECISION_WINDOW_FRAMES` | `3` | Current frame `t` plus its two preceding frames `[t-2, t-1, t]` (when available), evaluated in one model call; `1` is single-frame mode. |
 | `--[no-]use-decision-history` | `USE_DECISION_HISTORY` | off / `0` | Optionally feed recent model outputs back into the prompt. Off by default so an early wrong target does not propagate. |
-| `--max-candidate-images` | `MAX_CANDIDATE_IMAGES` | `8` | Maximum chronological object contact sheets attached to each prompt. |
+| `--max-candidate-images` | `MAX_CANDIDATE_IMAGES` | `3` | Maximum chronological contact sheets attached to each Qwen keyframe. |
+| `--candidate-views-per-object` | `CANDIDATE_VIEWS_PER_OBJECT` | `1` | Best-scoring camera crop count per object in each contact sheet. |
+| `--decision-max-visual-pixels` | `DECISION_MAX_VISUAL_PIXELS` | `393216` | Maximum pixels per contact sheet before model input. |
 | `--decision-artifacts-dir` | `DECISION_ARTIFACTS_DIR` | `decision_inputs/` | Contact-sheet output directory. |
 | `--max-candidates-for-decision` | `MAX_CANDIDATES_FOR_DECISION` | `12` | Candidate cap after filtering. |
 | `--min-candidate-point-count` | `MIN_CANDIDATE_POINT_COUNT` | `0` (off) | Remove sparse fused objects. |
@@ -267,9 +274,10 @@ compatibility, while `frame_decisions` contains the complete episode.
 | `--min-support-xy-overlap` | `MIN_SUPPORT_XY_OVERLAP` | `0.35` | Minimum smaller-bbox XY overlap for `ON`/support evidence. |
 | `--min-support-vertical-gap-m`, `--max-support-vertical-gap-m` | matching pipeline variables | `-0.01`, `0.025` m | Accepted vertical gap between an upper object and support. |
 | `--min-containment-ratio` | `MIN_CONTAINMENT_RATIO` | `0.5` | Minimum source bbox fraction inside a goal container bbox. |
-| `--grounding-min-side` | — | `512` | Minimum short side for Qwen input images. |
-| `--max-new-tokens` | `DECISION_MAX_NEW_TOKENS` | `1024` | Structured response generation budget. |
-| `--max-retries` | — | `1` | Retry malformed model output. |
+| `--grounding-min-side` | `DECISION_GROUNDING_MIN_SIDE` | `512` | Compatibility setting for shared grounder operations; Stage 4 sheets use the pixel cap above. |
+| `--attention-backend` | `DECISION_ATTENTION_BACKEND` | `auto` | Prefer FlashAttention 2 when installed, otherwise SDPA/eager. |
+| `--max-new-tokens` | `DECISION_MAX_NEW_TOKENS` | `384` | Structured response generation budget per Qwen keyframe. |
+| `--max-retries` | `DECISION_MAX_RETRIES` | `0` | Optional malformed-output retry; adaptive mode instead marks uncertainty and refreshes next frame. |
 | `--dry-run` | — | off | Save the exact decision payload without running Qwen. |
 
 Enable this stage with `SKIP_DECISION=0`. Doing so also enables object-summary
@@ -278,6 +286,13 @@ for excluding fragments, but aggressive thresholds can discard the true task
 object. A non-relational instruction is allowed to produce a confident
 `reference_object_id=null`; descriptive colors, bases, or parts do not by
 themselves create a separate reference object.
+
+Each frame records `model_invoked`, `decision_source`,
+`source_model_frame_id`, `refresh_reasons`, and preprocessing/generation token
+statistics. The top-level `performance` block aggregates model calls, propagated
+frames, contact-sheet time, model time, visual pixels, and input/output tokens.
+Malformed JSON is marked uncertain and schedules another adaptive refresh on
+the next frame instead of immediately repeating an expensive call.
 
 Target selection is explicitly two-stage. Qwen first returns
 `instruction_compatible_object_ids` from visual and instruction identity cues.
@@ -432,6 +447,7 @@ used options include:
 | `SKIP_VIZ` | `0` | Disable fusion visualizations |
 | `SKIP_DECISION` | `1` | Set to `0` to run object-level role selection |
 | `DECISION_SCOPE` | `all` | Run one rolling-window decision per frame; use `single` for debugging |
+| `DECISION_POLICY` | `adaptive` | Emit every-frame decisions while limiting Qwen calls to keyframes/events |
 | `SKIP_DECISION_VIZ` | `0` | Disable decision overlays when selection runs |
 | `SKIP_STAGE_COMPARE` | `1` | Set to `0` to create comparison montages |
 

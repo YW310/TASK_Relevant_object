@@ -16,10 +16,13 @@ from __future__ import annotations
 
 import argparse
 import html
+import importlib.util
 import json
 import pickle
 import re
+import sys
 import textwrap
+import time
 import traceback
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -245,6 +248,7 @@ class Qwen3VLRLBenchGrounder:
         model_path: str,
         grounding_min_side: int = 512,
         max_retries: int = 1,
+        attention_backend: str = "auto",
     ) -> None:
         if (
             AutoProcessor is None
@@ -262,11 +266,48 @@ class Qwen3VLRLBenchGrounder:
             else Qwen3VLForConditionalGeneration
         )
 
-        self.model = model_cls.from_pretrained(
-            model_path,
-            dtype="auto",
-            device_map="auto",
-        )
+        if torch.cuda.is_available():
+            model_dtype = (
+                torch.bfloat16
+                if hasattr(torch.cuda, "is_bf16_supported")
+                and torch.cuda.is_bf16_supported()
+                else torch.float16
+            )
+        else:
+            model_dtype = torch.float32
+        if attention_backend == "auto":
+            attention_candidates = []
+            if (
+                torch.cuda.is_available()
+                and importlib.util.find_spec("flash_attn") is not None
+            ):
+                attention_candidates.append("flash_attention_2")
+            if hasattr(torch.nn.functional, "scaled_dot_product_attention"):
+                attention_candidates.append("sdpa")
+            attention_candidates.append("eager")
+        else:
+            attention_candidates = [attention_backend]
+
+        load_started = time.perf_counter()
+        selected_attention = attention_candidates[0]
+        for candidate_index, selected_attention in enumerate(attention_candidates):
+            load_kwargs = {
+                "dtype": model_dtype,
+                "device_map": "auto",
+                "attn_implementation": selected_attention,
+            }
+            try:
+                self.model = model_cls.from_pretrained(model_path, **load_kwargs)
+                break
+            except (ImportError, RuntimeError, ValueError) as exc:
+                if candidate_index + 1 >= len(attention_candidates):
+                    raise
+                fallback = attention_candidates[candidate_index + 1]
+                print(
+                    f"[warn] {selected_attention} initialization failed; "
+                    f"falling back to {fallback}: {exc}",
+                    file=sys.stderr,
+                )
         self.model.eval()
         self.processor = AutoProcessor.from_pretrained(model_path)
         self.max_model_input_tokens = 100000
@@ -277,11 +318,32 @@ class Qwen3VLRLBenchGrounder:
         generation_config = getattr(self.model, "generation_config", None)
         if generation_config is not None:
             generation_config.do_sample = False
+            generation_config.use_cache = True
             for sampling_attr in ("temperature", "top_p", "top_k"):
                 if hasattr(generation_config, sampling_attr):
                     setattr(generation_config, sampling_attr, None)
         self.grounding_min_side = grounding_min_side
         self.max_retries = max_retries
+        self.attention_backend = selected_attention
+        self.last_generation_stats: dict[str, Any] = {}
+        device_map = getattr(self.model, "hf_device_map", {}) or {}
+        offloaded_modules = {
+            str(name): str(device)
+            for name, device in device_map.items()
+            if str(device).lower() in {"cpu", "disk"}
+        }
+        if offloaded_modules:
+            print(
+                "[warn] Qwen3-VL has CPU/disk-offloaded modules; inference can be "
+                f"very slow: {offloaded_modules}",
+                file=sys.stderr,
+            )
+        self.load_stats = {
+            "load_seconds": round(time.perf_counter() - load_started, 6),
+            "attention_backend": selected_attention,
+            "dtype": str(model_dtype),
+            "offloaded_modules": offloaded_modules,
+        }
 
     @property
     def input_device(self) -> torch.device:
@@ -293,6 +355,7 @@ class Qwen3VLRLBenchGrounder:
         max_new_tokens: int,
     ) -> str:
         # This intentionally follows the inference path already verified by the user.
+        processor_started = time.perf_counter()
         inputs = self.processor.apply_chat_template(
             messages,
             tokenize=True,
@@ -303,23 +366,42 @@ class Qwen3VLRLBenchGrounder:
             truncation=False,
         )
         inputs = inputs.to(self.input_device)
+        processor_seconds = time.perf_counter() - processor_started
 
+        generate_started = time.perf_counter()
         with torch.inference_mode():
             generated_ids = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
+                use_cache=True,
             )
+        generate_seconds = time.perf_counter() - generate_started
 
         generated_ids_trimmed = [
             output_ids[len(input_ids) :]
             for input_ids, output_ids in zip(inputs.input_ids, generated_ids)
         ]
-        return self.processor.batch_decode(
+        decode_started = time.perf_counter()
+        decoded = self.processor.batch_decode(
             generated_ids_trimmed,
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
         )[0]
+        decode_seconds = time.perf_counter() - decode_started
+        self.last_generation_stats = {
+            "attempts": 1,
+            "input_tokens": int(inputs.input_ids.shape[-1]),
+            "output_tokens": int(sum(len(item) for item in generated_ids_trimmed)),
+            "processor_seconds": round(processor_seconds, 6),
+            "generate_seconds": round(generate_seconds, 6),
+            "decode_seconds": round(decode_seconds, 6),
+            "total_seconds": round(
+                processor_seconds + generate_seconds + decode_seconds,
+                6,
+            ),
+        }
+        return decoded
 
     def generate_json(
         self,
@@ -328,11 +410,33 @@ class Qwen3VLRLBenchGrounder:
     ) -> tuple[dict[str, Any], str]:
         last_error: Exception | None = None
         raw_text = ""
+        aggregate = {
+            "attempts": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "processor_seconds": 0.0,
+            "generate_seconds": 0.0,
+            "decode_seconds": 0.0,
+            "total_seconds": 0.0,
+        }
 
         for _ in range(self.max_retries + 1):
             raw_text = self.generate_text(messages, max_new_tokens)
+            attempt_stats = dict(self.last_generation_stats)
+            aggregate["attempts"] += 1
+            for key in (
+                "input_tokens",
+                "output_tokens",
+                "processor_seconds",
+                "generate_seconds",
+                "decode_seconds",
+                "total_seconds",
+            ):
+                aggregate[key] += attempt_stats.get(key, 0) or 0
             try:
-                return extract_json(raw_text), raw_text
+                result = extract_json(raw_text)
+                self.last_generation_stats = aggregate
+                return result, raw_text
             except (ValueError, json.JSONDecodeError) as exc:
                 last_error = exc
                 messages = [
@@ -352,6 +456,7 @@ class Qwen3VLRLBenchGrounder:
                     },
                 ]
 
+        self.last_generation_stats = aggregate
         raise RuntimeError(f"Failed to parse JSON: {last_error}; output={raw_text!r}")
 
     def load_view(self, path: str | Path) -> tuple[Image.Image, Image.Image]:
