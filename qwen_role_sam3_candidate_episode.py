@@ -127,6 +127,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum mask area in pixels. Keep this small for tiny RLBench candidates.",
     )
     parser.add_argument(
+        "--split-disconnected-masks",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Split disconnected regions from one SAM3 mask into separate candidates "
+            "before computing mask bboxes."
+        ),
+    )
+    parser.add_argument(
+        "--max-mask-components",
+        type=int,
+        default=4,
+        help=(
+            "Maximum connected regions retained from one SAM3 mask after filtering "
+            "by --min-mask-area (0 keeps all)."
+        ),
+    )
+    parser.add_argument(
         "--prompt-variants",
         type=int,
         default=5,
@@ -143,8 +161,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--canonical-containment", type=float, default=0.90,
                         help="Minimum smaller-mask coverage for canonicalizing partial/whole masks.")
+    parser.add_argument(
+        "--canonical-max-area-ratio",
+        type=float,
+        default=3.0,
+        help=(
+            "Maximum larger/smaller mask area ratio allowed for containment-based "
+            "canonicalization (0 disables the area-ratio guard)."
+        ),
+    )
     parser.add_argument("--canonical-bbox-iou", type=float, default=0.0,
                         help="Optional bbox IoU support threshold; 0 disables bbox-only support.")
+    parser.add_argument(
+        "--suppress-multi-instance-masks",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Drop a broad same-role mask that strongly contains two or more "
+            "independent canonical candidates."
+        ),
+    )
     parser.add_argument("--mask-alpha", type=int, default=105)
     parser.add_argument(
         "--save-frame-contact-sheet",
@@ -291,13 +327,16 @@ def bbox_iou_2d(a: Sequence[float] | None, b: Sequence[float] | None) -> float:
 def canonicalize_candidates(
     candidates: Sequence[dict[str, Any]], iou_threshold: float,
     containment_threshold: float, bbox_iou_threshold: float = 0.0,
+    max_containment_area_ratio: float = 3.0,
+    suppress_multi_instance_masks: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Collapse prompt/role duplicates without joining merely adjacent objects.
 
-    The highest-scoring mask is the canonical mask. A candidate joins it only
-    with strong pixel IoU, smaller-mask containment, or (when explicitly
-    enabled) bbox overlap *and* non-zero pixel overlap. Role scores use noisy-OR
-    over raw SAM scores; ``prompt_provenance`` retains every input value.
+    The highest-scoring mask is the canonical mask. A candidate joins it with
+    strong pixel IoU, or with same-role containment/bbox support guarded by mask
+    area similarity. Broad same-role group masks containing multiple independent
+    candidates can be suppressed. Role scores use noisy-OR over raw SAM scores;
+    ``prompt_provenance`` retains every input value.
     """
     groups: list[list[dict[str, Any]]] = []
     for candidate in sorted(candidates, key=lambda c: float(c["score"]), reverse=True):
@@ -306,9 +345,31 @@ def canonicalize_candidates(
             representative = group[0]
             iou, coverage = mask_overlap_metrics(candidate["mask"], representative["mask"])
             biou = bbox_iou_2d(candidate.get("mask_bbox_xyxy"), representative.get("mask_bbox_xyxy"))
-            if (iou >= iou_threshold or coverage >= containment_threshold or
-                    (bbox_iou_threshold > 0 and biou >= bbox_iou_threshold and coverage >= 0.50)):
-                matches.append((index, iou, coverage, biou))
+            candidate_area = int(candidate["mask"].sum())
+            representative_area = int(representative["mask"].sum())
+            smaller_area = min(candidate_area, representative_area)
+            area_ratio = (
+                max(candidate_area, representative_area) / smaller_area
+                if smaller_area > 0
+                else float("inf")
+            )
+            same_role = str(candidate.get("role")) == str(representative.get("role"))
+            containment_match = (
+                same_role
+                and coverage >= containment_threshold
+                and (
+                    max_containment_area_ratio <= 0.0
+                    or area_ratio <= max_containment_area_ratio
+                )
+            )
+            bbox_support_match = (
+                same_role
+                and bbox_iou_threshold > 0
+                and biou >= bbox_iou_threshold
+                and coverage >= 0.50
+            )
+            if iou >= iou_threshold or containment_match or bbox_support_match:
+                matches.append((index, iou, coverage, biou, area_ratio))
         # Do not bridge two distinct objects through a broad/ambiguous mask.
         if len(matches) == 1:
             groups[matches[0][0]].append(candidate)
@@ -343,6 +404,50 @@ def canonicalize_candidates(
                        "role_scores": role_scores, "prompt_provenance": provenance,
                        "mask": representative["mask"]})
         canonical.append(output)
+
+    if suppress_multi_instance_masks:
+        retained = []
+        broad_ratio_threshold = (
+            max(1.5, float(max_containment_area_ratio))
+            if max_containment_area_ratio > 0.0
+            else 1.5
+        )
+        for candidate in canonical:
+            candidate_mask = candidate["mask"]
+            candidate_area = int(candidate_mask.sum())
+            candidate_roles = set(candidate.get("role_scores", {}))
+            contained_by_role: dict[str, list[str]] = {}
+            for other in canonical:
+                if other is candidate:
+                    continue
+                other_mask = other["mask"]
+                other_area = int(other_mask.sum())
+                if other_area <= 0 or candidate_area / other_area <= broad_ratio_threshold:
+                    continue
+                intersection = int(np.logical_and(candidate_mask, other_mask).sum())
+                if intersection / other_area < containment_threshold:
+                    continue
+                for role in candidate_roles.intersection(other.get("role_scores", {})):
+                    contained_by_role.setdefault(role, []).append(
+                        str(other["canonical_observation_id"])
+                    )
+            ambiguous_roles = {
+                role: ids for role, ids in contained_by_role.items() if len(ids) >= 2
+            }
+            if ambiguous_roles:
+                suppressed.append(
+                    {
+                        "original_candidate_id": candidate["id"],
+                        "canonical_observation_id": candidate[
+                            "canonical_observation_id"
+                        ],
+                        "reason": "contains_multiple_same_role_instances",
+                        "contained_candidates_by_role": ambiguous_roles,
+                    }
+                )
+            else:
+                retained.append(candidate)
+        canonical = retained
     return canonical, suppressed
 
 
@@ -363,6 +468,84 @@ def mask_bbox(mask: np.ndarray) -> list[int] | None:
     if len(xs) == 0:
         return None
     return [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
+
+
+def split_mask_components(
+    mask: np.ndarray,
+    min_area: int,
+    max_components: int = 0,
+) -> list[np.ndarray]:
+    """Return the significant 8-connected regions of a binary mask.
+
+    SAM3 occasionally emits one mask containing several disconnected object
+    instances. Computing a single min/max bbox around that mask makes those
+    instances appear to be one candidate. Splitting here preserves each region
+    as an independent candidate before canonicalization and 3D fusion.
+    """
+    foreground = np.asarray(mask, dtype=bool)
+    if foreground.ndim != 2:
+        raise ValueError(f"Expected a 2D mask, got shape {foreground.shape}.")
+
+    height, width = foreground.shape
+    visited = np.zeros_like(foreground, dtype=bool)
+    components: list[np.ndarray] = []
+    min_area = max(1, int(min_area))
+
+    for start_y, start_x in np.argwhere(foreground):
+        y0, x0 = int(start_y), int(start_x)
+        if visited[y0, x0]:
+            continue
+        visited[y0, x0] = True
+        stack = [(y0, x0)]
+        pixels: list[tuple[int, int]] = []
+        while stack:
+            y, x = stack.pop()
+            pixels.append((y, x))
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    if dy == 0 and dx == 0:
+                        continue
+                    ny, nx = y + dy, x + dx
+                    if (
+                        0 <= ny < height
+                        and 0 <= nx < width
+                        and foreground[ny, nx]
+                        and not visited[ny, nx]
+                    ):
+                        visited[ny, nx] = True
+                        stack.append((ny, nx))
+        if len(pixels) < min_area:
+            continue
+        component = np.zeros_like(foreground, dtype=bool)
+        ys, xs = zip(*pixels)
+        component[np.asarray(ys), np.asarray(xs)] = True
+        components.append(component)
+
+    components.sort(key=lambda item: int(item.sum()), reverse=True)
+    if max_components > 0:
+        components = components[: int(max_components)]
+    return components
+
+
+def candidate_generation_parameters(
+    args: argparse.Namespace,
+    threshold: float,
+) -> dict[str, Any]:
+    """Parameters whose changes require regenerating cached Stage-1 masks."""
+    return {
+        "threshold": float(threshold),
+        "candidate_pool_size": int(args.candidate_pool_size),
+        "min_mask_area": int(args.min_mask_area),
+        "split_disconnected_masks": bool(args.split_disconnected_masks),
+        "max_mask_components": int(args.max_mask_components),
+        "prompt_variants": int(args.prompt_variants),
+        "mask_nms_iou": float(args.mask_nms_iou),
+        "canonical_containment": float(args.canonical_containment),
+        "canonical_max_area_ratio": float(args.canonical_max_area_ratio),
+        "canonical_bbox_iou": float(args.canonical_bbox_iou),
+        "suppress_multi_instance_masks": bool(args.suppress_multi_instance_masks),
+        "top_k_per_role": int(args.top_k_per_role),
+    }
 
 
 def save_crop_sets(image: Image.Image, mask: np.ndarray, bbox: Sequence[int], stem: str, out_dir: Path) -> tuple[str, str, str]:
@@ -497,13 +680,21 @@ def process_camera(
         out_dir / "numbered_candidates.png",
         out_dir / "candidate_grid.png",
     )
+    threshold = resolve_camera_threshold(camera, camera_threshold_overrides or {}, args.threshold)
+    generation_parameters = candidate_generation_parameters(args, threshold)
     if args.resume and all(path.is_file() for path in resume_files):
+        cached = json.loads((out_dir / "candidates.json").read_text(encoding="utf-8"))
+        if cached.get("generation_parameters") == generation_parameters:
+            if args.progress and progress_label:
+                print(f"SAM3 progress {progress_label}: resume cached candidates", flush=True)
+            return cached
         if args.progress and progress_label:
-            print(f"SAM3 progress {progress_label}: resume cached candidates", flush=True)
-        return json.loads((out_dir / "candidates.json").read_text(encoding="utf-8"))
+            print(
+                f"SAM3 progress {progress_label}: cached parameters changed; regenerating",
+                flush=True,
+            )
     out_dir.mkdir(parents=True, exist_ok=True)
     image = Image.open(image_path).convert("RGB")
-    threshold = resolve_camera_threshold(camera, camera_threshold_overrides or {}, args.threshold)
     if args.progress and progress_label:
         print(f"SAM3 progress {progress_label}: start {image_path} (threshold={threshold})", flush=True)
     generated_candidates: list[dict[str, Any]] = []
@@ -535,26 +726,42 @@ def process_camera(
                     flush=True,
                 )
             for output_index, (mask, score) in enumerate(zip(masks, scores)):
-                bbox = mask_bbox(mask)
-                if bbox is None:
-                    continue
-                area = int(mask.sum())
-                if area < args.min_mask_area:
-                    continue
-                item: dict[str, Any] = {
-                    "role": role,
-                    "text_prompt": prompt,
-                    "source_prompt": prompt,
-                    "prompt_index": prompt_index,
-                    "sam_output_index": output_index,
-                    "score": float(score),
-                    "mask_bbox_xyxy": bbox,
-                    "mask_area_pixels": area,
-                    "mask": mask,
-                }
-                if boxes is not None and output_index < len(boxes):
-                    item["sam_box_xyxy"] = [float(v) for v in boxes[output_index]]
-                role_candidates.append(item)
+                source_area = int(mask.sum())
+                if args.split_disconnected_masks:
+                    components = split_mask_components(
+                        mask,
+                        args.min_mask_area,
+                        args.max_mask_components,
+                    )
+                elif source_area >= args.min_mask_area:
+                    components = [np.asarray(mask, dtype=bool)]
+                else:
+                    components = []
+                for component_index, component in enumerate(components):
+                    bbox = mask_bbox(component)
+                    if bbox is None:
+                        continue
+                    area = int(component.sum())
+                    item: dict[str, Any] = {
+                        "role": role,
+                        "text_prompt": prompt,
+                        "source_prompt": prompt,
+                        "prompt_index": prompt_index,
+                        "sam_output_index": output_index,
+                        "sam_mask_component_index": component_index,
+                        "sam_mask_component_count": len(components),
+                        "sam_source_mask_area_pixels": source_area,
+                        "sam_mask_component_area_ratio": (
+                            float(area / source_area) if source_area > 0 else 0.0
+                        ),
+                        "score": float(score),
+                        "mask_bbox_xyxy": bbox,
+                        "mask_area_pixels": area,
+                        "mask": component,
+                    }
+                    if boxes is not None and output_index < len(boxes):
+                        item["sam_box_xyxy"] = [float(v) for v in boxes[output_index]]
+                    role_candidates.append(item)
 
         # IDs describe the raw role-prefixed SAM outputs. Canonical IDs below
         # are the stable per-view identities consumed by fusion.
@@ -564,7 +771,8 @@ def process_camera(
 
     canonical, suppressed = canonicalize_candidates(
         generated_candidates, args.mask_nms_iou, args.canonical_containment,
-        args.canonical_bbox_iou,
+        args.canonical_bbox_iou, args.canonical_max_area_ratio,
+        args.suppress_multi_instance_masks,
     )
     # Preserve the old per-role top-k control without discarding provenance:
     # retain a canonical object if it is in the top-k for at least one role.
@@ -601,6 +809,7 @@ def process_camera(
         "image_path": str(image_path),
         "candidates": candidates,
         "prompt_attempts": prompt_attempts,
+        "generation_parameters": generation_parameters,
         "canonicalization": {
             "aggregation": "noisy_or",
             "input_candidates": len(generated_candidates),

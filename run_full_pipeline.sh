@@ -22,9 +22,13 @@
 #   USE_BF16 (default: 0)                   Set to 1 to enable bf16 autocast.
 #   THRESHOLD (default: 0.25)               SAM3 confidence threshold.
 #   CAMERA_THRESHOLD_OVERRIDES              e.g. "left_shoulder=0.15,right_shoulder=0.15".
+#   SPLIT_DISCONNECTED_MASKS (default: 1)   Split disconnected SAM3 mask regions before bbox generation.
+#   MAX_MASK_COMPONENTS (default: 4)        Max significant regions retained from one SAM3 mask (0=all).
 #   MASK_NMS_IOU (default: 0.80)             Stage-1 same-role NMS and cross-role canonical mask IoU.
 #   CANONICAL_CONTAINMENT (default: 0.90)    Stage-1 smaller-mask coverage for canonical observations.
+#   CANONICAL_MAX_AREA_RATIO (default: 3.0)  Guard containment merging across very different mask sizes.
 #   CANONICAL_BBOX_IOU (default: 0.0)        Optional Stage-1 bbox IoU support (0=off).
+#   SUPPRESS_MULTI_INSTANCE_MASKS (default: 1) Drop broad masks containing 2+ same-role instances.
 #   CLUSTER_DISTANCE_M (default: 0.03)      Fusion clustering centroid distance threshold.
 #   LEGACY_CANONICAL_IOU (default: 0.35)     Stage-2 IoU for deduplicating legacy candidate JSON.
 #   LEGACY_CANONICAL_CONTAINMENT (default: 0.50) Stage-2 smaller-mask coverage for legacy JSON.
@@ -132,10 +136,14 @@ COMPILE_MODEL="${COMPILE_MODEL:-0}"
 TOP_K_PER_ROLE="${TOP_K_PER_ROLE:-8}"
 CANDIDATE_POOL_SIZE="${CANDIDATE_POOL_SIZE:-20}"
 MIN_MASK_AREA="${MIN_MASK_AREA:-4}"
+SPLIT_DISCONNECTED_MASKS="${SPLIT_DISCONNECTED_MASKS:-1}"
+MAX_MASK_COMPONENTS="${MAX_MASK_COMPONENTS:-4}"
 PROMPT_VARIANTS="${PROMPT_VARIANTS:-5}"
 MASK_NMS_IOU="${MASK_NMS_IOU:-0.80}"
 CANONICAL_CONTAINMENT="${CANONICAL_CONTAINMENT:-0.90}"
+CANONICAL_MAX_AREA_RATIO="${CANONICAL_MAX_AREA_RATIO:-3.0}"
 CANONICAL_BBOX_IOU="${CANONICAL_BBOX_IOU:-0.0}"
+SUPPRESS_MULTI_INSTANCE_MASKS="${SUPPRESS_MULTI_INSTANCE_MASKS:-1}"
 CANDIDATE_MASK_ALPHA="${CANDIDATE_MASK_ALPHA:-105}"
 SAVE_FRAME_CONTACT_SHEET="${SAVE_FRAME_CONTACT_SHEET:-1}"
 VISUALIZATION_CELL_WIDTH="${VISUALIZATION_CELL_WIDTH:-384}"
@@ -259,9 +267,11 @@ else
     --top-k-per-role "${TOP_K_PER_ROLE}"
     --candidate-pool-size "${CANDIDATE_POOL_SIZE}"
     --min-mask-area "${MIN_MASK_AREA}"
+    --max-mask-components "${MAX_MASK_COMPONENTS}"
     --prompt-variants "${PROMPT_VARIANTS}"
     --mask-nms-iou "${MASK_NMS_IOU}"
     --canonical-containment "${CANONICAL_CONTAINMENT}"
+    --canonical-max-area-ratio "${CANONICAL_MAX_AREA_RATIO}"
     --canonical-bbox-iou "${CANONICAL_BBOX_IOU}"
     --mask-alpha "${CANDIDATE_MASK_ALPHA}"
     --visualization-cell-width "${VISUALIZATION_CELL_WIDTH}"
@@ -269,6 +279,8 @@ else
   )
   [[ "${USE_BF16}" != "1" ]] && STAGE1_ARGS+=(--no-bf16)
   [[ "${COMPILE_MODEL}" == "1" ]] && STAGE1_ARGS+=(--compile)
+  [[ "${SPLIT_DISCONNECTED_MASKS}" == "1" ]] && STAGE1_ARGS+=(--split-disconnected-masks) || STAGE1_ARGS+=(--no-split-disconnected-masks)
+  [[ "${SUPPRESS_MULTI_INSTANCE_MASKS}" == "1" ]] && STAGE1_ARGS+=(--suppress-multi-instance-masks) || STAGE1_ARGS+=(--no-suppress-multi-instance-masks)
   [[ "${SAVE_FRAME_CONTACT_SHEET}" == "1" ]] && STAGE1_ARGS+=(--save-frame-contact-sheet) || STAGE1_ARGS+=(--no-save-frame-contact-sheet)
   [[ "${CANDIDATE_RESUME}" == "1" ]] && STAGE1_ARGS+=(--resume)
   [[ "${CANDIDATE_PROGRESS}" == "1" ]] && STAGE1_ARGS+=(--progress) || STAGE1_ARGS+=(--no-progress)

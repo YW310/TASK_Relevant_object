@@ -77,7 +77,7 @@ Rules:
 4. Do not invent unsupported view-specific statements such as "on the floor",
    "behind the robot", or "under another object".
 5. Describe only stable identity cues needed to find the same instance in another view.
-6. For every non-null role, include sam_prompts: 3 to 5 short text prompts that SAM3 can use to segment the object or part. Prefer concise noun phrases, aliases, and visually grounded variants; do not include long instructions.
+6. For every non-null role, include sam_prompts: 3 to 5 short text prompts that SAM3 can use to segment exactly one object instance or local part. Prefer singular concise noun phrases with discriminative color/shape cues. Never use a collection, object group, whole panel, supporting surface, or surrounding assembly unless that entire entity is explicitly the requested role; do not include long instructions.
 7. For every non-null role, include negative_cues: objects or regions that must not be selected.
 8. Do not output bounding boxes in this stage.
 9. Return one valid JSON object only.

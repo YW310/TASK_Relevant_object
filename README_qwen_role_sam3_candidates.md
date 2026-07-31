@@ -227,7 +227,11 @@ python qwen_role_sam3_candidate_episode.py \
   --candidate-pool-size 20 \
   --prompt-variants 5 \
   --top-k-per-role 8 \
-  --min-mask-area 4
+  --min-mask-area 4 \
+  --split-disconnected-masks \
+  --max-mask-components 4 \
+  --canonical-max-area-ratio 3.0 \
+  --suppress-multi-instance-masks
 ```
 
 Use `--prompt-variants 1` to only try the shortest role name, or increase it to
@@ -235,6 +239,19 @@ include more Qwen-provided visual cues as fallbacks. `candidates.json` also reco
 `prompt_attempts`, `mask_area_pixels`, and the exact `text_prompt` that produced
 each candidate, so you can confirm whether SAM3 returned masks and whether tiny
 objects were filtered by area.
+
+Disconnected regions in one SAM3 mask are split before bbox generation by
+default. This prevents two separated object instances from becoming one large
+min/max bbox. Each resulting candidate records its source-mask component index,
+component count, and area ratio. Set `--no-split-disconnected-masks` only for
+comparison/debugging.
+
+Containment canonicalization also has an area-ratio guard: a high-score broad
+mask cannot absorb a much smaller same-role instance merely because it covers
+that instance. After canonicalization, a broad mask that contains at least two
+independent same-role candidates is treated as a group prediction and
+suppressed. This targets cases where SAM3 proposes an entire button panel in
+addition to individual button masks.
 
 ## Reuse an existing role spec
 

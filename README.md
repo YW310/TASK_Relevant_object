@@ -63,7 +63,11 @@ Candidate generation and runtime arguments:
 | `--top-k-per-role` | — | `8` | Maximum candidates retained for each semantic role. |
 | `--prompt-variants` | — | `5` | Maximum Qwen/SAM text variants attempted per role. |
 | `--min-mask-area` | — | `4` px | Remove tiny mask fragments. |
+| `--[no-]split-disconnected-masks` | `SPLIT_DISCONNECTED_MASKS` | enabled | Split disconnected regions from one SAM3 mask before computing candidate bboxes. |
+| `--max-mask-components` | `MAX_MASK_COMPONENTS` | `4` | Maximum significant regions retained from one SAM3 mask (`0` keeps all). |
 | `--mask-nms-iou` | — | `0.80` | Suppress same-role masks whose IoU exceeds this value. |
+| `--canonical-max-area-ratio` | `CANONICAL_MAX_AREA_RATIO` | `3.0` | Prevent containment-based merging when two masks have very different areas. |
+| `--[no-]suppress-multi-instance-masks` | `SUPPRESS_MULTI_INSTANCE_MASKS` | enabled | Drop a broad same-role mask that contains at least two independent candidates. |
 | `--device` | `DEVICE` | `cuda` | Run models on `cuda` or `cpu`. |
 | `--no-bf16` | inverse of `USE_BF16` | enabled by pipeline | Disable BF16 autocast for compatibility/debugging. |
 | `--compile` | — | off | Enable PyTorch model compilation. |
