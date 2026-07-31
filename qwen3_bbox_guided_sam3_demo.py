@@ -44,7 +44,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import traceback
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -60,7 +59,6 @@ from sam3_runtime import (
     find_checkpoint,
     normalize_masks,
     normalize_scores,
-    tensor_to_numpy,
 )
 from visualization_utils import load_font
 

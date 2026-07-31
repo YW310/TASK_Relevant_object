@@ -19,11 +19,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageOps
 
 from camera_geometry import frame_index_from_frame, load_rlbench_observations
 from common_io import atomic_json_dump
 from qwen3vl_rlbench_episode_grounding import Qwen3VLRLBenchGrounder
+from visualization_utils import load_font
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -185,15 +186,6 @@ def _safe_path_segment(value: Any) -> str:
     return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in text) or "unknown"
 
 
-def _contact_sheet_font(size: int) -> ImageFont.ImageFont:
-    for candidate in ("DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
-        try:
-            return ImageFont.truetype(candidate, size=size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
-
-
 def _semantic_role_score(candidate: Mapping[str, Any], role_name: str) -> float:
     role_evidence = candidate.get("role_evidence", {})
     if not isinstance(role_evidence, Mapping):
@@ -307,8 +299,8 @@ def _build_object_contact_sheet(
         (242, 242, 242),
     )
     draw = ImageDraw.Draw(canvas)
-    title_font = _contact_sheet_font(14)
-    label_font = _contact_sheet_font(12)
+    title_font = load_font(14)
+    label_font = load_font(12)
     frame_id = str(frame_input.get("frame_id"))
     frame_index = frame_input.get("frame_index")
     draw.rectangle((0, 0, canvas.width, title_height), fill=(28, 28, 28))

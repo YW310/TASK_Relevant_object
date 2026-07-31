@@ -30,7 +30,7 @@ from camera_geometry import (
     project_points,
     resolve_camera_param_for_frame,
 )
-from common_io import parse_optional_csv as parse_csv
+from common_io import load_json, parse_optional_csv as parse_csv
 from fused_candidate_io import load_fused_frame, load_fused_manifest, load_object_points
 from visualize_fused_candidates import OBJECT_COLORS
 
@@ -78,10 +78,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Alpha (0-255) for bbox, centroid, and text annotations.",
     )
     return parser
-
-
-def _load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _frame_decision_entries(pred: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -244,7 +240,7 @@ def main() -> None:
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else pred_path.with_name("viz_decision")
     viz_dir = Path(args.viz_dir).expanduser().resolve() if args.viz_dir else fused_path.with_name("viz")
 
-    pred = _load_json(pred_path)
+    pred = load_json(pred_path)
     fused = load_fused_manifest(fused_path)
 
     episode_dir = Path(args.episode_dir).expanduser().resolve() if args.episode_dir else Path(str(fused.get("episode_metadata", {}).get("episode_dir"))).expanduser().resolve()

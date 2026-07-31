@@ -18,6 +18,8 @@ import textwrap
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+from common_io import load_json
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -29,10 +31,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--summary-width", type=int, default=360, help="Width in pixels for the Stage 1 summary card.")
     parser.add_argument("--background", default="white", help="Background color for the montage canvas.")
     return parser
-
-
-def _load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _load_image(path: str | None) -> Image.Image | None:
@@ -150,10 +148,10 @@ def _compose_triplet(summary: Image.Image, left: Image.Image, right: Image.Image
 def main() -> None:
     args = build_parser().parse_args()
     meta_path = Path(args.decision_meta_json).expanduser().resolve()
-    meta = _load_json(meta_path)
+    meta = load_json(meta_path)
     episode_root = meta_path.parent.parent
     stage1_path = Path(args.stage1_candidates_json).expanduser().resolve() if args.stage1_candidates_json else episode_root / "episode_candidates.json"
-    stage1 = _load_json(stage1_path) if stage1_path.is_file() else {}
+    stage1 = load_json(stage1_path) if stage1_path.is_file() else {}
 
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else meta_path.with_name("viz_compare")
     output_dir.mkdir(parents=True, exist_ok=True)

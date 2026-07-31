@@ -46,10 +46,7 @@ from camera_geometry import (
 from common_io import atomic_json_dump, parse_optional_csv as parse_csv
 from fused_candidate_io import iter_fused_frames, load_object_points
 from fusion_matching import (
-    _association_cost,
     _confidence,
-    _hypothesis_is_valid,
-    _merge_same_camera_role_evidence,
     bbox_iou_3d,
     cluster_observations,
     legacy_union_find_clusters,

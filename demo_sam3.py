@@ -51,6 +51,7 @@ from sam3_runtime import (
     normalize_scores,
     tensor_to_numpy,
 )
+from visualization_utils import color_for_index
 
 
 MODE_CHOICES = (
@@ -241,20 +242,6 @@ def ensure_inside_image(
             raise ValueError(
                 f"Box {box.tolist()} lies outside image size {width}x{height}"
             )
-
-
-def color_for_index(index: int) -> tuple[int, int, int]:
-    palette = (
-        (255, 80, 80),
-        (80, 220, 120),
-        (80, 150, 255),
-        (255, 190, 60),
-        (190, 90, 255),
-        (40, 220, 220),
-        (255, 100, 190),
-        (160, 210, 60),
-    )
-    return palette[index % len(palette)]
 
 
 def save_visualization(

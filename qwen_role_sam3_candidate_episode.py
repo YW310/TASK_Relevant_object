@@ -42,27 +42,12 @@ from qwen3vl_rlbench_episode_grounding import (
     ROLE_PROMPT,
     collect_camera_frames,
     discover_instruction,
-    extract_json,
     role_identity_cues,
     role_display_text,
     select_frame_ids,
     resolve_role_frame,
 )
-from visualization_utils import load_font
-
-
-def color_for_index(index: int) -> tuple[int, int, int]:
-    palette = (
-        (255, 80, 80),
-        (80, 220, 120),
-        (80, 150, 255),
-        (255, 190, 60),
-        (190, 90, 255),
-        (40, 220, 220),
-        (255, 100, 190),
-        (160, 210, 60),
-    )
-    return palette[index % len(palette)]
+from visualization_utils import color_for_index, load_font
 
 ROLE_PREFIX = {"target": "T", "reference": "R", "interaction_part": "P"}
 ROLE_ORDER = ("target", "reference", "interaction_part")

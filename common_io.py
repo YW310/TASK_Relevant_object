@@ -19,6 +19,11 @@ def atomic_json_dump(data: Any, path: str | Path) -> None:
     temporary.replace(destination)
 
 
+def load_json(path: str | Path) -> Any:
+    """Load UTF-8 JSON from a filesystem path."""
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
 def natural_sort_key(value: str | Path) -> list[Any]:
     """Sort frame-like names numerically: ``2.png`` before ``10.png``."""
     text = Path(value).stem if isinstance(value, Path) else str(value)
