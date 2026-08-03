@@ -60,6 +60,7 @@
 #   DECISION_POLICY (default: adaptive)      adaptive=Qwen keyframes + per-frame temporal propagation; every-frame=legacy behavior.
 #   DECISION_REFRESH_INTERVAL (default: 5)  Maximum propagated frames between Qwen refreshes.
 #   DECISION_MIN_PROPAGATION_CONFIDENCE (default: 0.70) Refresh Qwen below this propagated confidence.
+#   REFERENCE_SWITCH_CONFIRMATION_FRAMES (default: 2) Consecutive frames required before changing Reference ID.
 #   DECISION_FRAME (default: last)          first|last frame when DECISION_SCOPE=single.
 #   DECISION_FRAME_ID                        Optional explicit frame_id; forces a single-frame decision.
 #   DECISION_WINDOW_FRAMES (default: 3)     Current t plus [t-2,t-1] ([t-2,t-1,t]), in one model call.
@@ -221,6 +222,7 @@ DECISION_SCOPE="${DECISION_SCOPE:-all}"
 DECISION_POLICY="${DECISION_POLICY:-adaptive}"
 DECISION_REFRESH_INTERVAL="${DECISION_REFRESH_INTERVAL:-5}"
 DECISION_MIN_PROPAGATION_CONFIDENCE="${DECISION_MIN_PROPAGATION_CONFIDENCE:-0.70}"
+REFERENCE_SWITCH_CONFIRMATION_FRAMES="${REFERENCE_SWITCH_CONFIRMATION_FRAMES:-2}"
 DECISION_FRAME="${DECISION_FRAME:-last}"
 DECISION_FRAME_ID="${DECISION_FRAME_ID:-}"
 DECISION_WINDOW_FRAMES="${DECISION_WINDOW_FRAMES:-3}"
@@ -427,6 +429,7 @@ else
     --decision-policy "${DECISION_POLICY}"
     --decision-refresh-interval "${DECISION_REFRESH_INTERVAL}"
     --decision-min-propagation-confidence "${DECISION_MIN_PROPAGATION_CONFIDENCE}"
+    --reference-switch-confirmation-frames "${REFERENCE_SWITCH_CONFIRMATION_FRAMES}"
     --decision-frame "${DECISION_FRAME}"
     --decision-window-frames "${DECISION_WINDOW_FRAMES}"
     --grounding-min-side "${DECISION_GROUNDING_MIN_SIDE}"

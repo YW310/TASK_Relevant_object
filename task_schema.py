@@ -47,7 +47,8 @@ def compile_task_schema(
     role_spec: Mapping[str, Any] | None = None,
 ) -> TaskSchema:
     """Compile common manipulation predicates without branching on task names."""
-    text = f"{_flatten_text(instruction)} {_flatten_text(role_spec)}".lower()
+    instruction_text = _flatten_text(instruction).lower()
+    text = f"{instruction_text} {_flatten_text(role_spec)}".lower()
 
     if _contains(
         text,
@@ -72,21 +73,43 @@ def compile_task_schema(
         action_family, predicate = "pour", "TRANSFERRED_IN"
     elif _contains(text, (r"\bsweep\b", r"\buse\b.*\bto\b")):
         action_family, predicate = "tool_use", "APPLIED_TO"
-    elif _contains(text, (r"\bpush\b", r"\bslide\b", r"\bmove\b")):
+    elif _contains(
+        text,
+        (r"\bpush\b", r"\bslide\b", r"\bmove\b", r"\bplace\b", r"\bput\b"),
+    ):
         action_family, predicate = "move", "AT_GOAL"
     elif _contains(text, (r"\bpick\b", r"\blift\b", r"\bgrasp\b", r"\btake\b")):
         action_family, predicate = "pick", "GRASPED"
     else:
         action_family, predicate = "interact", "TASK_STATE_CHANGED"
 
+    # Moving an object does not by itself imply a separate goal anchor.  Require
+    # an explicit relational destination for AT_GOAL so instructions such as
+    # "move the red block" do not force Qwen to invent a reference object.
+    explicit_goal_anchor = _contains(
+        instruction_text,
+        (
+            r"\b(?:move|slide|push|place|put)\b[^.]*\b(?:to|towards?|at|onto|into|inside)\b",
+            r"\b(?:next to|beside|near)\b",
+        ),
+    )
+    direction_only_destination = _contains(
+        instruction_text,
+        (
+            r"\bto\s+(?:the\s+)?(?:left|right|front|back|center|middle)\b(?!\s+of\b)",
+        ),
+    )
     reference_required = predicate in {
         "ON",
         "IN",
         "INSERTED_IN",
         "TRANSFERRED_IN",
         "APPLIED_TO",
-        "AT_GOAL",
-    }
+    } or (
+        predicate == "AT_GOAL"
+        and explicit_goal_anchor
+        and not direction_only_destination
+    )
     interaction_part_role = (
         "interaction_part" if action_family in {"press", "articulate"} else None
     )

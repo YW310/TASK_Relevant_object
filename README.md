@@ -296,6 +296,7 @@ previous object contact-sheet input; the two modes are never mixed.
 | `--decision-policy` | `DECISION_POLICY` | CLI `every-frame`; pipeline `adaptive` | Select per-frame Qwen calls or adaptive keyframe refresh plus temporal propagation. |
 | `--decision-refresh-interval` | `DECISION_REFRESH_INTERVAL` | `5` | Maximum stable sampled-frame interval between adaptive Qwen refreshes. |
 | `--decision-min-propagation-confidence` | `DECISION_MIN_PROPAGATION_CONFIDENCE` | `0.70` | Refresh Qwen when propagated confidence falls below this value. |
+| `--reference-switch-confirmation-frames` | `REFERENCE_SWITCH_CONFIRMATION_FRAMES` | `2` | Require the same proposed Reference for consecutive sampled frames before changing the locked ID. |
 | `--decision-frame` | `DECISION_FRAME` | `last` | Select the `first` or `last` frame when scope is `single`. |
 | `--decision-frame-id` | `DECISION_FRAME_ID` | unset | Explicit frame ID; when set it forces a single-frame decision. |
 | `--decision-window-frames` | `DECISION_WINDOW_FRAMES` | `3` | Current frame `t` plus its two preceding frames `[t-2, t-1, t]` (when available), evaluated in one model call; `1` is single-frame mode. |
@@ -332,6 +333,16 @@ for excluding fragments, but aggressive thresholds can discard the true task
 object. A non-relational instruction is allowed to produce a confident
 `reference_object_id=null`; descriptive colors, bases, or parts do not by
 themselves create a separate reference object.
+
+Reference selection uses a separate `reference_compatible_object_ids` semantic
+gate and Stage-1 reference-role evidence; it never reuses the target-compatible
+set as an implicit goal anchor. A selected Reference is temporally locked. A new
+ID needs consecutive confirmation (two sampled frames by default), while a
+briefly missing locked ID yields `reference_object_id=null` instead of rebinding
+to the first visible distractor. Confirmed physical placement events may switch
+the lock immediately. Each compact frame decision keeps `model_reference_object_id`
+and `reference_stability` so proposed, retained, missing, and switched states are
+distinguishable from underlying O-ID tracking failures.
 
 Each frame records `model_invoked`, `decision_source`,
 `source_model_frame_id`, `refresh_reasons`, and preprocessing/generation token

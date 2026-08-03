@@ -87,6 +87,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.70,
     )
     parser.add_argument(
+        "--reference-switch-confirmation-frames",
+        type=int,
+        default=2,
+        help=(
+            "Consecutive sampled frames that must propose a new Reference ID "
+            "before replacing a locked ID."
+        ),
+    )
+    parser.add_argument(
         "--decision-frame",
         choices=("last", "first"),
         default="last",
@@ -1363,15 +1372,20 @@ def _decision_prompt(
         "1. Any non-null target_object_id/reference_object_id must be in valid_output_object_ids.\n"
         "2. First populate instruction_compatible_object_ids using instruction identity only. "
         "Do not include an object merely because it is close to the gripper.\n"
-        "3. Select target_object_id only from instruction_compatible_object_ids. If multiple objects "
+        "3. Populate reference_compatible_object_ids independently using the instruction's explicit "
+        "goal anchor identity. Exclude the target and descriptive surroundings. Return [] when "
+        "task_schema.reference_required=false.\n"
+        "4. Select target_object_id only from instruction_compatible_object_ids. If multiple objects "
         "are compatible, prefer the smallest current_distance_m, then consistently_approaching=true, "
         "higher approaching_step_fraction, and larger approach_delta_m over t-2 to t.\n"
-        "4. Prefer objects with stable multi-view support over tiny/noisy single-view fragments unless evidence strongly contradicts.\n"
-        "5. reference_object_id=null can be a confident semantic decision; it does not imply uncertainty.\n"
-        "6. Distinguish the manipulated object from its interaction part and from descriptive surroundings.\n"
-        "7. target_object_id and reference_object_id must never be the same object.\n"
-        "8. Keep the response strictly as one JSON object.\n\n"
-        "Output schema:\n"
+        "5. Select reference_object_id only from reference_compatible_object_ids. Prefer the candidate "
+        "whose reference-role evidence and visual identity best match the goal anchor.\n"
+        "6. Prefer objects with stable multi-view support over tiny/noisy single-view fragments unless evidence strongly contradicts.\n"
+        "7. reference_object_id=null can be a confident semantic decision; it does not imply uncertainty.\n"
+        "8. Distinguish the manipulated object from its interaction part and from descriptive surroundings.\n"
+        "9. target_object_id and reference_object_id must never be the same object.\n"
+        "10. Keep the response strictly as one JSON object.\n\n"
+        "Output schema (include reference_compatible_object_ids as a JSON array):\n"
         "{\n"
         "  \"instruction_compatible_object_ids\": [\"O1\", \"O2\"],\n"
         "  \"target_object_id\": \"O1\" or null,\n"
@@ -1514,6 +1528,229 @@ def _apply_two_stage_target_selection(
     return selected
 
 
+def _apply_reference_semantic_selection(
+    result: Mapping[str, Any],
+    candidates: Sequence[Mapping[str, Any]],
+    task_schema: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Gate Reference by instruction compatibility, then semantic evidence."""
+    selected = dict(result)
+    reference_required = bool((task_schema or {}).get("reference_required", False))
+    target_id = (
+        str(selected.get("target_object_id"))
+        if selected.get("target_object_id") is not None
+        else None
+    )
+    valid_ids = {
+        str(candidate.get("object_id"))
+        for candidate in candidates
+        if candidate.get("object_id") is not None
+    }
+    model_reference = (
+        str(result.get("reference_object_id"))
+        if result.get("reference_object_id") is not None
+        else None
+    )
+    selected["model_reference_object_id"] = model_reference
+
+    if not reference_required:
+        selected["reference_compatible_object_ids"] = []
+        selected["reference_object_id"] = None
+        selected["reference_selection"] = {
+            "strategy": "reference_not_required_by_task_schema",
+            "candidate_order": [],
+            "model_reference_object_id": model_reference,
+        }
+        return selected
+
+    raw_compatible = result.get("reference_compatible_object_ids")
+    missing_compatibility_list = raw_compatible is None
+    if missing_compatibility_list:
+        raw_values = [model_reference] if model_reference is not None else []
+    else:
+        raw_values = raw_compatible if isinstance(raw_compatible, list) else [raw_compatible]
+
+    compatible_ids: list[str] = []
+    ignored_ids: list[str] = []
+    for value in raw_values:
+        if value is None:
+            continue
+        object_id = str(value)
+        if object_id not in valid_ids or object_id == target_id:
+            if object_id not in ignored_ids:
+                ignored_ids.append(object_id)
+            continue
+        if object_id not in compatible_ids:
+            compatible_ids.append(object_id)
+
+    candidate_by_id = {
+        str(candidate.get("object_id")): candidate
+        for candidate in candidates
+        if candidate.get("object_id") is not None
+    }
+    role_scores = {
+        object_id: _semantic_role_score(candidate_by_id[object_id], "reference")
+        for object_id in compatible_ids
+    }
+    semantic_order = sorted(
+        compatible_ids,
+        key=lambda object_id: (
+            -role_scores[object_id],
+            object_id != model_reference,
+            object_id,
+        ),
+    )
+    if compatible_ids and any(score > 0.0 for score in role_scores.values()):
+        best_semantic = semantic_order[0]
+        model_score = role_scores.get(str(model_reference), 0.0)
+        if (
+            model_reference in compatible_ids
+            and best_semantic != model_reference
+            and role_scores[best_semantic] < model_score + 0.15
+        ):
+            candidate_order = [
+                model_reference,
+                *[object_id for object_id in semantic_order if object_id != model_reference],
+            ]
+            strategy = "instruction_gate_model_reference_with_semantic_hysteresis"
+        else:
+            candidate_order = semantic_order
+            strategy = "instruction_gate_then_reference_role_evidence"
+    elif model_reference in compatible_ids:
+        candidate_order = [
+            model_reference,
+            *[object_id for object_id in compatible_ids if object_id != model_reference],
+        ]
+        strategy = "instruction_gate_then_model_reference"
+    else:
+        candidate_order = sorted(compatible_ids)
+        strategy = "instruction_gate_then_stable_id_fallback"
+
+    final_reference = candidate_order[0] if candidate_order else None
+    selected["reference_compatible_object_ids"] = compatible_ids
+    selected["reference_object_id"] = final_reference
+    selected["reference_selection"] = {
+        "strategy": (
+            "model_reference_fallback_missing_compatibility_list"
+            if missing_compatibility_list
+            else strategy
+        ),
+        "candidate_order": candidate_order,
+        "reference_role_scores": role_scores,
+        "ignored_invalid_or_target_object_ids": ignored_ids,
+    }
+    if final_reference is None:
+        selected["uncertain"] = True
+        selected["confidence"] = min(
+            0.5, float(selected.get("confidence", 0.0) or 0.0)
+        )
+        if not selected.get("uncertain_reason"):
+            selected["uncertain_reason"] = "no_valid_reference_compatible_candidate"
+    return selected
+
+
+def _stabilize_reference_selection(
+    result: Mapping[str, Any],
+    candidate_ids: set[str],
+    state: dict[str, Any],
+    task_schema: Mapping[str, Any] | None,
+    dynamic_role_context: Mapping[str, Any],
+    confirmation_frames: int,
+) -> dict[str, Any]:
+    """Apply temporal hysteresis without rebinding a briefly missing Reference."""
+    selected = dict(result)
+    required = bool((task_schema or {}).get("reference_required", False))
+    proposed = (
+        str(selected.get("reference_object_id"))
+        if selected.get("reference_object_id") is not None
+        else None
+    )
+    locked = state.get("locked_reference_id")
+    locked = str(locked) if locked is not None else None
+    confirmation_frames = max(1, int(confirmation_frames))
+    pending = state.get("pending_reference_id")
+    pending = str(pending) if pending is not None else None
+    pending_count = int(state.get("pending_reference_count", 0))
+    locked_visible = locked is not None and locked in candidate_ids
+    dynamic_selection = selected.get("dynamic_role_selection", {})
+    physical_reference_ids = {
+        str(value)
+        for value in dynamic_role_context.get("reference_candidate_ids", [])
+    }
+    physically_confirmed = bool(
+        proposed is not None
+        and proposed in physical_reference_ids
+        and isinstance(dynamic_selection, Mapping)
+        and dynamic_selection.get("reference_overridden")
+    )
+
+    if not required:
+        final_reference = None
+        status = "reference_not_required"
+        state["locked_reference_id"] = None
+        state["pending_reference_id"] = None
+        state["pending_reference_count"] = 0
+    elif locked is None:
+        final_reference = proposed if proposed in candidate_ids else None
+        status = "initial_lock" if final_reference is not None else "no_reference_candidate"
+        state["locked_reference_id"] = final_reference
+        state["pending_reference_id"] = None
+        state["pending_reference_count"] = 0
+    elif physically_confirmed and proposed != locked:
+        final_reference = proposed
+        status = "switched_by_confirmed_physical_event"
+        state["locked_reference_id"] = proposed
+        state["pending_reference_id"] = None
+        state["pending_reference_count"] = 0
+    elif proposed == locked and locked_visible:
+        final_reference = locked
+        status = "locked_reference_confirmed"
+        state["pending_reference_id"] = None
+        state["pending_reference_count"] = 0
+    elif proposed is None and locked_visible:
+        final_reference = locked
+        status = "retained_visible_lock_against_null_proposal"
+        state["pending_reference_id"] = None
+        state["pending_reference_count"] = 0
+    else:
+        if proposed is not None and proposed == pending:
+            pending_count += 1
+        elif proposed is not None:
+            pending = proposed
+            pending_count = 1
+        else:
+            pending = None
+            pending_count = 0
+        state["pending_reference_id"] = pending
+        state["pending_reference_count"] = pending_count
+        if proposed is not None and pending_count >= confirmation_frames:
+            final_reference = proposed
+            status = "switched_after_consecutive_confirmation"
+            state["locked_reference_id"] = proposed
+            state["pending_reference_id"] = None
+            state["pending_reference_count"] = 0
+        elif locked_visible:
+            final_reference = locked
+            status = "switch_pending_retaining_visible_lock"
+        else:
+            final_reference = None
+            status = "locked_reference_temporarily_missing"
+
+    selected["reference_object_id"] = final_reference
+    selected["reference_stability"] = {
+        "strategy": "locked_reference_two_stage_hysteresis_v1",
+        "status": status,
+        "locked_reference_id_before": locked,
+        "proposed_reference_id": proposed,
+        "final_reference_id": final_reference,
+        "locked_reference_visible": locked_visible,
+        "pending_reference_id": state.get("pending_reference_id"),
+        "pending_confirmation_count": int(state.get("pending_reference_count", 0)),
+        "required_confirmation_frames": confirmation_frames,
+    }
+    return selected
+
+
 def _sanitize_decision_ids(result: dict[str, Any], valid_ids: set[str]) -> list[dict[str, str]]:
     """Null invalid selected IDs while preserving diagnostics instead of aborting."""
     invalid: list[dict[str, str]] = []
@@ -1576,6 +1813,9 @@ def _adaptive_state(args: argparse.Namespace) -> dict[str, Any]:
             "frames_since_model": 0,
             "force_refresh": False,
             "force_refresh_reason": None,
+            "locked_reference_id": None,
+            "pending_reference_id": None,
+            "pending_reference_count": 0,
         }
         args._adaptive_decision_state = state
     return state
@@ -1607,11 +1847,17 @@ def _finalize_decision_result(
     dynamic_tracker: DynamicRoleTracker | None,
     dynamic_role_context: Mapping[str, Any],
     candidate_ids: set[str],
+    task_schema: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     result = _apply_two_stage_target_selection(
         copy.deepcopy(dict(base_result)),
         candidates,
         temporal_context_by_object,
+    )
+    result = _apply_reference_semantic_selection(
+        result,
+        candidates,
+        task_schema or dynamic_role_context.get("schema", {}),
     )
     if dynamic_tracker is not None:
         result = apply_dynamic_role_selection(
@@ -1798,7 +2044,9 @@ def _run_decision_for_frame(
     if not candidate_ids:
         empty_decision = {
             "instruction_compatible_object_ids": [],
+            "reference_compatible_object_ids": [],
             "model_target_object_id": None,
+            "model_reference_object_id": None,
             "target_object_id": None,
             "reference_object_id": None,
             "target_selection": {
@@ -1812,6 +2060,15 @@ def _run_decision_for_frame(
             "relation_reason": None,
             "reject_object_ids": [],
             "rejected_reason": None,
+            "reference_stability": {
+                "strategy": "locked_reference_two_stage_hysteresis_v1",
+                "status": "all_candidates_missing",
+                "locked_reference_id_before": adaptive_state.get(
+                    "locked_reference_id"
+                ),
+                "proposed_reference_id": None,
+                "final_reference_id": None,
+            },
         }
         if dynamic_tracker is not None:
             dynamic_tracker.record_decision(empty_decision)
@@ -1861,6 +2118,7 @@ def _run_decision_for_frame(
             dynamic_tracker,
             dynamic_role_context,
             candidate_ids,
+            task_schema.to_dict() if task_schema is not None else {},
         )
         if cached_model_result is not None
         else None
@@ -2083,6 +2341,7 @@ def _run_decision_for_frame(
                 dynamic_tracker,
                 dynamic_role_context,
                 candidate_ids,
+                task_schema.to_dict() if task_schema is not None else {},
             )
             adaptive_state["force_refresh"] = True
             adaptive_state["force_refresh_reason"] = "previous_model_parse_error"
@@ -2100,6 +2359,7 @@ def _run_decision_for_frame(
                 dynamic_tracker,
                 dynamic_role_context,
                 candidate_ids,
+                task_schema.to_dict() if task_schema is not None else {},
             )
             decision_source = (
                 "qwen_keyframe"
@@ -2118,6 +2378,25 @@ def _run_decision_for_frame(
         ) + 1
         decision_source = "temporal_propagation"
         source_model_frame_id = adaptive_state.get("last_model_frame_id")
+
+    result = _stabilize_reference_selection(
+        result,
+        candidate_ids,
+        adaptive_state,
+        task_schema.to_dict() if task_schema is not None else {},
+        dynamic_role_context,
+        getattr(args, "reference_switch_confirmation_frames", 2),
+    )
+    if dynamic_tracker is not None:
+        # Recompute relation confidence after hysteresis may have retained or
+        # switched the Reference. calibrate_decision_confidence is idempotent
+        # because it preserves the original model_confidence.
+        result = calibrate_decision_confidence(
+            result,
+            candidates,
+            temporal_context_by_object,
+            dynamic_role_context,
+        )
 
     if dynamic_tracker is not None:
         dynamic_tracker.record_decision(result)
@@ -2181,9 +2460,15 @@ def _run_decision_for_frame(
                 "instruction_compatible_object_ids", []
             ),
             "model_target_object_id": result.get("model_target_object_id"),
+            "model_reference_object_id": result.get("model_reference_object_id"),
             "target_object_id": result.get("target_object_id"),
             "reference_object_id": result.get("reference_object_id"),
+            "reference_compatible_object_ids": result.get(
+                "reference_compatible_object_ids", []
+            ),
             "target_selection": result.get("target_selection"),
+            "reference_selection": result.get("reference_selection"),
+            "reference_stability": result.get("reference_stability"),
             "dynamic_role_selection": result.get("dynamic_role_selection"),
             "confidence": result.get("confidence"),
             "model_confidence": result.get("model_confidence"),
@@ -2220,8 +2505,11 @@ def _compact_persisted_frame_decision(entry: Mapping[str, Any]) -> dict[str, Any
             key: decision.get(key)
             for key in (
                 "model_target_object_id",
+                "model_reference_object_id",
                 "target_object_id",
                 "reference_object_id",
+                "reference_compatible_object_ids",
+                "reference_stability",
                 "confidence",
                 "model_confidence",
                 "uncertain",

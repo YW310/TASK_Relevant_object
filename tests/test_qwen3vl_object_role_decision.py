@@ -8,6 +8,7 @@ import qwen3vl_object_role_decision as decision_module
 from qwen3vl_object_role_decision import (
     _adaptive_refresh_reasons,
     _apply_two_stage_target_selection,
+    _apply_reference_semantic_selection,
     _build_output_document,
     _build_temporal_object_context,
     _candidate_observation_cards,
@@ -21,6 +22,7 @@ from qwen3vl_object_role_decision import (
     _resolve_temporal_frames,
     _run_decision_for_frame,
     _sanitize_decision_ids,
+    _stabilize_reference_selection,
 )
 
 
@@ -59,6 +61,137 @@ def test_compact_summary_derives_pairwise_relations_on_read():
     assert relations[0]["source_object_id"] == "O1"
     assert relations[0]["target_object_id"] == "O2"
     assert relations[0]["source_to_target_labels"] == ["right_of", "above"]
+
+
+def test_reference_selection_uses_instruction_gate_and_reference_role_evidence():
+    candidates = [
+        {"object_id": "O1", "role_evidence": {"target": {"probability": 0.9}}},
+        {"object_id": "O2", "role_evidence": {"reference": {"probability": 0.3}}},
+        {"object_id": "O3", "role_evidence": {"reference": {"probability": 0.8}}},
+    ]
+
+    selected = _apply_reference_semantic_selection(
+        {
+            "target_object_id": "O1",
+            "reference_object_id": "O2",
+            "reference_compatible_object_ids": ["O1", "O2", "O3", "O9"],
+            "confidence": 0.9,
+        },
+        candidates,
+        {"reference_required": True},
+    )
+
+    assert selected["model_reference_object_id"] == "O2"
+    assert selected["reference_compatible_object_ids"] == ["O2", "O3"]
+    assert selected["reference_object_id"] == "O3"
+    assert selected["reference_selection"]["candidate_order"] == ["O3", "O2"]
+
+
+def test_reference_selection_forces_null_when_task_has_no_goal_anchor():
+    selected = _apply_reference_semantic_selection(
+        {
+            "target_object_id": "O1",
+            "reference_object_id": "O2",
+            "reference_compatible_object_ids": ["O2"],
+        },
+        [{"object_id": "O1"}, {"object_id": "O2"}],
+        {"reference_required": False},
+    )
+
+    assert selected["model_reference_object_id"] == "O2"
+    assert selected["reference_compatible_object_ids"] == []
+    assert selected["reference_object_id"] is None
+
+
+def test_reference_semantic_score_needs_margin_to_override_visual_model_choice():
+    selected = _apply_reference_semantic_selection(
+        {
+            "target_object_id": "O1",
+            "reference_object_id": "O2",
+            "reference_compatible_object_ids": ["O2", "O3"],
+        },
+        [
+            {"object_id": "O1"},
+            {"object_id": "O2", "role_evidence": {"reference": {"probability": 0.55}}},
+            {"object_id": "O3", "role_evidence": {"reference": {"probability": 0.60}}},
+        ],
+        {"reference_required": True},
+    )
+
+    assert selected["reference_object_id"] == "O2"
+    assert "semantic_hysteresis" in selected["reference_selection"]["strategy"]
+
+
+def test_reference_switch_requires_two_consecutive_proposals():
+    state = {}
+    schema = {"reference_required": True}
+    locked = _stabilize_reference_selection(
+        {"reference_object_id": "O2"},
+        {"O1", "O2", "O3"},
+        state,
+        schema,
+        {},
+        2,
+    )
+    pending = _stabilize_reference_selection(
+        {"reference_object_id": "O3"},
+        {"O1", "O2", "O3"},
+        state,
+        schema,
+        {},
+        2,
+    )
+    switched = _stabilize_reference_selection(
+        {"reference_object_id": "O3"},
+        {"O1", "O2", "O3"},
+        state,
+        schema,
+        {},
+        2,
+    )
+
+    assert locked["reference_object_id"] == "O2"
+    assert pending["reference_object_id"] == "O2"
+    assert pending["reference_stability"]["status"] == "switch_pending_retaining_visible_lock"
+    assert switched["reference_object_id"] == "O3"
+    assert switched["reference_stability"]["status"] == "switched_after_consecutive_confirmation"
+
+
+def test_missing_reference_is_not_immediately_rebound_to_distractor():
+    state = {}
+    schema = {"reference_required": True}
+    _stabilize_reference_selection(
+        {"reference_object_id": "O2"}, {"O1", "O2"}, state, schema, {}, 2
+    )
+
+    missing_once = _stabilize_reference_selection(
+        {"reference_object_id": "O3"}, {"O1", "O3"}, state, schema, {}, 2
+    )
+    confirmed_new = _stabilize_reference_selection(
+        {"reference_object_id": "O3"}, {"O1", "O3"}, state, schema, {}, 2
+    )
+
+    assert missing_once["reference_object_id"] is None
+    assert missing_once["reference_stability"]["status"] == "locked_reference_temporarily_missing"
+    assert confirmed_new["reference_object_id"] == "O3"
+
+
+def test_confirmed_physical_reference_event_switches_lock_immediately():
+    state = {"locked_reference_id": "O2"}
+    selected = _stabilize_reference_selection(
+        {
+            "reference_object_id": "O3",
+            "dynamic_role_selection": {"reference_overridden": True},
+        },
+        {"O1", "O2", "O3"},
+        state,
+        {"reference_required": True},
+        {"reference_candidate_ids": ["O3"]},
+        2,
+    )
+
+    assert selected["reference_object_id"] == "O3"
+    assert selected["reference_stability"]["status"] == "switched_by_confirmed_physical_event"
 
 
 def test_normal_prediction_output_uses_compact_frame_records(tmp_path):
@@ -1141,6 +1274,7 @@ def test_decision_history_is_opt_in():
 def test_prompt_allows_confident_null_reference_for_unary_tasks():
     prompt = _decision_prompt("{}", [])
     assert "reference_object_id=null" in prompt
+    assert "reference_compatible_object_ids" in prompt
     assert "does not imply uncertainty" in prompt
     assert "visual identity cues from the instruction take precedence" in prompt
     assert "instruction_compatible_object_ids" in prompt

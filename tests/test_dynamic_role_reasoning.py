@@ -30,6 +30,14 @@ def test_task_schema_compiles_predicates_instead_of_task_names():
     drawer = compile_task_schema("open the bottom drawer using its handle")
     insert = compile_task_schema("insert the peg into the slot")
     button = compile_task_schema("push the maroon button")
+    move_without_anchor = compile_task_schema("move the red block")
+    move_to_anchor = compile_task_schema("move the red block to the blue square")
+    slide_direction_only = compile_task_schema("slide the red block to the left")
+    place_beside_anchor = compile_task_schema("place the red block beside the blue block")
+    move_with_noisy_role_spec = compile_task_schema(
+        "move the red block",
+        {"reference": {"description": "move it to a possible goal anchor"}},
+    )
 
     assert stack.goal_predicate == "ON"
     assert stack.repeat_policy == "repeat_until_satisfied"
@@ -40,6 +48,11 @@ def test_task_schema_compiles_predicates_instead_of_task_names():
     assert button.action_family == "press"
     assert button.goal_predicate == "PRESSED"
     assert button.reference_required is False
+    assert move_without_anchor.reference_required is False
+    assert move_to_anchor.reference_required is True
+    assert slide_direction_only.reference_required is False
+    assert place_beside_anchor.reference_required is True
+    assert move_with_noisy_role_spec.reference_required is False
 
 
 def test_pairwise_geometry_reports_support_evidence():

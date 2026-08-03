@@ -556,7 +556,15 @@ def calibrate_decision_confidence(
     selected = dict(decision)
     try:
         model_confidence = min(
-            1.0, max(0.0, float(selected.get("confidence", 0.0)))
+            1.0,
+            max(
+                0.0,
+                float(
+                    selected.get(
+                        "model_confidence", selected.get("confidence", 0.0)
+                    )
+                ),
+            ),
         )
     except (TypeError, ValueError):
         model_confidence = 0.0
