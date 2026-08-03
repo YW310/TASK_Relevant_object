@@ -356,10 +356,14 @@ def _candidate_observation_cards(
     candidate: Mapping[str, Any],
     max_views: int = 2,
 ) -> list[dict[str, Any]]:
+    primary_camera = str(candidate.get("primary_camera") or "")
     observations = sorted(
         list(candidate.get("observations", [])),
-        key=lambda item: float(item.get("sam_score") or 0.0),
-        reverse=True,
+        key=lambda item: (
+            bool(primary_camera)
+            and str(item.get("camera") or "unknown") != primary_camera,
+            -float(item.get("sam_score") or 0.0),
+        ),
     )
     cards = []
     seen_cameras = set()

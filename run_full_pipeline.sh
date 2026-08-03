@@ -34,7 +34,9 @@
 #   SAME_CAMERA_NMS_CONTAINMENT (default: 0.85) Same-view smaller-mask coverage NMS cue.
 #   SAME_CAMERA_NMS_CENTROID_DISTANCE_M (default: 0.02) Same-view 3D centroid NMS gate.
 #   SAME_CAMERA_NMS_MAX_SIZE_RATIO (default: 2.5) Same-view 3D bbox size-consistency gate.
-#   MIN_FUSED_CAMERA_COUNT (default: 2)      Require multi-view support when other cameras could see the object.
+#   MIN_FUSED_CAMERA_COUNT (default: 1)      Keep valid single-camera objects; >1 enables strict support filtering.
+#   PREFERRED_CAMERA (default: front)        Camera trusted more during cross-view fusion.
+#   PREFERRED_CAMERA_WEIGHT (default: 1.5)   Reliability multiplier for the preferred camera.
 #   CAMERA_VISIBILITY_DEPTH_TOLERANCE_M (default: 0.03) Occlusion tolerance for missing-view checks.
 #   CAMERA_VISIBILITY_MIN_POINT_FRACTION (default: 0.05) Visible cloud fraction for observability.
 #   SINGLE_CAMERA_KEEP_SCORE (default: 0.0)  Optional high-confidence single-view exception (0=off).
@@ -182,7 +184,9 @@ SAME_CAMERA_NMS_MASK_IOU="${SAME_CAMERA_NMS_MASK_IOU:-0.55}"
 SAME_CAMERA_NMS_CONTAINMENT="${SAME_CAMERA_NMS_CONTAINMENT:-0.85}"
 SAME_CAMERA_NMS_CENTROID_DISTANCE_M="${SAME_CAMERA_NMS_CENTROID_DISTANCE_M:-0.02}"
 SAME_CAMERA_NMS_MAX_SIZE_RATIO="${SAME_CAMERA_NMS_MAX_SIZE_RATIO:-2.5}"
-MIN_FUSED_CAMERA_COUNT="${MIN_FUSED_CAMERA_COUNT:-2}"
+MIN_FUSED_CAMERA_COUNT="${MIN_FUSED_CAMERA_COUNT:-1}"
+PREFERRED_CAMERA="${PREFERRED_CAMERA:-front}"
+PREFERRED_CAMERA_WEIGHT="${PREFERRED_CAMERA_WEIGHT:-1.5}"
 CAMERA_VISIBILITY_DEPTH_TOLERANCE_M="${CAMERA_VISIBILITY_DEPTH_TOLERANCE_M:-0.03}"
 CAMERA_VISIBILITY_MIN_POINT_FRACTION="${CAMERA_VISIBILITY_MIN_POINT_FRACTION:-0.05}"
 SINGLE_CAMERA_KEEP_SCORE="${SINGLE_CAMERA_KEEP_SCORE:-0.0}"
@@ -378,6 +382,8 @@ else
     --same-camera-nms-centroid-distance-m "${SAME_CAMERA_NMS_CENTROID_DISTANCE_M}"
     --same-camera-nms-max-size-ratio "${SAME_CAMERA_NMS_MAX_SIZE_RATIO}"
     --min-fused-camera-count "${MIN_FUSED_CAMERA_COUNT}"
+    --preferred-camera "${PREFERRED_CAMERA}"
+    --preferred-camera-weight "${PREFERRED_CAMERA_WEIGHT}"
     --camera-visibility-depth-tolerance-m "${CAMERA_VISIBILITY_DEPTH_TOLERANCE_M}"
     --camera-visibility-min-point-fraction "${CAMERA_VISIBILITY_MIN_POINT_FRACTION}"
     --single-camera-keep-score "${SINGLE_CAMERA_KEEP_SCORE}"

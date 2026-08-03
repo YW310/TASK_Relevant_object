@@ -45,6 +45,36 @@ def _confidence(obs: Observation3D) -> float:
     )
 
 
+def camera_priority_weight(camera: str, args: argparse.Namespace) -> float:
+    """Return the configured reliability weight for one camera."""
+    preferred_camera = str(
+        getattr(args, "preferred_camera", "front") or ""
+    ).strip()
+    if preferred_camera and camera == preferred_camera:
+        return max(1e-6, float(getattr(args, "preferred_camera_weight", 1.0)))
+    return 1.0
+
+
+def weighted_cluster_centroid(
+    cluster: Sequence[Observation3D],
+    args: argparse.Namespace,
+) -> np.ndarray:
+    """Compute a point-weighted centroid with extra trust in the preferred view."""
+    weighted_sum = np.zeros(3, dtype=np.float64)
+    total_weight = 0.0
+    for observation in cluster:
+        point_count = len(observation.points_world)
+        if point_count <= 0:
+            continue
+        weight = camera_priority_weight(observation.camera, args)
+        weighted_sum += weight * observation.points_world.sum(axis=0)
+        total_weight += weight * point_count
+    if total_weight <= 0.0:
+        points = np.concatenate([obs.points_world for obs in cluster], axis=0)
+        return points.mean(axis=0)
+    return weighted_sum / total_weight
+
+
 def _merge_same_camera_role_evidence(
     primary: Observation3D,
     duplicate: Observation3D,
@@ -452,7 +482,8 @@ def cluster_observations(
     camera_order = sorted(
         by_camera,
         key=lambda camera: (
-            -max(_confidence(obs) for obs in by_camera[camera]),
+            -camera_priority_weight(camera, args)
+            * max(_confidence(obs) for obs in by_camera[camera]),
             camera,
         ),
     )

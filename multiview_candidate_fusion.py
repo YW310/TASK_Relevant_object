@@ -49,6 +49,7 @@ from fused_candidate_io import iter_fused_frames, load_object_points
 from fusion_matching import (
     _confidence,
     bbox_iou_3d,
+    camera_priority_weight,
     cluster_observations,
     legacy_union_find_clusters,
     pairwise_should_merge,
@@ -56,6 +57,7 @@ from fusion_matching import (
     suppress_same_camera_duplicates,
     symmetric_percentile_nearest_distance,
     warn_near_miss_unmerged_clusters,
+    weighted_cluster_centroid,
 )
 from fusion_types import ROLE_NAMES, Observation3D
 
@@ -166,11 +168,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--min-fused-camera-count",
         type=int,
-        default=2,
+        default=1,
         help=(
             "Minimum supporting cameras for a fused object. A lower-support object "
             "is retained when too few missing cameras could geometrically observe it. "
-            "Set <=1 to disable."
+            "The default 1 keeps valid single-camera objects; set >1 only for strict "
+            "multi-view filtering."
+        ),
+    )
+    parser.add_argument(
+        "--preferred-camera",
+        default="front",
+        help=(
+            "Camera trusted more during cross-view hypothesis seeding and fused "
+            "centroid/score calculation. Empty disables the preference."
+        ),
+    )
+    parser.add_argument(
+        "--preferred-camera-weight",
+        type=float,
+        default=1.5,
+        help=(
+            "Reliability multiplier for --preferred-camera (default: 1.5; "
+            "1.0 disables weighting)."
         ),
     )
     parser.add_argument(
@@ -747,7 +767,7 @@ def filter_small_clusters(clusters: list[list[Observation3D]], args: argparse.Na
                 file=sys.stderr,
             )
             continue
-        centroid = all_points.mean(axis=0)
+        centroid = weighted_cluster_centroid(cluster, args)
         centroid_to_cloud_distance = float(
             np.linalg.norm(all_points - centroid, axis=1).min()
         )
@@ -1172,6 +1192,7 @@ def build_object_summary(
                     "centroid_world": obj["centroid_world"],
                     "bbox3d_world": obj["bbox3d_world"],
                     "point_count": int(len(load_object_points(frame, object_id))),
+                    "primary_camera": obj.get("primary_camera"),
                     "visible_camera": obj.get("visible_camera", []),
                     "camera_count": len(obj.get("visible_camera", [])),
                     "mask_area": int(obj.get("mask_area", 0)),
@@ -1310,6 +1331,7 @@ def _summary_object_record(frame: Mapping[str, Any], obj: Mapping[str, Any]) -> 
     return {
         "object_id": obj.get("id"), "role_evidence": obj.get("role_evidence", {}),
         "centroid_world": obj.get("centroid_world"), "bbox3d_world": obj.get("bbox3d_world"),
+        "primary_camera": obj.get("primary_camera"),
         "visible_camera": obj.get("visible_camera", []),
         "camera_count": len(obj.get("visible_camera", [])),
         "point_count": int(len(load_object_points(frame, obj.get("id")))),
@@ -1332,7 +1354,7 @@ def assign_object_ids(
     prev_tracks: list[dict[str, Any]] = list(track_state.get("tracks", []))
     next_object_index = int(track_state.get("next_object_index", 0))
     cluster_points = [np.concatenate([o.points_world for o in cluster]) for cluster in clusters]
-    centroids = [points.mean(axis=0) for points in cluster_points]
+    centroids = [weighted_cluster_centroid(cluster, args) for cluster in clusters]
     bbox_sizes = [points.max(axis=0) - points.min(axis=0) for points in cluster_points]
     max_missed_frames = max(0, int(getattr(args, "track_max_missed_frames", 0)))
     max_track_size_ratio = float(getattr(args, "track_max_size_ratio", 0.0))
@@ -1400,6 +1422,22 @@ def assign_object_ids(
             float(getattr(args, "component_voxel_size_m", 0.0)),
             max(1, int(getattr(args, "min_component_points", 1))),
         )
+        ranked_observations = sorted(
+            cluster,
+            key=lambda observation: (
+                -camera_priority_weight(observation.camera, args)
+                * _confidence(observation),
+                observation.observation_id,
+            ),
+        )
+        score_weights = np.asarray(
+            [camera_priority_weight(observation.camera, args) for observation in cluster],
+            dtype=np.float64,
+        )
+        sam_scores = np.asarray(
+            [float(observation.candidate.get("score", 0.0)) for observation in cluster],
+            dtype=np.float64,
+        )
         objects.append({
             "id": f"O{index}",
             "role_evidence": aggregate_role_evidence(cluster, frame_id),
@@ -1408,10 +1446,11 @@ def assign_object_ids(
             "centroid_to_cloud_distance_m": centroid_to_cloud_distance,
             "point_cloud_components": component_stats,
             "bbox3d_world": np.stack([all_points.min(axis=0), all_points.max(axis=0)]).tolist(),
-            "visible_camera": sorted({o.camera for o in cluster}),
+            "primary_camera": ranked_observations[0].camera,
+            "visible_camera": list(dict.fromkeys(o.camera for o in ranked_observations)),
             "mask_area": int(sum(int(o.candidate.get("mask_area_pixels", 0)) for o in cluster)),
-            "sam_score": float(np.mean([float(o.candidate.get("score", 0.0)) for o in cluster])),
-            "observations": [observation_to_json(o) for o in cluster],
+            "sam_score": float(np.average(sam_scores, weights=score_weights)),
+            "observations": [observation_to_json(o) for o in ranked_observations],
         })
         tracks.append(
             {
@@ -1764,6 +1803,8 @@ def _fusion_parameters(args: argparse.Namespace, rlbench_low_dim_path: Path, has
         "same_camera_nms_centroid_distance_m": args.same_camera_nms_centroid_distance_m,
         "same_camera_nms_max_size_ratio": args.same_camera_nms_max_size_ratio,
         "min_fused_camera_count": args.min_fused_camera_count,
+        "preferred_camera": args.preferred_camera,
+        "preferred_camera_weight": args.preferred_camera_weight,
         "camera_visibility_depth_tolerance_m": args.camera_visibility_depth_tolerance_m,
         "camera_visibility_min_point_fraction": args.camera_visibility_min_point_fraction,
         "single_camera_keep_score": args.single_camera_keep_score,

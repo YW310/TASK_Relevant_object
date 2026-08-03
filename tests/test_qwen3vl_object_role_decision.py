@@ -757,13 +757,14 @@ def test_candidate_contact_sheet_uses_two_distinct_best_camera_views(tmp_path):
         paths.append(path)
     candidate = {
         "object_id": "O2",
+        "primary_camera": "front",
         "role_evidence": {
             "target": {"probability": 0.75},
             "reference": {"probability": 0.1},
         },
         "observations": [
-            {"camera": "front", "sam_score": 0.9, "masked_crop_path": str(paths[0])},
-            {"camera": "front", "sam_score": 0.7, "masked_crop_path": str(paths[1])},
+            {"camera": "front", "sam_score": 0.6, "masked_crop_path": str(paths[0])},
+            {"camera": "front", "sam_score": 0.5, "masked_crop_path": str(paths[1])},
             {"camera": "overhead", "sam_score": 0.8, "masked_crop_path": str(paths[2])},
         ],
     }

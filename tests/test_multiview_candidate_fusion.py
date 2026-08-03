@@ -109,6 +109,19 @@ class CrossCameraFusionTest(unittest.TestCase):
 
         self.assertEqual([1, 1], sorted(len(cluster) for cluster in clusters))
 
+    def test_preferred_camera_weight_seeds_hypothesis(self) -> None:
+        front = _observation("front:C1", "front", [[0, 0, 0], [0.10, 0.10, 0.10]])
+        left = _observation("left:C1", "left", [[0.01, 0, 0], [0.11, 0.10, 0.10]])
+        front.role_evidence = {"target": 0.7}
+        left.role_evidence = {"target": 0.9}
+        self.args.preferred_camera = "front"
+        self.args.preferred_camera_weight = 1.5
+
+        clusters = cluster_observations([left, front], self.args)
+
+        self.assertEqual(1, len(clusters))
+        self.assertEqual("front", clusters[0][0].camera)
+
 
 class SameCameraNmsTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -246,6 +259,24 @@ class CameraSupportFilterTest(unittest.TestCase):
             "min_fused_camera_count",
             args._camera_support_diagnostics[0]["reason"],
         )
+
+    def test_camera_support_filter_is_disabled_at_one_camera(self) -> None:
+        candidate = _observation(
+            "front:C1",
+            "front",
+            [[-0.05, -0.05, 1.0], [0.05, 0.05, 1.05]],
+        )
+        args = self._args()
+        args.min_fused_camera_count = 1
+
+        kept = filter_clusters_by_camera_support(
+            [[candidate]],
+            args,
+            {"front": self._context(1.0), "left": self._context(2.0)},
+        )
+
+        self.assertEqual([[candidate]], kept)
+        self.assertEqual([], args._camera_support_diagnostics)
 
     def test_occluded_single_camera_cluster_is_kept(self) -> None:
         candidate = _observation(

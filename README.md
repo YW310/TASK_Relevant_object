@@ -107,9 +107,10 @@ grids, and numbered overlays are stored below `frames/<frame>/<camera>/`.
 `multiview_candidate_fusion.py` intersects every candidate mask with its depth
 image, uses camera intrinsics/extrinsics to lift pixels into world-space point
 clouds, then performs deterministic anchor-camera assignment and tracks the
-resulting role-neutral IDs (`O1`, `O2`, …) across frames. The anchor camera is
-the camera containing the highest-confidence observation (camera name breaks
-ties); remaining cameras use the same confidence-first, name-tiebroken order.
+resulting role-neutral IDs (`O1`, `O2`, …) across frames. Cameras are ordered by
+confidence multiplied by their configured reliability weight, so the default
+`front` weight of `1.5` normally makes it the anchor while still allowing a much
+stronger shoulder-camera observation to lead.
 
 | Python argument | Pipeline variable | Default | Purpose |
 | --- | --- | --- | --- |
@@ -132,7 +133,9 @@ ties); remaining cameras use the same confidence-first, name-tiebroken order.
 | `--same-camera-nms-containment` | `SAME_CAMERA_NMS_CONTAINMENT` | `0.85` | Alternative smaller-mask coverage cue for same-view NMS. |
 | `--same-camera-nms-centroid-distance-m` | `SAME_CAMERA_NMS_CENTROID_DISTANCE_M` | `0.02` m | Required 3D centroid proximity for same-view NMS; `<=0` disables it. |
 | `--same-camera-nms-max-size-ratio` | `SAME_CAMERA_NMS_MAX_SIZE_RATIO` | `2.5` | Required 3D bbox size consistency for same-view NMS. |
-| `--min-fused-camera-count` | `MIN_FUSED_CAMERA_COUNT` | `2` | Drop low-support objects only when enough missing cameras could see their cloud. |
+| `--min-fused-camera-count` | `MIN_FUSED_CAMERA_COUNT` | `1` | Keep valid single-camera objects by default; values above `1` enable strict multi-view support filtering. |
+| `--preferred-camera` | `PREFERRED_CAMERA` | `front` | Camera trusted more for hypothesis seeding, fused centroid, score, and primary-view ordering. |
+| `--preferred-camera-weight` | `PREFERRED_CAMERA_WEIGHT` | `1.5` | Reliability multiplier for the preferred camera; `1.0` makes all cameras equal. |
 | `--camera-visibility-depth-tolerance-m` | `CAMERA_VISIBILITY_DEPTH_TOLERANCE_M` | `0.03` m | Depth tolerance for missing-view visibility/occlusion checks. |
 | `--camera-visibility-min-point-fraction` | `CAMERA_VISIBILITY_MIN_POINT_FRACTION` | `0.05` | Minimum projected cloud fraction required to call a missing view observable. |
 | `--single-camera-keep-score` | `SINGLE_CAMERA_KEEP_SCORE` | `0.0` (off) | Optional confidence exception to the camera-support filter. |
@@ -165,11 +168,12 @@ centroid spread, robust diameter, box size, and enabled IoU/surface limits. A
 per-camera Hungarian assignment includes explicit dummy columns, so an
 incompatible observation creates a new hypothesis instead of being forced into
 one; consequently every hypothesis has at most one observation per camera.
-After clustering, the camera-support filter reprojects low-support clouds into
-missing views and checks scene depth. It removes an object only when enough
-other cameras could have observed it; out-of-frame, missing-depth, or occluded
-objects are retained. `--single-camera-keep-score` provides an optional
-additional confidence exception.
+By default, a valid observation from any single camera is retained. Setting
+`--min-fused-camera-count` above `1` restores the optional strict support filter,
+which reprojects low-support clouds into missing views and checks scene depth.
+The preferred camera (default `front`) receives a modest reliability weight and
+therefore tends to seed ambiguous hypotheses and dominate fused centroids and
+scores without discarding evidence from the shoulder cameras.
 Appearance embeddings are intentionally not part of this geometry-only MVP.
 `object_summary.json` is generated
 automatically when Stage 4 is enabled.
