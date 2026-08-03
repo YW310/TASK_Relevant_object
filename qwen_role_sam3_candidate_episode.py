@@ -305,6 +305,14 @@ def canonicalize_candidates(
         for index, group in enumerate(groups):
             representative = group[0]
             iou, coverage = mask_overlap_metrics(candidate["mask"], representative["mask"])
+            # A same-role partial mask may already have joined a full-mask
+            # representative. Compare against every member for strict IoU so
+            # its target/reference twin can still enter the same physical
+            # group instead of becoming a second canonical candidate.
+            member_iou = max(
+                mask_overlap_metrics(candidate["mask"], member["mask"])[0]
+                for member in group
+            )
             biou = bbox_iou_2d(candidate.get("mask_bbox_xyxy"), representative.get("mask_bbox_xyxy"))
             candidate_area = int(candidate["mask"].sum())
             representative_area = int(representative["mask"].sum())
@@ -329,8 +337,8 @@ def canonicalize_candidates(
                 and biou >= bbox_iou_threshold
                 and coverage >= 0.50
             )
-            if iou >= iou_threshold or containment_match or bbox_support_match:
-                matches.append((index, iou, coverage, biou, area_ratio))
+            if member_iou >= iou_threshold or containment_match or bbox_support_match:
+                matches.append((index, max(iou, member_iou), coverage, biou, area_ratio))
         # Do not bridge two distinct objects through a broad/ambiguous mask.
         if len(matches) == 1:
             groups[matches[0][0]].append(candidate)
@@ -418,6 +426,9 @@ def candidate_generation_parameters(
 ) -> dict[str, Any]:
     """Parameters whose changes require regenerating cached Stage-1 masks."""
     return {
+        # Bump this whenever canonicalization semantics change so resume mode does
+        # not silently reuse masks produced by an older grouping algorithm.
+        "canonicalization_algorithm": "group_member_iou_v2",
         "threshold": float(threshold),
         "candidate_pool_size": int(args.candidate_pool_size),
         "min_mask_area": int(args.min_mask_area),

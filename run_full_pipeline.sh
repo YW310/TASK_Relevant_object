@@ -32,8 +32,12 @@
 #   CLUSTER_DISTANCE_M (default: 0.03)      Fusion clustering centroid distance threshold.
 #   SAME_CAMERA_NMS_MASK_IOU (default: 0.55) Same-view mask IoU for strict 2D+3D duplicate suppression.
 #   SAME_CAMERA_NMS_CONTAINMENT (default: 0.85) Same-view smaller-mask coverage NMS cue.
-#   SAME_CAMERA_NMS_CENTROID_DISTANCE_M (default: 0.02) Same-view 3D centroid NMS gate.
+#   SAME_CAMERA_NMS_CENTROID_DISTANCE_M (default: 0.03) Same-view 3D centroid NMS gate.
 #   SAME_CAMERA_NMS_MAX_SIZE_RATIO (default: 2.5) Same-view 3D bbox size-consistency gate.
+#   SAME_CAMERA_NMS_FRAGMENT_MAX_POINT_RATIO (default: 0.45) Small/large cloud ratio for fragment suppression.
+#   SAME_CAMERA_NMS_FRAGMENT_MIN_BBOX_CONTAINMENT (default: 0.90) Required 3D fragment containment.
+#   SAME_CAMERA_NMS_FRAGMENT_CLOUD_DISTANCE_M (default: 0.018) Fragment-to-receiver cloud distance.
+#   SAME_CAMERA_NMS_FRAGMENT_MIN_CLOUD_FRACTION (default: 0.65) Required nearby fragment point fraction.
 #   MIN_FUSED_CAMERA_COUNT (default: 1)      Keep valid single-camera objects; >1 enables strict support filtering.
 #   PREFERRED_CAMERA (default: front)        Camera trusted more during cross-view fusion.
 #   PREFERRED_CAMERA_WEIGHT (default: 1.5)   Reliability multiplier for the preferred camera.
@@ -185,8 +189,12 @@ CANDIDATE_DRY_RUN="${CANDIDATE_DRY_RUN:-0}"
 CLUSTER_DISTANCE_M="${CLUSTER_DISTANCE_M:-0.03}"
 SAME_CAMERA_NMS_MASK_IOU="${SAME_CAMERA_NMS_MASK_IOU:-0.55}"
 SAME_CAMERA_NMS_CONTAINMENT="${SAME_CAMERA_NMS_CONTAINMENT:-0.85}"
-SAME_CAMERA_NMS_CENTROID_DISTANCE_M="${SAME_CAMERA_NMS_CENTROID_DISTANCE_M:-0.02}"
+SAME_CAMERA_NMS_CENTROID_DISTANCE_M="${SAME_CAMERA_NMS_CENTROID_DISTANCE_M:-0.03}"
 SAME_CAMERA_NMS_MAX_SIZE_RATIO="${SAME_CAMERA_NMS_MAX_SIZE_RATIO:-2.5}"
+SAME_CAMERA_NMS_FRAGMENT_MAX_POINT_RATIO="${SAME_CAMERA_NMS_FRAGMENT_MAX_POINT_RATIO:-0.45}"
+SAME_CAMERA_NMS_FRAGMENT_MIN_BBOX_CONTAINMENT="${SAME_CAMERA_NMS_FRAGMENT_MIN_BBOX_CONTAINMENT:-0.90}"
+SAME_CAMERA_NMS_FRAGMENT_CLOUD_DISTANCE_M="${SAME_CAMERA_NMS_FRAGMENT_CLOUD_DISTANCE_M:-0.018}"
+SAME_CAMERA_NMS_FRAGMENT_MIN_CLOUD_FRACTION="${SAME_CAMERA_NMS_FRAGMENT_MIN_CLOUD_FRACTION:-0.65}"
 MIN_FUSED_CAMERA_COUNT="${MIN_FUSED_CAMERA_COUNT:-1}"
 PREFERRED_CAMERA="${PREFERRED_CAMERA:-front}"
 PREFERRED_CAMERA_WEIGHT="${PREFERRED_CAMERA_WEIGHT:-1.5}"
@@ -387,6 +395,10 @@ else
     --same-camera-nms-containment "${SAME_CAMERA_NMS_CONTAINMENT}"
     --same-camera-nms-centroid-distance-m "${SAME_CAMERA_NMS_CENTROID_DISTANCE_M}"
     --same-camera-nms-max-size-ratio "${SAME_CAMERA_NMS_MAX_SIZE_RATIO}"
+    --same-camera-nms-fragment-max-point-ratio "${SAME_CAMERA_NMS_FRAGMENT_MAX_POINT_RATIO}"
+    --same-camera-nms-fragment-min-bbox-containment "${SAME_CAMERA_NMS_FRAGMENT_MIN_BBOX_CONTAINMENT}"
+    --same-camera-nms-fragment-cloud-distance-m "${SAME_CAMERA_NMS_FRAGMENT_CLOUD_DISTANCE_M}"
+    --same-camera-nms-fragment-min-cloud-fraction "${SAME_CAMERA_NMS_FRAGMENT_MIN_CLOUD_FRACTION}"
     --min-fused-camera-count "${MIN_FUSED_CAMERA_COUNT}"
     --preferred-camera "${PREFERRED_CAMERA}"
     --preferred-camera-weight "${PREFERRED_CAMERA_WEIGHT}"

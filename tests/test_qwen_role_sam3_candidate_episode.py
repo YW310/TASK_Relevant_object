@@ -128,6 +128,28 @@ class CanonicalizationContainmentTests(unittest.TestCase):
 
         self.assertEqual(2, len(canonical))
 
+    def test_cross_role_twin_matches_a_partial_member_of_full_mask_group(self) -> None:
+        whole = np.zeros((10, 10), dtype=bool)
+        whole[1:9, 1:9] = True
+        partial = np.zeros_like(whole)
+        partial[2:6, 2:6] = True
+
+        canonical, suppressed = canonicalize_candidates(
+            [
+                _candidate("T1", "target", 0.95, whole),
+                _candidate("T2", "target", 0.80, partial),
+                _candidate("R2", "reference", 0.79, partial.copy()),
+            ],
+            iou_threshold=0.80,
+            containment_threshold=0.90,
+            max_containment_area_ratio=4.0,
+            suppress_multi_instance_masks=False,
+        )
+
+        self.assertEqual(1, len(canonical))
+        self.assertEqual({"target", "reference"}, set(canonical[0]["role_scores"]))
+        self.assertEqual(2, len(suppressed))
+
     def test_broad_same_role_group_mask_is_suppressed(self) -> None:
         broad = np.zeros((14, 14), dtype=bool)
         broad[1:13, 1:13] = True

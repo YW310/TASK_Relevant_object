@@ -149,7 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--same-camera-nms-centroid-distance-m",
         type=float,
-        default=0.02,
+        default=0.03,
         help=(
             "Maximum 3D centroid distance for same-camera duplicate suppression. "
             "Set <=0 to disable same-camera NMS entirely."
@@ -163,6 +163,30 @@ def build_parser() -> argparse.ArgumentParser:
             "Maximum non-degenerate axis-wise 3D bbox size ratio for same-camera "
             "duplicate suppression."
         ),
+    )
+    parser.add_argument(
+        "--same-camera-nms-fragment-max-point-ratio",
+        type=float,
+        default=0.45,
+        help="Maximum fragment/receiver point-count ratio for subset duplicate suppression; <=0 disables the fragment path.",
+    )
+    parser.add_argument(
+        "--same-camera-nms-fragment-min-bbox-containment",
+        type=float,
+        default=0.90,
+        help="Minimum per-axis 3D bbox containment for a small same-view fragment.",
+    )
+    parser.add_argument(
+        "--same-camera-nms-fragment-cloud-distance-m",
+        type=float,
+        default=0.018,
+        help="Maximum point-to-cloud distance used to verify a contained same-view fragment.",
+    )
+    parser.add_argument(
+        "--same-camera-nms-fragment-min-cloud-fraction",
+        type=float,
+        default=0.65,
+        help="Minimum fraction of fragment points close to the receiver cloud.",
     )
     parser.add_argument(
         "--min-fused-camera-count",
@@ -1527,6 +1551,8 @@ def fuse_frame(
     mask_area_suppressed: list[dict[str, Any]] = []
     canonicalization_suppressed: list[dict[str, Any]] = []
     same_camera_nms_suppressed: list[dict[str, Any]] = []
+    same_camera_nms_rejected: list[dict[str, Any]] = []
+    args._same_camera_nms_rejected = same_camera_nms_rejected
     camera_contexts: dict[str, dict[str, np.ndarray]] = {}
     frame_id = str(frame["frame_id"])
     frame_index = frame_index_from_frame(frame)
@@ -1702,6 +1728,7 @@ def fuse_frame(
             "diagnostics": {"mask_area_suppressed": mask_area_suppressed,
                             "canonicalization_suppressed": canonicalization_suppressed,
                             "same_camera_nms_suppressed": same_camera_nms_suppressed,
+                            "same_camera_nms_rejected": same_camera_nms_rejected,
                             "backprojection": backprojection_records,
                             "attempted_same_camera_cluster_insertions": same_camera_diagnostics,
                             "camera_support": camera_support_diagnostics,
@@ -1768,6 +1795,10 @@ def _fusion_parameters(args: argparse.Namespace, rlbench_low_dim_path: Path, has
         "same_camera_nms_containment": args.same_camera_nms_containment,
         "same_camera_nms_centroid_distance_m": args.same_camera_nms_centroid_distance_m,
         "same_camera_nms_max_size_ratio": args.same_camera_nms_max_size_ratio,
+        "same_camera_nms_fragment_max_point_ratio": args.same_camera_nms_fragment_max_point_ratio,
+        "same_camera_nms_fragment_min_bbox_containment": args.same_camera_nms_fragment_min_bbox_containment,
+        "same_camera_nms_fragment_cloud_distance_m": args.same_camera_nms_fragment_cloud_distance_m,
+        "same_camera_nms_fragment_min_cloud_fraction": args.same_camera_nms_fragment_min_cloud_fraction,
         "min_fused_camera_count": args.min_fused_camera_count,
         "preferred_camera": args.preferred_camera,
         "preferred_camera_weight": args.preferred_camera_weight,

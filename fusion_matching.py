@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Mapping
 from typing import Any, Sequence
 
 import numpy as np
@@ -43,6 +44,134 @@ def _confidence(obs: Observation3D) -> float:
         obs.role_evidence.values(),
         default=float(obs.candidate.get("score", 0.0)),
     )
+
+
+def _source_prompts(obs: Observation3D) -> set[str]:
+    prompts: set[str] = set()
+    provenance = obs.provenance if isinstance(obs.provenance, Mapping) else {}
+    prompt = provenance.get("prompt")
+    if prompt:
+        prompts.add(str(prompt).strip().lower())
+    for item in provenance.get("prompt_provenance", []):
+        if not isinstance(item, Mapping):
+            continue
+        prompt = item.get("source_prompt") or item.get("prompt")
+        if prompt:
+            prompts.add(str(prompt).strip().lower())
+    return prompts
+
+
+def _is_specific_interaction_part(obs: Observation3D) -> bool:
+    part_score = float(obs.role_evidence.get("interaction_part", 0.0))
+    object_score = max(
+        float(obs.role_evidence.get("target", 0.0)),
+        float(obs.role_evidence.get("reference", 0.0)),
+    )
+    return part_score >= 0.25 and part_score >= object_score
+
+
+def _bbox_axis_containment(small: np.ndarray, large: np.ndarray) -> float:
+    raw_size = np.maximum(0.0, small[1] - small[0])
+    small_size = np.maximum(raw_size, 1e-6)
+    intersection = np.maximum(
+        0.0,
+        np.minimum(small[1], large[1]) - np.maximum(small[0], large[0]),
+    )
+    coverage = np.clip(intersection / small_size, 0.0, 1.0)
+    degenerate = raw_size <= 1e-4
+    if np.any(degenerate):
+        midpoint = (small[0] + small[1]) / 2.0
+        inside = (midpoint >= large[0] - 1e-4) & (midpoint <= large[1] + 1e-4)
+        coverage[degenerate] = inside[degenerate].astype(np.float64)
+    return float(np.min(coverage))
+
+
+def _point_to_cloud_fraction(
+    source: np.ndarray,
+    target: np.ndarray,
+    max_distance_m: float,
+) -> float:
+    if len(source) == 0 or len(target) == 0 or max_distance_m <= 0.0:
+        return 0.0
+    source_sample = source[:: max(1, len(source) // 512)][:512]
+    target_sample = target[:: max(1, len(target) // 2048)][:2048]
+    threshold_sq = float(max_distance_m) ** 2
+    close = 0
+    for start in range(0, len(source_sample), 64):
+        chunk = source_sample[start : start + 64]
+        squared = np.sum(
+            (chunk[:, None, :] - target_sample[None, :, :]) ** 2,
+            axis=2,
+        )
+        close += int(np.sum(np.min(squared, axis=1) <= threshold_sq))
+    return float(close / len(source_sample))
+
+
+def _fragment_subset_metrics(
+    first: Observation3D,
+    second: Observation3D,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    if len(first.points_world) <= len(second.points_world):
+        fragment, receiver = first, second
+    else:
+        fragment, receiver = second, first
+    point_ratio = len(fragment.points_world) / max(1, len(receiver.points_world))
+    bbox_containment = _bbox_axis_containment(
+        fragment.bbox3d_world,
+        receiver.bbox3d_world,
+    )
+    shared_prompts = sorted(_source_prompts(fragment) & _source_prompts(receiver))
+    max_point_ratio = float(
+        getattr(args, "same_camera_nms_fragment_max_point_ratio", 0.45)
+    )
+    min_bbox_containment = float(
+        getattr(args, "same_camera_nms_fragment_min_bbox_containment", 0.90)
+    )
+    # Point-to-cloud comparison is the expensive gate. Only evaluate it for a
+    # small, semantically compatible cloud already contained by the receiver.
+    fragment_candidate = bool(
+        max_point_ratio > 0.0
+        and point_ratio <= max_point_ratio
+        and bbox_containment >= min_bbox_containment
+        and shared_prompts
+    )
+    cloud_fraction = (
+        _point_to_cloud_fraction(
+            fragment.points_world,
+            receiver.points_world,
+            float(
+                getattr(args, "same_camera_nms_fragment_cloud_distance_m", 0.018)
+            ),
+        )
+        if fragment_candidate
+        else 0.0
+    )
+    return {
+        "fragment_observation_id": fragment.observation_id,
+        "receiver_observation_id": receiver.observation_id,
+        "point_ratio": point_ratio,
+        "bbox_axis_containment": bbox_containment,
+        "point_to_cloud_fraction": cloud_fraction,
+        "shared_prompts": shared_prompts,
+        "is_match": bool(
+            fragment_candidate
+            and cloud_fraction
+            >= float(
+                getattr(args, "same_camera_nms_fragment_min_cloud_fraction", 0.65)
+            )
+            and bool(shared_prompts)
+        ),
+    }
+
+
+def _record_same_camera_nms_rejection(
+    args: argparse.Namespace,
+    detail: dict[str, Any],
+) -> None:
+    rejected = getattr(args, "_same_camera_nms_rejected", None)
+    if isinstance(rejected, list) and len(rejected) < 200:
+        rejected.append(detail)
 
 
 def camera_priority_weight(camera: str, args: argparse.Namespace) -> float:
@@ -129,15 +258,8 @@ def suppress_same_camera_duplicates(
     kept: list[tuple[Observation3D, np.ndarray]] = []
     diagnostics: list[dict[str, Any]] = []
     for observation, mask in ranked:
-        best_match: tuple[
-            tuple[float, float, float],
-            Observation3D,
-            float,
-            float,
-            float,
-            float,
-        ] | None = None
-        for primary, primary_mask in kept:
+        best_match: tuple[Any, ...] | None = None
+        for kept_index, (primary, primary_mask) in enumerate(kept):
             iou, containment = mask_overlap_metrics(mask, primary_mask)
             overlap_ok = (
                 (mask_iou_threshold > 0.0 and iou >= mask_iou_threshold)
@@ -146,51 +268,147 @@ def suppress_same_camera_duplicates(
                     and containment >= containment_threshold
                 )
             )
-            if not overlap_ok:
-                continue
             centroid_distance = float(
                 np.linalg.norm(
                     observation.centroid_world - primary.centroid_world
                 )
             )
             if centroid_distance > centroid_threshold:
+                if overlap_ok:
+                    _record_same_camera_nms_rejection(
+                        args,
+                        {
+                            "camera": observation.camera,
+                            "candidate_a": observation.candidate.get("id"),
+                            "candidate_b": primary.candidate.get("id"),
+                            "failed_gate": "centroid_distance",
+                            "centroid_distance_m": centroid_distance,
+                            "limit_m": centroid_threshold,
+                            "mask_iou": iou,
+                            "smaller_mask_coverage": containment,
+                        },
+                    )
+                continue
+            if _is_specific_interaction_part(observation) != _is_specific_interaction_part(primary):
+                if overlap_ok:
+                    _record_same_camera_nms_rejection(
+                        args,
+                        {
+                            "camera": observation.camera,
+                            "candidate_a": observation.candidate.get("id"),
+                            "candidate_b": primary.candidate.get("id"),
+                            "failed_gate": "interaction_part_protection",
+                            "centroid_distance_m": centroid_distance,
+                            "mask_iou": iou,
+                            "smaller_mask_coverage": containment,
+                        },
+                    )
                 continue
             size_ratio = bbox_max_axis_size_ratio(
                 observation.bbox3d_world,
                 primary.bbox3d_world,
             )
-            if max_size_ratio > 0.0 and size_ratio > max_size_ratio:
+            standard_match = bool(
+                overlap_ok
+                and (max_size_ratio <= 0.0 or size_ratio <= max_size_ratio)
+            )
+            fragment_metrics = _fragment_subset_metrics(observation, primary, args)
+            fragment_match = bool(fragment_metrics["is_match"])
+            if not standard_match and not fragment_match:
+                plausible_fragment = bool(
+                    fragment_metrics["shared_prompts"]
+                    and float(fragment_metrics["point_ratio"]) <= 0.60
+                    and float(fragment_metrics["bbox_axis_containment"]) >= 0.50
+                )
+                if overlap_ok or plausible_fragment:
+                    _record_same_camera_nms_rejection(
+                        args,
+                        {
+                            "camera": observation.camera,
+                            "candidate_a": observation.candidate.get("id"),
+                            "candidate_b": primary.candidate.get("id"),
+                            "failed_gate": "size_or_fragment_consistency",
+                            "centroid_distance_m": centroid_distance,
+                            "mask_iou": iou,
+                            "smaller_mask_coverage": containment,
+                            "max_bbox_axis_size_ratio": size_ratio,
+                            "fragment_point_ratio": fragment_metrics["point_ratio"],
+                            "fragment_bbox_axis_containment": fragment_metrics[
+                                "bbox_axis_containment"
+                            ],
+                            "fragment_point_to_cloud_fraction": fragment_metrics[
+                                "point_to_cloud_fraction"
+                            ],
+                            "shared_prompts": fragment_metrics["shared_prompts"],
+                        },
+                    )
                 continue
-            rank = (-max(iou, containment), centroid_distance, size_ratio)
+            match_mode = "strict_2d_3d" if standard_match else "fragment_subset"
+            strength = max(
+                iou,
+                containment,
+                float(fragment_metrics["bbox_axis_containment"]),
+                float(fragment_metrics["point_to_cloud_fraction"]),
+            )
+            rank = (-strength, centroid_distance, size_ratio)
             if best_match is None or rank < best_match[0]:
                 best_match = (
                     rank,
+                    kept_index,
                     primary,
                     iou,
                     containment,
                     centroid_distance,
                     size_ratio,
+                    match_mode,
+                    fragment_metrics,
                 )
 
         if best_match is None:
             kept.append((observation, mask))
             continue
 
-        _, primary, iou, containment, centroid_distance, size_ratio = best_match
-        _merge_same_camera_role_evidence(primary, observation)
+        (
+            _,
+            kept_index,
+            primary,
+            iou,
+            containment,
+            centroid_distance,
+            size_ratio,
+            match_mode,
+            fragment_metrics,
+        ) = best_match
+        kept_observation, suppressed_observation = primary, observation
+        if (
+            match_mode == "fragment_subset"
+            and len(observation.points_world) > len(primary.points_world)
+        ):
+            kept_observation, suppressed_observation = observation, primary
+            kept[kept_index] = (observation, mask)
+        _merge_same_camera_role_evidence(kept_observation, suppressed_observation)
         diagnostics.append(
             {
                 "camera": observation.camera,
-                "kept_observation_id": primary.observation_id,
-                "kept_candidate_id": primary.candidate.get("id"),
-                "suppressed_observation_id": observation.observation_id,
-                "suppressed_candidate_id": observation.candidate.get("id"),
+                "kept_observation_id": kept_observation.observation_id,
+                "kept_candidate_id": kept_observation.candidate.get("id"),
+                "suppressed_observation_id": suppressed_observation.observation_id,
+                "suppressed_candidate_id": suppressed_observation.candidate.get("id"),
                 "mask_iou": iou,
                 "smaller_mask_coverage": containment,
                 "centroid_distance_m": centroid_distance,
                 "max_bbox_axis_size_ratio": size_ratio,
-                "kept_confidence": _confidence(primary),
-                "suppressed_confidence": _confidence(observation),
+                "match_mode": match_mode,
+                "fragment_point_ratio": fragment_metrics["point_ratio"],
+                "fragment_bbox_axis_containment": fragment_metrics[
+                    "bbox_axis_containment"
+                ],
+                "fragment_point_to_cloud_fraction": fragment_metrics[
+                    "point_to_cloud_fraction"
+                ],
+                "shared_prompts": fragment_metrics["shared_prompts"],
+                "kept_confidence": _confidence(kept_observation),
+                "suppressed_confidence": _confidence(suppressed_observation),
                 "reason": "same_camera_2d_3d_nms",
             }
         )

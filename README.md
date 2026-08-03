@@ -135,8 +135,12 @@ stronger shoulder-camera observation to lead.
 | `--max-size-ratio` | — | `4.0` | Maximum axis-wise box-size ratio. |
 | `--same-camera-nms-mask-iou` | `SAME_CAMERA_NMS_MASK_IOU` | `0.55` | Same-view mask IoU cue for strict 2D+3D duplicate suppression. |
 | `--same-camera-nms-containment` | `SAME_CAMERA_NMS_CONTAINMENT` | `0.85` | Alternative smaller-mask coverage cue for same-view NMS. |
-| `--same-camera-nms-centroid-distance-m` | `SAME_CAMERA_NMS_CENTROID_DISTANCE_M` | `0.02` m | Required 3D centroid proximity for same-view NMS; `<=0` disables it. |
+| `--same-camera-nms-centroid-distance-m` | `SAME_CAMERA_NMS_CENTROID_DISTANCE_M` | `0.03` m | Required 3D centroid proximity for same-view NMS; `<=0` disables it. |
 | `--same-camera-nms-max-size-ratio` | `SAME_CAMERA_NMS_MAX_SIZE_RATIO` | `2.5` | Required 3D bbox size consistency for same-view NMS. |
+| `--same-camera-nms-fragment-max-point-ratio` | `SAME_CAMERA_NMS_FRAGMENT_MAX_POINT_RATIO` | `0.45` | Maximum small/large cloud ratio for contained-fragment suppression. |
+| `--same-camera-nms-fragment-min-bbox-containment` | `SAME_CAMERA_NMS_FRAGMENT_MIN_BBOX_CONTAINMENT` | `0.90` | Required per-axis 3D containment of the fragment bbox. |
+| `--same-camera-nms-fragment-cloud-distance-m` | `SAME_CAMERA_NMS_FRAGMENT_CLOUD_DISTANCE_M` | `0.018` m | Point-to-cloud tolerance for verifying a fragment belongs to the receiver. |
+| `--same-camera-nms-fragment-min-cloud-fraction` | `SAME_CAMERA_NMS_FRAGMENT_MIN_CLOUD_FRACTION` | `0.65` | Required nearby fraction of fragment points. |
 | `--min-fused-camera-count` | `MIN_FUSED_CAMERA_COUNT` | `1` | Keep valid single-camera objects by default; values above `1` enable strict multi-view support filtering. |
 | `--preferred-camera` | `PREFERRED_CAMERA` | `front` | Camera trusted more for hypothesis seeding, fused centroid, score, and primary-view ordering. |
 | `--preferred-camera-weight` | `PREFERRED_CAMERA_WEIGHT` | `1.5` | Reliability multiplier for the preferred camera; `1.0` makes all cameras equal. |
@@ -158,12 +162,16 @@ stronger shoulder-camera observation to lead.
 | `--save-object-summary` | `SAVE_OBJECT_SUMMARY` | off | Export trajectories and decision-ready object evidence. |
 | `--object-summary-json` | `OBJECT_SUMMARY_JSON` | `object_summary.json` | Override the summary path. |
 
-Before anchor assignment, each camera independently runs strict duplicate NMS:
-a lower-confidence mask is suppressed only when mask IoU/containment, 3D
-centroid distance, and bbox size consistency all agree. Suppressed semantic
-role evidence is retained on the winning observation and the frame diagnostic
-records every decision. This prevents multiple masks for one physical object
-in the anchor camera from seeding multiple `O*` hypotheses.
+Before anchor assignment, each camera independently runs duplicate NMS. The
+standard path requires mask IoU/containment, 3D centroid distance, and bbox size
+consistency. A second conservative path handles a small partial cloud whose 3D
+bbox and points are contained by a larger same-prompt observation, even when the
+two 2D masks do not overlap. It does not merge different prompts or a specific
+`interaction_part` with a whole object. Suppressed semantic role evidence is
+retained on the winning observation; `fusion_debug.json` records both accepted
+suppression (`same_camera_nms_suppressed`) and bounded near-miss diagnostics
+(`same_camera_nms_rejected`). This prevents partial masks for one physical
+object in the anchor camera from seeding multiple `O*` hypotheses.
 
 Pairwise centroid, bbox-IoU, and nearest-point tests remain alternative cheap
 compatibility gates only. They never define the final transitive partition.

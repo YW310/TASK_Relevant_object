@@ -216,6 +216,27 @@ def _observation(name: str, camera: str, bbox: list[list[float]]) -> Observation
     )
 
 
+def _observation_from_points(
+    name: str,
+    camera: str,
+    points: list[list[float]],
+    prompt: str,
+    role_evidence: dict[str, float] | None = None,
+    score: float = 0.9,
+) -> Observation3D:
+    cloud = np.asarray(points, dtype=np.float64)
+    return Observation3D(
+        observation_id=name,
+        role_evidence=role_evidence or {"target": score},
+        provenance={"prompt_provenance": [{"source_prompt": prompt}]},
+        camera=camera,
+        candidate={"id": name.split(":")[-1], "score": score},
+        points_world=cloud,
+        centroid_world=cloud.mean(axis=0),
+        bbox3d_world=np.stack([cloud.min(axis=0), cloud.max(axis=0)]),
+    )
+
+
 class CrossCameraFusionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.args = SimpleNamespace(
@@ -292,8 +313,12 @@ class SameCameraNmsTest(unittest.TestCase):
         self.args = SimpleNamespace(
             same_camera_nms_mask_iou=0.55,
             same_camera_nms_containment=0.85,
-            same_camera_nms_centroid_distance_m=0.02,
+            same_camera_nms_centroid_distance_m=0.03,
             same_camera_nms_max_size_ratio=2.5,
+            same_camera_nms_fragment_max_point_ratio=0.45,
+            same_camera_nms_fragment_min_bbox_containment=0.90,
+            same_camera_nms_fragment_cloud_distance_m=0.018,
+            same_camera_nms_fragment_min_cloud_fraction=0.65,
         )
 
     def test_strict_2d_3d_duplicate_is_suppressed_and_evidence_retained(self) -> None:
@@ -333,6 +358,7 @@ class SameCameraNmsTest(unittest.TestCase):
         )
 
     def test_overlapping_masks_at_different_depths_remain_separate(self) -> None:
+        self.args._same_camera_nms_rejected = []
         near = _observation(
             "front:C1",
             "front",
@@ -348,6 +374,107 @@ class SameCameraNmsTest(unittest.TestCase):
 
         kept, diagnostics = suppress_same_camera_duplicates(
             [(near, mask), (far, mask.copy())],
+            self.args,
+        )
+
+        self.assertEqual(2, len(kept))
+        self.assertEqual([], diagnostics)
+        self.assertEqual(
+            "centroid_distance",
+            self.args._same_camera_nms_rejected[0]["failed_gate"],
+        )
+
+    def test_contained_thin_fragment_is_suppressed_without_2d_overlap(self) -> None:
+        main = _observation_from_points(
+            "front:C1",
+            "front",
+            [
+                [0.00, 0.00, 1.00],
+                [0.10, 0.00, 1.00],
+                [0.00, 0.10, 1.00],
+                [0.10, 0.10, 1.00],
+                [0.00, 0.00, 1.10],
+                [0.10, 0.00, 1.10],
+                [0.00, 0.10, 1.10],
+                [0.10, 0.10, 1.10],
+                [0.04, 0.05, 1.05],
+                [0.06, 0.05, 1.05],
+            ],
+            "a magenta block",
+            score=0.85,
+        )
+        fragment = _observation_from_points(
+            "front:C8",
+            "front",
+            [
+                [0.04, 0.05, 1.05],
+                [0.05, 0.05, 1.05],
+                [0.06, 0.05, 1.05],
+            ],
+            "a magenta block",
+            role_evidence={"reference": 0.22},
+            score=0.22,
+        )
+        main_mask = np.zeros((16, 16), dtype=bool)
+        main_mask[2:8, 2:8] = True
+        fragment_mask = np.zeros_like(main_mask)
+        fragment_mask[10:12, 10:13] = True
+
+        kept, diagnostics = suppress_same_camera_duplicates(
+            [(main, main_mask), (fragment, fragment_mask)],
+            self.args,
+        )
+
+        self.assertEqual([main], kept)
+        self.assertEqual("fragment_subset", diagnostics[0]["match_mode"])
+        self.assertEqual("C8", diagnostics[0]["suppressed_candidate_id"])
+        self.assertEqual(1.0, diagnostics[0]["fragment_bbox_axis_containment"])
+        self.assertEqual(1.0, diagnostics[0]["fragment_point_to_cloud_fraction"])
+
+    def test_fragment_path_requires_shared_semantic_prompt(self) -> None:
+        main = _observation_from_points(
+            "front:C1",
+            "front",
+            [[0, 0, 1.0], [0.1, 0.1, 1.1], [0.05, 0.05, 1.05]] * 4,
+            "a magenta block",
+        )
+        nested = _observation_from_points(
+            "front:C2",
+            "front",
+            [[0.04, 0.04, 1.04], [0.05, 0.05, 1.05], [0.06, 0.06, 1.06]],
+            "a separate handle",
+            score=0.2,
+        )
+        mask_a = np.zeros((12, 12), dtype=bool)
+        mask_b = np.zeros_like(mask_a)
+
+        kept, diagnostics = suppress_same_camera_duplicates(
+            [(main, mask_a), (nested, mask_b)],
+            self.args,
+        )
+
+        self.assertEqual(2, len(kept))
+        self.assertEqual([], diagnostics)
+
+    def test_interaction_part_is_not_absorbed_by_whole_object(self) -> None:
+        main = _observation_from_points(
+            "front:C1",
+            "front",
+            [[0, 0, 1.0], [0.1, 0.1, 1.1], [0.05, 0.05, 1.05]] * 4,
+            "drawer",
+        )
+        handle = _observation_from_points(
+            "front:P1",
+            "front",
+            [[0.04, 0.04, 1.04], [0.05, 0.05, 1.05], [0.06, 0.06, 1.06]],
+            "drawer",
+            role_evidence={"interaction_part": 0.9},
+            score=0.9,
+        )
+        mask = np.ones((12, 12), dtype=bool)
+
+        kept, diagnostics = suppress_same_camera_duplicates(
+            [(main, mask), (handle, mask.copy())],
             self.args,
         )
 
