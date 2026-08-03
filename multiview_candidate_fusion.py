@@ -243,20 +243,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--track-distance-m",
         type=float,
-        default=0.15,
+        default=0.22,
         help=(
             "Max centroid displacement (meters) between consecutive processed frames for a "
             "fused object to keep its id (e.g. 'O1') across frames. Without this, ids "
             "are re-derived from scratch every frame by sorting clusters, which can silently "
             "flip which physical object is 'O1' vs 'O2' between frames whenever their sort order "
             "changes -- increase this if --frame-interval is large and objects move a lot between "
-            "selected frames, decrease it if unrelated objects are close together."
+            "selected frames, decrease it if unrelated objects are close together. The "
+            "limit is per processed frame, so FRAME_INTERVAL=10 spans ten source frames."
         ),
     )
     parser.add_argument(
         "--track-max-missed-frames",
         type=int,
-        default=2,
+        default=4,
         help=(
             "Keep an unmatched object track alive for this many processed frames so a "
             "short occlusion does not force a new object ID."
@@ -265,7 +266,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--track-max-size-ratio",
         type=float,
-        default=2.5,
+        default=4.0,
         help=(
             "Reject a temporal ID match when non-degenerate 3D bbox axes change by more "
             "than this ratio. Set <=0 to disable the tracking size gate."

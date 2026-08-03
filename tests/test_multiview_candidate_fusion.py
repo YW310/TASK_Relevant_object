@@ -488,36 +488,52 @@ class CameraSupportFilterTest(unittest.TestCase):
 class TemporalObjectTrackingTest(unittest.TestCase):
     def setUp(self) -> None:
         self.args = SimpleNamespace(
-            track_distance_m=0.15,
-            track_max_missed_frames=2,
-            track_max_size_ratio=2.5,
+            track_distance_m=0.22,
+            track_max_missed_frames=4,
+            track_max_size_ratio=4.0,
         )
 
-    def test_track_id_survives_two_missing_frames(self) -> None:
+    def test_track_id_survives_four_missing_frames(self) -> None:
         first = _observation("front:C1", "front", [[0, 0, 0], [0.10, 0.10, 0.10]])
         objects, state = assign_object_ids([[first]], {}, self.args, "f0")
         self.assertEqual(["O1"], [item["id"] for item in objects])
 
-        objects, state = assign_object_ids([], state, self.args, "f1")
-        self.assertEqual([], objects)
-        self.assertEqual(1, state["tracks"][0]["missed_frames"])
-        objects, state = assign_object_ids([], state, self.args, "f2")
-        self.assertEqual([], objects)
-        self.assertEqual(2, state["tracks"][0]["missed_frames"])
+        for missed_count, frame_id in enumerate(("f1", "f2", "f3", "f4"), 1):
+            objects, state = assign_object_ids([], state, self.args, frame_id)
+            self.assertEqual([], objects)
+            self.assertEqual(missed_count, state["tracks"][0]["missed_frames"])
 
         reappeared = _observation("front:C1", "front", [[0.01, 0, 0], [0.11, 0.10, 0.10]])
-        objects, _ = assign_object_ids([[reappeared]], state, self.args, "f3")
+        objects, _ = assign_object_ids([[reappeared]], state, self.args, "f5")
         self.assertEqual(["O1"], [item["id"] for item in objects])
 
     def test_expired_track_gets_new_id(self) -> None:
         first = _observation("front:C1", "front", [[0, 0, 0], [0.10, 0.10, 0.10]])
         _, state = assign_object_ids([[first]], {}, self.args, "f0")
-        for frame_id in ("f1", "f2", "f3"):
+        for frame_id in ("f1", "f2", "f3", "f4", "f5"):
             _, state = assign_object_ids([], state, self.args, frame_id)
 
         reappeared = _observation("front:C1", "front", [[0.01, 0, 0], [0.11, 0.10, 0.10]])
-        objects, _ = assign_object_ids([[reappeared]], state, self.args, "f4")
+        objects, _ = assign_object_ids([[reappeared]], state, self.args, "f6")
         self.assertEqual(["O2"], [item["id"] for item in objects])
+
+    def test_relaxed_distance_gate_keeps_moderately_moving_object(self) -> None:
+        first = _observation("front:C1", "front", [[0, 0, 0], [0.10, 0.10, 0.10]])
+        _, state = assign_object_ids([[first]], {}, self.args, "f0")
+
+        moved = _observation("front:C2", "front", [[0.21, 0, 0], [0.31, 0.10, 0.10]])
+        objects, _ = assign_object_ids([[moved]], state, self.args, "f1")
+
+        self.assertEqual(["O1"], [item["id"] for item in objects])
+
+    def test_relaxed_size_gate_keeps_partial_to_full_bbox_change(self) -> None:
+        first = _observation("front:C1", "front", [[0, 0, 0], [0.10, 0.10, 0.10]])
+        _, state = assign_object_ids([[first]], {}, self.args, "f0")
+
+        fuller = _observation("front:C2", "front", [[-0.10, -0.10, -0.10], [0.20, 0.20, 0.20]])
+        objects, _ = assign_object_ids([[fuller]], state, self.args, "f1")
+
+        self.assertEqual(["O1"], [item["id"] for item in objects])
 
     def test_size_gate_prevents_implausible_id_match(self) -> None:
         first = _observation("front:C1", "front", [[0, 0, 0], [0.10, 0.10, 0.10]])

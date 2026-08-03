@@ -84,8 +84,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--hide-suspected-fragments",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Hide conservatively detected duplicate fragment IDs and remap selected roles to their receiver.",
+        default=False,
+        help="Opt in to hiding suspected duplicate fragment IDs and remapping selected roles for visualization only.",
     )
     return parser
 

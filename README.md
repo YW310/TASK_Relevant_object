@@ -144,9 +144,9 @@ stronger shoulder-camera observation to lead.
 | `--camera-visibility-min-point-fraction` | `CAMERA_VISIBILITY_MIN_POINT_FRACTION` | `0.05` | Minimum projected cloud fraction required to call a missing view observable. |
 | `--single-camera-keep-score` | `SINGLE_CAMERA_KEEP_SCORE` | `0.0` (off) | Optional confidence exception to the camera-support filter. |
 | `--legacy-union-find` | — | off | Deprecated one-release debug path for old transitive pairwise clustering. |
-| `--track-distance-m` | — | `0.15` m | Maximum inter-frame centroid movement for retaining an object ID. |
-| `--track-max-missed-frames` | `TRACK_MAX_MISSED_FRAMES` | `2` | Preserve dormant tracks through short processed-frame occlusions. |
-| `--track-max-size-ratio` | `TRACK_MAX_SIZE_RATIO` | `2.5` | Reject implausible temporal matches whose 3D bbox size changes too much. |
+| `--track-distance-m` | `TRACK_DISTANCE_M` | `0.22` m | Maximum movement between processed frames; with `FRAME_INTERVAL=10`, each match spans ten source frames. |
+| `--track-max-missed-frames` | `TRACK_MAX_MISSED_FRAMES` | `4` | Preserve dormant tracks through processed-frame occlusions. |
+| `--track-max-size-ratio` | `TRACK_MAX_SIZE_RATIO` | `4.0` | Reject implausible temporal matches whose 3D bbox size changes too much. |
 | `--min-fused-points` | `MIN_FUSED_POINTS` | `0` (off) | Drop fused objects with too few total points. |
 | `--min-bbox-diagonal-m` | `MIN_BBOX_DIAGONAL_M` | `0.0` (off) | Drop spatially tiny 3D boxes. |
 | `--max-centroid-to-cloud-distance-m` | `MAX_CENTROID_TO_CLOUD_DISTANCE_M` | `0.02` m | Drop a fused object whose centroid is farther than this from every cloud point, indicating a split or contaminated cloud; `<=0` disables it. |
@@ -251,11 +251,10 @@ depth decoding, camera transforms, bad masks, or incorrect clustering. Its
 `sanity_report.json` contains only frame/image references and counts. Detailed
 stored/recomputed centroid residuals, centroid-to-cloud distances, voxel
 component ratios, and main-component gaps live in `sanity_debug.json`.
-By default, rendering also hides a small contained fragment ID when it is
-strongly explained by a larger coexisting ID. A multi-camera receiver can
-confirm the alias in one frame; a single-camera receiver requires stable
-evidence across at least two frames. The fused artifact is never changed, and a
-donor remains visible whenever its receiver is absent from that frame.
+Rendering preserves every raw fused ID by default so temporal continuity stays
+inspectable. The optional suspected-fragment filter can hide a small contained
+fragment ID when it is strongly explained by a larger coexisting ID, but it is
+intended only for targeted debugging. The fused artifact is never changed.
 Dense `O*` labels are placed with overlap avoidance and connected to their
 centroids by translucent leader lines; boxes and annotations are rendered on a
 transparent layer.
@@ -274,7 +273,7 @@ transparent layer.
 | `--skip-pointcloud` | — | off | Omit the matplotlib 3D scatter plot. |
 | `--montage-columns` | `VIZ_MONTAGE_COLUMNS` | `2` | Number of panel columns in the per-frame montage. |
 | `--montage-cell-width` | `VIZ_MONTAGE_CELL_WIDTH` | `512` px | Square cell size used for camera and point-cloud panels. |
-| `--[no-]hide-suspected-fragments` | `VIZ_HIDE_SUSPECTED_FRAGMENTS` | on / `1` | Hide only confirmed fragment aliases while the receiver coexists. |
+| `--[no-]hide-suspected-fragments` | `VIZ_HIDE_SUSPECTED_FRAGMENTS` | off / `0` | Opt in to hiding confirmed fragment aliases while the receiver coexists. |
 
 Set `SKIP_VIZ=1` in the shell pipeline to omit this stage.
 
@@ -395,9 +394,10 @@ view, and writes `decision_visualization.json` plus images under
 background block, so small objects remain visible. The visualization report
 stores only source references and rendered-image records; decisions themselves
 remain canonical in `object_predictions.json` instead of being copied again.
-The same conservative fragment filter is enabled here: suspicious IDs are not
-drawn, and a selected target/reference donor is remapped to its visible receiver
-for rendering only. `object_predictions.json` is not rewritten.
+The same conservative fragment filter is available here but disabled by
+default. When explicitly enabled, suspicious IDs are not drawn and a selected
+target/reference donor is remapped to its visible receiver for rendering only.
+`object_predictions.json` is not rewritten.
 
 Its required inputs are `--object-predictions-json` and `--fused-json`.
 `--episode-dir`, `--output-dir`, `--viz-dir`, `--cameras`,
@@ -408,8 +408,8 @@ or camera selection. Rendering is controlled by `--point-stride` (default
 `--invert-rlbench-extrinsics` when Stage 2 used the same transform option.
 The pipeline exposes `DECISION_VIZ_OUTPUT_DIR`, `DECISION_VIZ_BOX_WIDTH`,
 `DECISION_VIZ_ANNOTATION_ALPHA`, `DECISION_VIZ_HIDE_SUSPECTED_FRAGMENTS`, and
-`SKIP_DECISION_VIZ` for this stage. Pass `--no-hide-suspected-fragments` (or set
-the pipeline variable to `0`) to inspect every raw fused ID.
+`SKIP_DECISION_VIZ` for this stage. Pass `--hide-suspected-fragments` (or set the
+pipeline variable to `1`) only for targeted duplicate-fragment inspection.
 
 Stage 2 stores point clouds outside the JSON in compressed per-frame archives
 at `frames/<frame_key>/fused_geometry.npz`, using a key such as `000000_0`
@@ -519,8 +519,9 @@ used options include:
 | `CLUSTER_DISTANCE_M` | `0.03` | Maximum centroid distance for 3D fusion |
 | `LEGACY_CANONICAL_IOU` | `0.35` | Stage-2 mask IoU for canonicalizing legacy candidate JSON |
 | `LEGACY_CANONICAL_CONTAINMENT` | `0.50` | Stage-2 smaller-mask coverage for legacy candidate JSON |
-| `TRACK_MAX_MISSED_FRAMES` | `2` | Preserve object IDs through brief processed-frame occlusions |
-| `TRACK_MAX_SIZE_RATIO` | `2.5` | Reject temporal ID matches with implausible bbox-size changes |
+| `TRACK_DISTANCE_M` | `0.22` | Preserve object IDs across moderate processed-frame motion |
+| `TRACK_MAX_MISSED_FRAMES` | `4` | Preserve object IDs through processed-frame occlusions |
+| `TRACK_MAX_SIZE_RATIO` | `4.0` | Reject temporal ID matches with implausible bbox-size changes |
 | `SKIP_CANDIDATES` | `0` | Reuse an existing `episode_candidates.json` |
 | `SKIP_FUSION` | `0` | Reuse an existing `frame_fused_candidates.json` |
 | `SKIP_VIZ` | `0` | Disable fusion visualizations |

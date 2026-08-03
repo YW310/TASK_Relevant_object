@@ -42,8 +42,9 @@
 #   SINGLE_CAMERA_KEEP_SCORE (default: 0.0)  Optional high-confidence single-view exception (0=off).
 #   LEGACY_CANONICAL_IOU (default: 0.35)     Stage-2 IoU for deduplicating legacy candidate JSON.
 #   LEGACY_CANONICAL_CONTAINMENT (default: 0.50) Stage-2 smaller-mask coverage for legacy JSON.
-#   TRACK_MAX_MISSED_FRAMES (default: 2) Keep object IDs through short processed-frame occlusions.
-#   TRACK_MAX_SIZE_RATIO (default: 2.5) Reject implausible temporal ID matches by 3D bbox size.
+#   TRACK_DISTANCE_M (default: 0.22)      Keep IDs across moderate inter-frame centroid motion.
+#   TRACK_MAX_MISSED_FRAMES (default: 4) Keep object IDs through processed-frame occlusions.
+#   TRACK_MAX_SIZE_RATIO (default: 4.0) Reject implausible temporal ID matches by 3D bbox size.
 #   MIN_FUSED_POINTS (default: 0)           Drop fused objects with fewer combined points than this (0=off).
 #   MIN_BBOX_DIAGONAL_M (default: 0.0)      Drop fused objects with a smaller 3D bbox diagonal than this (0=off).
 #   MAX_CENTROID_TO_CLOUD_DISTANCE_M (default: 0.02) Drop fused objects whose centroid lies in a large empty gap.
@@ -204,9 +205,9 @@ NEAREST_DISTANCE_M="${NEAREST_DISTANCE_M:-}"
 MAX_HYPOTHESIS_DIAMETER_M="${MAX_HYPOTHESIS_DIAMETER_M:-0.50}"
 MAX_SIZE_RATIO="${MAX_SIZE_RATIO:-4.0}"
 LEGACY_UNION_FIND="${LEGACY_UNION_FIND:-0}"
-TRACK_DISTANCE_M="${TRACK_DISTANCE_M:-0.15}"
-TRACK_MAX_MISSED_FRAMES="${TRACK_MAX_MISSED_FRAMES:-2}"
-TRACK_MAX_SIZE_RATIO="${TRACK_MAX_SIZE_RATIO:-2.5}"
+TRACK_DISTANCE_M="${TRACK_DISTANCE_M:-0.22}"
+TRACK_MAX_MISSED_FRAMES="${TRACK_MAX_MISSED_FRAMES:-4}"
+TRACK_MAX_SIZE_RATIO="${TRACK_MAX_SIZE_RATIO:-4.0}"
 MIN_FUSED_POINTS="${MIN_FUSED_POINTS:-0}"
 MIN_BBOX_DIAGONAL_M="${MIN_BBOX_DIAGONAL_M:-0.0}"
 MAX_CENTROID_TO_CLOUD_DISTANCE_M="${MAX_CENTROID_TO_CLOUD_DISTANCE_M:-0.02}"
@@ -273,13 +274,13 @@ VIZ_MAX_FRAMES="${VIZ_MAX_FRAMES:-}"
 VIZ_SKIP_POINTCLOUD="${VIZ_SKIP_POINTCLOUD:-0}"
 VIZ_MONTAGE_COLUMNS="${VIZ_MONTAGE_COLUMNS:-2}"
 VIZ_MONTAGE_CELL_WIDTH="${VIZ_MONTAGE_CELL_WIDTH:-512}"
-VIZ_HIDE_SUSPECTED_FRAGMENTS="${VIZ_HIDE_SUSPECTED_FRAGMENTS:-1}"
+VIZ_HIDE_SUSPECTED_FRAGMENTS="${VIZ_HIDE_SUSPECTED_FRAGMENTS:-0}"
 DECISION_VIZ_POINT_STRIDE="${DECISION_VIZ_POINT_STRIDE:-4}"
 DECISION_VIZ_POINT_RADIUS="${DECISION_VIZ_POINT_RADIUS:-2}"
 DECISION_VIZ_MASK_ALPHA="${DECISION_VIZ_MASK_ALPHA:-90}"
 DECISION_VIZ_BOX_WIDTH="${DECISION_VIZ_BOX_WIDTH:-1}"
 DECISION_VIZ_ANNOTATION_ALPHA="${DECISION_VIZ_ANNOTATION_ALPHA:-150}"
-DECISION_VIZ_HIDE_SUSPECTED_FRAGMENTS="${DECISION_VIZ_HIDE_SUSPECTED_FRAGMENTS:-1}"
+DECISION_VIZ_HIDE_SUSPECTED_FRAGMENTS="${DECISION_VIZ_HIDE_SUSPECTED_FRAGMENTS:-0}"
 STAGE1_CANDIDATES_JSON="${STAGE1_CANDIDATES_JSON:-}"
 STAGE_COMPARE_PANEL_GAP="${STAGE_COMPARE_PANEL_GAP:-8}"
 STAGE_COMPARE_LABEL_HEIGHT="${STAGE_COMPARE_LABEL_HEIGHT:-26}"
@@ -491,7 +492,7 @@ else
   [[ -n "${RLBENCH_LOW_DIM_OBS}" ]] && STAGE3_ARGS+=(--rlbench-low-dim-obs "${RLBENCH_LOW_DIM_OBS}")
   [[ -n "${VIZ_MAX_FRAMES}" ]] && STAGE3_ARGS+=(--max-frames "${VIZ_MAX_FRAMES}")
   [[ "${VIZ_SKIP_POINTCLOUD}" == "1" ]] && STAGE3_ARGS+=(--skip-pointcloud)
-  [[ "${VIZ_HIDE_SUSPECTED_FRAGMENTS}" == "0" ]] && STAGE3_ARGS+=(--no-hide-suspected-fragments)
+  [[ "${VIZ_HIDE_SUSPECTED_FRAGMENTS}" == "1" ]] && STAGE3_ARGS+=(--hide-suspected-fragments)
   [[ -n "${CAMERAS}" ]] && STAGE3_ARGS+=(--cameras "${CAMERAS}")
   [[ -n "${CAMERA_PARAMS_JSON}" ]] && STAGE3_ARGS+=(--camera-params-json "${CAMERA_PARAMS_JSON}")
   [[ "${INVERT_RLBENCH_EXTRINSICS}" == "1" ]] && STAGE3_ARGS+=(--invert-rlbench-extrinsics)
@@ -520,7 +521,7 @@ else
   )
   [[ -n "${RLBENCH_LOW_DIM_OBS}" ]] && STAGE5_ARGS+=(--rlbench-low-dim-obs "${RLBENCH_LOW_DIM_OBS}")
   [[ -n "${DECISION_VIZ_OUTPUT_DIR}" ]] && STAGE5_ARGS+=(--output-dir "${DECISION_VIZ_OUTPUT_DIR}")
-  [[ "${DECISION_VIZ_HIDE_SUSPECTED_FRAGMENTS}" == "0" ]] && STAGE5_ARGS+=(--no-hide-suspected-fragments)
+  [[ "${DECISION_VIZ_HIDE_SUSPECTED_FRAGMENTS}" == "1" ]] && STAGE5_ARGS+=(--hide-suspected-fragments)
   [[ -n "${CAMERAS}" ]] && STAGE5_ARGS+=(--cameras "${CAMERAS}")
   [[ -n "${CAMERA_PARAMS_JSON}" ]] && STAGE5_ARGS+=(--camera-params-json "${CAMERA_PARAMS_JSON}")
   [[ "${INVERT_RLBENCH_EXTRINSICS}" == "1" ]] && STAGE5_ARGS+=(--invert-rlbench-extrinsics)
