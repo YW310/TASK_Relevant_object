@@ -52,6 +52,10 @@ from fused_candidate_io import (
     load_object_points,
 )
 from visualization_utils import object_color_for_id
+from visualization_fragment_filter import (
+    detect_suspect_fragment_aliases,
+    visible_suspect_aliases,
+)
 
 DEFAULT_MONTAGE_CAMERAS = ("front", "left_shoulder", "right_shoulder")
 
@@ -73,6 +77,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-pointcloud", action="store_true", help="Skip the matplotlib 3D scatter plot (only render 2D overlays + report).")
     parser.add_argument("--montage-columns", type=int, default=2, help="Number of panel columns in each per-frame montage.")
     parser.add_argument("--montage-cell-width", type=int, default=512, help="Width and height of each montage panel in pixels.")
+    parser.add_argument(
+        "--hide-suspected-fragments",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Hide conservatively detected duplicate fragment IDs when their receiver is visible.",
+    )
     return parser
 
 
@@ -491,7 +501,14 @@ def main() -> None:
     frame_id_filter = parse_csv(args.frame_ids)
     cameras_filter = parse_csv(args.cameras)
 
-    frames = list(iter_fused_frames(fused_path))
+    all_frames = list(iter_fused_frames(fused_path))
+    fragment_result = (
+        detect_suspect_fragment_aliases(all_frames)
+        if args.hide_suspected_fragments
+        else {"aliases": {}, "evidence": []}
+    )
+    suspect_aliases = dict(fragment_result["aliases"])
+    frames = all_frames
     if frame_id_filter is not None:
         frames = [frame for frame in frames if str(frame["frame_id"]) in frame_id_filter]
     if args.max_frames is not None:
@@ -503,18 +520,24 @@ def main() -> None:
         "episode_dir": str(episode_dir),
         "source_fused_json": str(fused_path),
         "diagnostics_ref": "sanity_debug.json",
+        "suspect_fragment_aliases": suspect_aliases,
         "frames": [],
     }
     debug_report: dict[str, Any] = {
         "schema_version": 1,
         "artifact_type": "fusion_visualization_debug",
         "source_report_json": "sanity_report.json",
+        "suspect_fragment_evidence": fragment_result["evidence"],
         "frames": [],
     }
     for frame in frames:
         frame_id = str(frame["frame_id"])
         frame_index = frame.get("frame_index")
-        objects = frame.get("objects", [])
+        source_objects = list(frame.get("objects", []))
+        frame_aliases = visible_suspect_aliases(source_objects, suspect_aliases)
+        objects = [
+            obj for obj in source_objects if str(obj.get("id")) not in frame_aliases
+        ]
         target_cameras = (
             list(cameras_filter)
             if cameras_filter is not None
@@ -599,11 +622,15 @@ def main() -> None:
             "camera_panels": rendered_cameras,
             "includes_pointcloud": includes_pointcloud,
             "object_count": len(objects),
+            "source_object_count": len(source_objects),
+            "suppressed_suspect_ids": sorted(frame_aliases),
+            "visible_suspect_aliases": frame_aliases,
         })
         debug_report["frames"].append({
             "frame_id": frame_id,
             "frame_index": frame_index,
             "objects": object_sanity,
+            "suppressed_suspect_ids": sorted(frame_aliases),
         })
 
     report_path = output_dir / "sanity_report.json"

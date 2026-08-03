@@ -33,6 +33,10 @@ from camera_geometry import (
 from common_io import atomic_json_dump, load_json, parse_optional_csv as parse_csv
 from fused_candidate_io import load_fused_frame, load_fused_manifest, load_object_points
 from visualization_utils import object_color_for_id
+from visualization_fragment_filter import (
+    detect_suspect_fragment_aliases,
+    visible_suspect_aliases,
+)
 
 ROLE_COLORS = {
     "target": (255, 80, 80),
@@ -76,6 +80,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=150,
         help="Alpha (0-255) for bbox, centroid, and text annotations.",
+    )
+    parser.add_argument(
+        "--hide-suspected-fragments",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Hide conservatively detected duplicate fragment IDs and remap selected roles to their receiver.",
     )
     return parser
 
@@ -260,25 +270,56 @@ def main() -> None:
 
     output_dir.mkdir(parents=True, exist_ok=True)
     rendered = []
+    decision_entries = _frame_decision_entries(pred)
+    frames_by_id = {
+        str(entry.get("frame_id")): load_fused_frame(fused, str(entry.get("frame_id")))
+        for entry in decision_entries
+    }
+    fragment_result = (
+        detect_suspect_fragment_aliases(list(frames_by_id.values()))
+        if args.hide_suspected_fragments
+        else {"aliases": {}, "evidence": []}
+    )
+    suspect_aliases = dict(fragment_result["aliases"])
+    fragment_frames = []
 
-    for entry in _frame_decision_entries(pred):
+    for entry in decision_entries:
         frame_id = str(entry.get("frame_id"))
         decision = entry.get("decision", {})
+        frame = frames_by_id[frame_id]
+        frame_index = frame.get("frame_index")
+        source_objects = list(frame.get("objects", []))
+        frame_aliases = visible_suspect_aliases(source_objects, suspect_aliases)
+        objects = [
+            obj for obj in source_objects if str(obj.get("id")) not in frame_aliases
+        ]
+        objects_by_id = {str(item.get("id")): item for item in objects}
+
+        decision_id_remaps: dict[str, str] = {}
         target_id = decision.get("target_object_id")
         reference_id = decision.get("reference_object_id")
+        if target_id is not None and str(target_id) in frame_aliases:
+            decision_id_remaps[str(target_id)] = frame_aliases[str(target_id)]
+            target_id = frame_aliases[str(target_id)]
+        if reference_id is not None and str(reference_id) in frame_aliases:
+            decision_id_remaps[str(reference_id)] = frame_aliases[str(reference_id)]
+            reference_id = frame_aliases[str(reference_id)]
         decisions: list[tuple[str, str]] = []
         if target_id is not None:
             decisions.append(("target", str(target_id)))
-        if reference_id is not None:
+        if reference_id is not None and str(reference_id) != str(target_id):
             decisions.append(("reference", str(reference_id)))
+        fragment_frames.append(
+            {
+                "frame_id": frame_id,
+                "suppressed_suspect_ids": sorted(frame_aliases),
+                "visible_suspect_aliases": frame_aliases,
+                "decision_id_remaps": decision_id_remaps,
+            }
+        )
         if not decisions:
             print(f"[warn] frame_id={frame_id}: decision has neither target_object_id nor reference_object_id; skipping.", file=sys.stderr)
             continue
-
-        frame = load_fused_frame(fused, frame_id)
-        frame_index = frame.get("frame_index")
-        objects = frame.get("objects", [])
-        objects_by_id = {str(item.get("id")): item for item in objects}
 
         missing_ids = [object_id for _, object_id in decisions if object_id not in objects_by_id]
         if missing_ids:
@@ -341,11 +382,16 @@ def main() -> None:
         "schema_version": 1,
         "artifact_type": "decision_visualization_report",
         "summary": {
-            "decision_frame_count": len(_frame_decision_entries(pred)),
+            "decision_frame_count": len(decision_entries),
             "rendered_image_count": len(rendered),
         },
         "object_predictions_json": str(pred_path),
         "source_fused_json": str(fused_path),
+        "fragment_filter": {
+            "enabled": bool(args.hide_suspected_fragments),
+            "suspect_fragment_aliases": suspect_aliases,
+            "frames": fragment_frames,
+        },
         "rendered": rendered,
     }
     meta_path = output_dir / "decision_visualization.json"

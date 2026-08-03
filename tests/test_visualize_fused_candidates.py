@@ -145,6 +145,9 @@ def test_main_writes_one_montage_without_separate_panels(tmp_path, monkeypatch):
     ]
     assert report["frames"][0]["includes_pointcloud"] is True
     assert report["frames"][0]["object_count"] == 1
+    assert report["frames"][0]["source_object_count"] == 1
+    assert report["frames"][0]["suppressed_suspect_ids"] == []
+    assert report["suspect_fragment_aliases"] == {}
     assert "objects" not in report["frames"][0]
     debug_report = json.loads((output_dir / "sanity_debug.json").read_text())
     assert debug_report["frames"][0]["objects"] == [{"id": "O1"}]
