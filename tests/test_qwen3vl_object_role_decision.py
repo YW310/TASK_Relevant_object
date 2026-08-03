@@ -8,6 +8,7 @@ import qwen3vl_object_role_decision as decision_module
 from qwen3vl_object_role_decision import (
     _adaptive_refresh_reasons,
     _apply_two_stage_target_selection,
+    _build_output_document,
     _build_temporal_object_context,
     _candidate_observation_cards,
     _collect_temporal_scene_montages,
@@ -15,6 +16,7 @@ from qwen3vl_object_role_decision import (
     _current_dynamic_events,
     _decision_prompt,
     _filter_candidates,
+    _frame_pairwise_relations,
     _pick_decision_frame,
     _resolve_temporal_frames,
     _run_decision_for_frame,
@@ -32,6 +34,84 @@ def _frames(count=7):
         }
         for i in range(count)
     ]
+
+
+def test_compact_summary_derives_pairwise_relations_on_read():
+    frame = {
+        "pairwise_relations": [],
+        "candidate_objects": [
+            {
+                "object_id": "O1",
+                "centroid_world": [0.0, 0.0, 0.0],
+                "bbox3d_world": [[-0.1, -0.1, -0.1], [0.1, 0.1, 0.1]],
+            },
+            {
+                "object_id": "O2",
+                "centroid_world": [0.2, 0.0, 0.1],
+                "bbox3d_world": [[0.1, -0.1, 0.0], [0.3, 0.1, 0.2]],
+            },
+        ],
+    }
+
+    relations = _frame_pairwise_relations(frame)
+
+    assert len(relations) == 1
+    assert relations[0]["source_object_id"] == "O1"
+    assert relations[0]["target_object_id"] == "O2"
+    assert relations[0]["source_to_target_labels"] == ["right_of", "above"]
+
+
+def test_normal_prediction_output_uses_compact_frame_records(tmp_path):
+    frame = {
+        "frame_id": "f0",
+        "frame_index": 0,
+        "online_step": 0,
+        "candidate_ids": ["O1"],
+        "candidate_filter_stats": {"verbose": ["unused"] * 20},
+        "temporal_window": {"frame_ids": ["f0"]},
+        "temporal_scene_montages": [{"duplicate": True}],
+        "representative_images": [{"kind": "scene_montage", "image_path": "scene.png"}],
+        "online_history": [{"verbose": True}],
+        "task_schema": {"action": "MOVE"},
+        "dynamic_role_context": {"objects": {"O1": {"events": ["verbose"] * 20}}},
+        "model_invoked": True,
+        "decision_source": "qwen_keyframe",
+        "source_model_frame_id": "f0",
+        "refresh_reasons": ["first_frame"],
+        "performance": {"frame_total_seconds": 1.0, "model_seconds": 0.9},
+        "decision": {
+            "target_object_id": "O1",
+            "reference_object_id": None,
+            "confidence": 0.9,
+            "uncertain": False,
+            "target_selection": {"verbose": ["unused"] * 20},
+        },
+        "raw_text": '{"target_object_id":"O1"}',
+    }
+    summary = {
+        "schema_version": 3,
+        "generation_id": "g1",
+        "instruction_prior": "move it",
+        "role_spec_prior": {},
+    }
+
+    output = _build_output_document(
+        tmp_path / "object_summary.json",
+        summary,
+        [frame],
+        "all",
+        False,
+        decision_policy="adaptive",
+    )
+
+    assert output["storage_layout"] == "compact_v1"
+    persisted = output["frame_decisions"][0]
+    assert persisted["decision"]["target_object_id"] == "O1"
+    assert persisted["representative_images"] == frame["representative_images"]
+    assert "dynamic_role_context" not in persisted
+    assert "online_history" not in persisted
+    assert "temporal_scene_montages" not in persisted
+    assert "target_selection" not in persisted["decision"]
 
 
 def _payload_from_call(call):
@@ -267,7 +347,16 @@ def test_main_calls_grounder_once_per_frame_with_rolling_windows(tmp_path, monke
     assert output["decision_frame_index"] == 7
     assert len(output["frame_decisions"]) == 8
     assert [item["online_step"] for item in output["frame_decisions"]] == list(range(8))
-    assert output["decision"] == output["frame_decisions"][-1]["decision"]
+    final_frame_decision = output["frame_decisions"][-1]["decision"]
+    for key in (
+        "target_object_id",
+        "reference_object_id",
+        "confidence",
+        "uncertain",
+    ):
+        assert output["decision"][key] == final_frame_decision[key]
+    assert "confidence_components" in output["decision"]
+    assert "confidence_components" not in final_frame_decision
     assert all("online_history" not in _payload_from_call(call) for call in grounder.calls)
 
 
@@ -738,7 +827,7 @@ def test_patches_mode_preserves_contact_sheet_input(tmp_path, monkeypatch):
     images = output["frame_decisions"][0]["representative_images"]
     assert output["decision_visual_mode"] == "patches"
     assert [item["kind"] for item in images] == ["object_contact_sheet"]
-    assert output["frame_decisions"][0]["temporal_scene_montages"] == []
+    assert "temporal_scene_montages" not in output["frame_decisions"][0]
     assert output["performance"]["total_scene_image_count"] == 0
     assert output["performance"]["total_patch_image_count"] == 1
     prompt = grounder.calls[0][0][0]["content"][-1]["text"]

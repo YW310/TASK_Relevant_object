@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fusion_debug.schema.json",
+  "title": "Verbose diagnostics for one fused frame",
+  "type": "object",
+  "required": ["schema_version", "artifact_type", "generation_id", "frame_id", "candidate_lifecycle", "diagnostics"],
+  "properties": {
+    "schema_version": {"const": 3},
+    "artifact_type": {"const": "frame_fusion_debug"},
+    "generation_id": {"type": "string", "format": "uuid"},
+    "frame_id": {"type": "string"},
+    "frame_index": {},
+    "source_fused_objects_json": {"type": "string"},
+    "candidate_lifecycle": {"type": "array"},
+    "diagnostics": {"type": "object"}
+  }
+}

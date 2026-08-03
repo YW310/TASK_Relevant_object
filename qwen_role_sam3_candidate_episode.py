@@ -569,7 +569,17 @@ def process_camera(
     generation_parameters = candidate_generation_parameters(args, threshold)
     if args.resume and all(path.is_file() for path in resume_files):
         cached = json.loads((out_dir / "candidates.json").read_text(encoding="utf-8"))
-        if cached.get("generation_parameters") == generation_parameters:
+        cached_parameters = cached.get("generation_parameters")
+        debug_ref = cached.get("diagnostics_ref")
+        if cached_parameters is None and debug_ref:
+            try:
+                cached_debug = json.loads(
+                    (out_dir / str(debug_ref)).read_text(encoding="utf-8")
+                )
+                cached_parameters = cached_debug.get("generation_parameters")
+            except (OSError, ValueError, TypeError):
+                cached_parameters = None
+        if cached_parameters == generation_parameters:
             if args.progress and progress_label:
                 print(f"SAM3 progress {progress_label}: resume cached candidates", flush=True)
             return cached
@@ -701,6 +711,12 @@ def process_camera(
         "units": {"image_coordinates": "pixels", "mask_area": "pixels"},
         "image_path": str(image_path),
         "candidates": candidates,
+        "diagnostics_ref": "candidate_debug.json",
+    }
+    debug_result = {
+        "schema_version": 1,
+        "artifact_type": "camera_frame_candidate_debug",
+        "source_candidates_json": "candidates.json",
         "prompt_attempts": prompt_attempts,
         "generation_parameters": generation_parameters,
         "canonicalization": {
@@ -711,6 +727,7 @@ def process_camera(
             "suppressed_candidates": suppressed,
         },
     }
+    atomic_json_dump(debug_result, out_dir / "candidate_debug.json")
     atomic_json_dump(result, out_dir / "candidates.json")
     save_visuals(image, candidates, out_dir, args.mask_alpha)
     if args.progress and progress_label:
@@ -848,6 +865,7 @@ def main() -> None:
             frame_entry["views"][camera] = {
                 "output_dir": str(out),
                 "candidates_json": str(out / "candidates.json"),
+                "candidate_debug_json": str(out / "candidate_debug.json"),
                 "numbered_candidates": str(out / "numbered_candidates.png"),
                 "candidate_grid": str(out / "candidate_grid.png"),
                 "num_candidates": len(result["candidates"]),
@@ -882,8 +900,14 @@ def main() -> None:
         "camera_names": list(args.cameras),
         "frames": frames_summary,
     }
-    atomic_json_dump(summary, output_dir / "episode_candidates.json")
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    summary_path = output_dir / "episode_candidates.json"
+    atomic_json_dump(summary, summary_path)
+    print(json.dumps({
+        "output_json": str(summary_path),
+        "frames": len(frames_summary),
+        "cameras": len(args.cameras),
+        "candidates": total_candidates,
+    }, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

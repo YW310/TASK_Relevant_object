@@ -144,6 +144,10 @@ def test_main_writes_one_montage_without_separate_panels(tmp_path, monkeypatch):
         "right_shoulder",
     ]
     assert report["frames"][0]["includes_pointcloud"] is True
+    assert report["frames"][0]["object_count"] == 1
+    assert "objects" not in report["frames"][0]
+    debug_report = json.loads((output_dir / "sanity_debug.json").read_text())
+    assert debug_report["frames"][0]["objects"] == [{"id": "O1"}]
     with Image.open(output_dir / "0_montage.png") as montage:
         assert montage.width == 1048
         assert montage.height == 1136

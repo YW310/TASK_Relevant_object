@@ -502,6 +502,13 @@ def main() -> None:
         "artifact_type": "fusion_visualization_report",
         "episode_dir": str(episode_dir),
         "source_fused_json": str(fused_path),
+        "diagnostics_ref": "sanity_debug.json",
+        "frames": [],
+    }
+    debug_report: dict[str, Any] = {
+        "schema_version": 1,
+        "artifact_type": "fusion_visualization_debug",
+        "source_report_json": "sanity_report.json",
         "frames": [],
     }
     for frame in frames:
@@ -584,13 +591,19 @@ def main() -> None:
                 cell_width=args.montage_cell_width,
             )
 
+        object_sanity = [sanity_report_for_object(frame, obj) for obj in objects]
         report["frames"].append({
             "frame_id": frame_id,
             "frame_index": frame_index,
             "montage_path": str(montage_path) if panels else None,
             "camera_panels": rendered_cameras,
             "includes_pointcloud": includes_pointcloud,
-            "objects": [sanity_report_for_object(frame, obj) for obj in objects],
+            "object_count": len(objects),
+        })
+        debug_report["frames"].append({
+            "frame_id": frame_id,
+            "frame_index": frame_index,
+            "objects": object_sanity,
         })
 
     report_path = output_dir / "sanity_report.json"
@@ -600,9 +613,10 @@ def main() -> None:
             bool(item.get("montage_path")) for item in report["frames"]
         ),
         "object_sample_count": sum(
-            len(item.get("objects", [])) for item in report["frames"]
+            int(item.get("object_count", 0)) for item in report["frames"]
         ),
     }
+    atomic_json_dump(debug_report, output_dir / "sanity_debug.json")
     atomic_json_dump(report, report_path)
     print(json.dumps({"output_dir": str(output_dir), "sanity_report": str(report_path), "montages_rendered": sum(bool(item.get("montage_path")) for item in report["frames"]), "frames_rendered": len(report["frames"])}, ensure_ascii=False, indent=2))
 

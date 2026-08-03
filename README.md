@@ -13,9 +13,9 @@ Qwen3-VL can subsequently select the current target and reference objects.
 
 | Stage | Script | Result |
 | --- | --- | --- |
-| 1. Role parsing and proposals | `qwen_role_sam3_candidate_episode.py` | `role_spec.json`, per-view masks/crops, and `episode_candidates.json` |
-| 2. Multi-view fusion | `multiview_candidate_fusion.py` | Lightweight `frame_fused_candidates.json`, per-frame `fused_objects.json` / `fused_geometry.npz`, and optional `object_summary.json` |
-| 3. Fusion visualization | `visualize_fused_candidates.py` | One all-camera + point-cloud montage per frame in `viz/` |
+| 1. Role parsing and proposals | `qwen_role_sam3_candidate_episode.py` | `role_spec.json`, compact per-view `candidates.json`, separate `candidate_debug.json`, and `episode_candidates.json` |
+| 2. Multi-view fusion | `multiview_candidate_fusion.py` | Lightweight manifest, per-frame `fused_objects.json` / `fused_geometry.npz`, separate `fusion_debug.json`, and optional `object_summary.json` |
+| 3. Fusion visualization | `visualize_fused_candidates.py` | One all-camera + point-cloud montage per frame plus compact report in `viz/` |
 | 4. Object role decision (optional) | `qwen3vl_object_role_decision.py` | `object_predictions.json` |
 | 5. Decision visualization (optional) | `stage4_visualize_decision.py` | Target/reference overlays in `viz_decision/` |
 | 6. Stage comparison (optional) | `stage6_visualize_stage_montage.py` | Side-by-side panels in `viz_compare/` |
@@ -101,6 +101,10 @@ Visualization controls include `--[no-]save-frame-contact-sheet` (enabled),
 `--[no-]progress` (enabled). The main manifest is
 `episode_candidates.json`; individual masks, crops, masked crops, candidate
 grids, and numbered overlays are stored below `frames/<frame>/<camera>/`.
+Each camera/frame `candidates.json` contains only the image, counts, candidates,
+and a `diagnostics_ref`. Prompt attempts, generation parameters, and suppressed
+canonicalization details live in the sibling `candidate_debug.json`; resume mode
+uses that debug file when checking whether cached parameters still match.
 
 ### Stage 2: depth lifting, multi-view fusion, and tracking
 
@@ -186,19 +190,31 @@ same integer `schema_version` (currently `3`) and UUID `generation_id`:
 
 1. **`frame_fused_candidates.json`** is a lightweight episode manifest. Its
    frame entries contain status, object count, and a relative
-   `fused_objects_json` reference; it never stores objects or point clouds.
+   `fused_objects_json` reference plus an optional `fusion_debug_json` reference;
+   it never stores objects or point clouds. Frame order is the order of the
+   `frames` array and is not duplicated in a second list.
 2. **`frames/<frame_key>/fused_objects.json`** owns the current frame's
-   `objects`, their `observations`, and fusion `diagnostics`. Point arrays are
+   `objects`, their observations, counts, and compact `candidate_outcomes`.
+   Point arrays are
    still external in the sibling `fused_geometry.npz` and referenced by key.
    The key is `<six-digit frame_index>_<frame_id>` (for example `000000_0`).
-   The top-level `summary` gives candidate/object counts, while
-   `candidate_lifecycle` explains the final disposition of every Stage-1
-   candidate (`fused`, `merged`, `dropped`, or `unresolved`) with stable reason
-   codes, readable messages, and the resulting `fused_object_id` when one
-   exists. Backprojection failures are recorded instead of silently skipped.
+   `candidate_outcomes` gives each Stage-1 candidate's final status, stable
+   reason code, and resulting object/replacement ID without repeating every
+   intermediate event.
+   The sibling **`fusion_debug.json`** retains the complete candidate lifecycle,
+   readable reason messages, backprojection/filter diagnostics, and tracking
+   checkpoint. Resume mode reads that checkpoint, while older outputs with
+   inline `diagnostics.tracking_state` remain supported.
 3. **`object_summary.json`** contains cross-frame tracks, aggregate statistics,
    decision-ready scalar metadata, and `frame_ref` links back to the per-frame
    files. It does not duplicate complete point clouds or other full geometry.
+
+`object_summary.json` uses the `compact_v1` storage layout. Per-frame candidates
+retain only Qwen filtering and visualization fields; verbose observation
+provenance remains in the referenced `fused_objects.json`. Track statistics are
+stored once without duplicating trajectories, and pairwise geometry is derived
+by Stage 4 only for its active decision window. This keeps summary growth linear
+in visible object samples instead of quadratic in the number of objects.
 
 The summary builder consumes the referenced frame JSON files one at a time, so
 all frame artifacts need not coexist in memory. Readers validate both identity
@@ -206,7 +222,8 @@ fields before joining artifacts; a schema mismatch or a `generation_id` from a
 different fusion run is an error rather than a silent mixed-run result. A
 compatible resumed run retains its generation ID, while a new run creates one.
 See `schemas/frame_fused_candidates.schema.json`,
-`schemas/fused_objects.schema.json`, `schemas/object_summary.schema.json`,
+`schemas/fused_objects.schema.json`, `schemas/fusion_debug.schema.json`,
+`schemas/candidate_debug.schema.json`, `schemas/object_summary.schema.json`,
 `schemas/episode_candidates.schema.json`, and
 `schemas/object_predictions.schema.json`.
 
@@ -216,7 +233,8 @@ Persisted JSON artifacts are UTF-8, two-space indented, newline-terminated,
 and written atomically where the shared I/O helper is used. Major artifacts
 start with `schema_version` and `artifact_type`, and expose a compact top-level
 `summary` before their detailed records. Existing fields remain available for
-backward compatibility. Stable machine-readable failure codes use
+backward compatibility in readers where legacy artifacts are supported. Stable
+machine-readable failure codes use
 `reason_code`; `reason_message` provides a concise human-readable explanation.
 Large point arrays remain in NPZ archives rather than being embedded in JSON.
 
@@ -230,9 +248,9 @@ placeholder/raw-camera panel instead of changing the layout. It no longer writes
 `*_reproj.png` or `*_pointcloud.png` panels. This stage does not change fusion
 results; use it to diagnose
 depth decoding, camera transforms, bad masks, or incorrect clustering. Its
-`sanity_report.json` includes the stored/recomputed centroid residual and the
-centroid-to-nearest-cloud-point distance for every retained object. Retained
-objects also report voxel component counts, ratios, and the main-component gap.
+`sanity_report.json` contains only frame/image references and counts. Detailed
+stored/recomputed centroid residuals, centroid-to-cloud distances, voxel
+component ratios, and main-component gaps live in `sanity_debug.json`.
 Dense `O*` labels are placed with overlap avoidance and connected to their
 centroids by translucent leader lines; boxes and annotations are rendered on a
 transparent layer.
@@ -320,6 +338,14 @@ Each frame records `model_invoked`, `decision_source`,
 statistics. The top-level `performance` block aggregates model calls, propagated
 frames, scene/patch image counts, visual preparation time, model time, visual
 pixels, and input/output tokens.
+
+Normal `object_predictions.json` output uses `compact_v1`: each frame keeps IDs,
+model-call provenance, refresh reasons, performance, one non-duplicated image
+metadata list, and the final target/reference/confidence fields. Prompt-time
+snapshots such as `dynamic_role_context`, `online_history`, repeated montage
+lists, and detailed intermediate selection structures are not persisted per
+frame. `--dry-run` uses `debug_full_v1` and intentionally retains complete
+messages so the exact Qwen request remains inspectable.
 Malformed JSON is marked uncertain and schedules another adaptive refresh on
 the next frame instead of immediately repeating an expensive call.
 
@@ -349,7 +375,9 @@ preserved as `model_confidence` with inspectable `confidence_components`.
 view, and writes `decision_visualization.json` plus images under
 `viz_decision/`. A selected internal label is replaced in place (`O2` becomes
 `T2` or `R2`) instead of drawing both labels. Labels have no filled translucent
-background block, so small objects remain visible.
+background block, so small objects remain visible. The visualization report
+stores only source references and rendered-image records; decisions themselves
+remain canonical in `object_predictions.json` instead of being copied again.
 
 Its required inputs are `--object-predictions-json` and `--fused-json`.
 `--episode-dir`, `--output-dir`, `--viz-dir`, `--cameras`,

@@ -3,7 +3,7 @@
   "$id": "fused_objects.schema.json",
   "title": "One frame of fused objects",
   "type": "object",
-  "required": ["schema_version", "generation_id", "frame_id", "objects", "diagnostics"],
+  "required": ["schema_version", "generation_id", "frame_id", "objects", "candidate_outcomes", "diagnostics_ref"],
   "properties": {
     "schema_version": {"const": 3},
     "artifact_type": {"const": "frame_fused_objects"},
@@ -13,10 +13,10 @@
     "frame_id": {"type": "string"}, "frame_index": {},
     "summary": {"type": "object"},
     "objects": {"type": "array", "items": {"type": "object", "required": ["id", "observations"]}},
-    "candidate_lifecycle": {"type": "array", "items": {
+    "candidate_outcomes": {"type": "array", "items": {
       "type": "object",
-      "required": ["camera", "candidate_id", "final_status", "events"]
+      "required": ["camera", "candidate_id", "status"]
     }},
-    "diagnostics": {"type": "object"}
+    "diagnostics_ref": {"type": "string"}
   }
 }

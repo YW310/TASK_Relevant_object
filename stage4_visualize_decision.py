@@ -332,10 +332,7 @@ def main() -> None:
                     "frame_id": frame_id,
                     "frame_index": frame_index,
                     "camera": camera,
-                    "target_object_id": target_id,
-                    "reference_object_id": reference_id,
                     "output_path": str(out_path),
-                    "render_background_path": render_background_path,
                     "background_path": comparison_background_path,
                 }
             )
@@ -349,19 +346,6 @@ def main() -> None:
         },
         "object_predictions_json": str(pred_path),
         "source_fused_json": str(fused_path),
-        "decision_frame_id": pred.get("decision_frame_id"),
-        "decision_frame_index": pred.get("decision_frame_index"),
-        "target_object_id": pred.get("decision", {}).get("target_object_id"),
-        "reference_object_id": pred.get("decision", {}).get("reference_object_id"),
-        "frame_decisions": [
-            {
-                "frame_id": item.get("frame_id"),
-                "frame_index": item.get("frame_index"),
-                "target_object_id": item.get("decision", {}).get("target_object_id"),
-                "reference_object_id": item.get("decision", {}).get("reference_object_id"),
-            }
-            for item in _frame_decision_entries(pred)
-        ],
         "rendered": rendered,
     }
     meta_path = output_dir / "decision_visualization.json"

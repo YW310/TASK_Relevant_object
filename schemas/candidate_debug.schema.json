@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "candidate_debug.schema.json",
+  "title": "Verbose diagnostics for one camera-frame candidate result",
+  "type": "object",
+  "required": ["schema_version", "artifact_type", "prompt_attempts", "generation_parameters", "canonicalization"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "artifact_type": {"const": "camera_frame_candidate_debug"},
+    "source_candidates_json": {"type": "string"},
+    "prompt_attempts": {"type": "array"},
+    "generation_parameters": {"type": "object"},
+    "canonicalization": {"type": "object"}
+  }
+}

@@ -36,6 +36,7 @@ from dynamic_role_reasoning import (
     ReasoningThresholds,
     apply_dynamic_role_selection,
     calibrate_decision_confidence,
+    pairwise_geometry,
 )
 from qwen3vl_rlbench_episode_grounding import Qwen3VLRLBenchGrounder
 from task_schema import compile_task_schema
@@ -871,6 +872,39 @@ def _compact_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _relation_labels(delta: np.ndarray) -> list[str]:
+    labels = []
+    for value, positive, negative in (
+        (delta[0], "right_of", "left_of"),
+        (delta[1], "front_of", "behind"),
+        (delta[2], "above", "below"),
+    ):
+        if value > 0:
+            labels.append(positive)
+        elif value < 0:
+            labels.append(negative)
+    return labels
+
+
+def _frame_pairwise_relations(frame: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Load legacy materialized relations or derive compact-summary relations."""
+    materialized = list(frame.get("pairwise_relations", []))
+    if materialized:
+        return materialized
+
+    candidates = list(frame.get("candidate_objects", []))
+    relations = []
+    for source_index, source in enumerate(candidates):
+        for target in candidates[source_index + 1 :]:
+            relation = pairwise_geometry(source, target)
+            delta = np.asarray(relation.get("delta_world", []), dtype=np.float64)
+            if delta.shape == (3,):
+                relation["source_to_target_labels"] = _relation_labels(delta)
+                relation["target_to_source_labels"] = _relation_labels(-delta)
+            relations.append(relation)
+    return relations
+
+
 def _filter_candidates(
     candidates: Sequence[Mapping[str, Any]],
     args: argparse.Namespace,
@@ -1053,14 +1087,29 @@ def _build_temporal_object_context(
     decision_frame_id = str(selected_frames[-1].get("frame_id")) if selected_frames else None
 
     context_by_object: dict[str, Any] = {}
+    compact_samples_by_object: dict[str, list[dict[str, Any]]] = {}
+    if summary.get("storage_layout") == "compact_v1":
+        for frame in selected_frames:
+            for candidate in frame.get("candidate_objects", []):
+                object_id = str(candidate.get("object_id"))
+                compact_samples_by_object.setdefault(object_id, []).append(
+                    {
+                        **dict(candidate),
+                        "frame_id": frame.get("frame_id"),
+                        "frame_index": frame.get("frame_index"),
+                    }
+                )
     for track in summary.get("object_tracks", []):
         object_id = str(track.get("object_id"))
-        trajectory = list(track.get("trajectory", []))
-        samples = [
-            item
-            for item in trajectory
-            if str(item.get("frame_id")) in frame_ids
-        ]
+        if summary.get("storage_layout") == "compact_v1":
+            samples = compact_samples_by_object.get(object_id, [])
+        else:
+            trajectory = list(track.get("trajectory", []))
+            samples = [
+                item
+                for item in trajectory
+                if str(item.get("frame_id")) in frame_ids
+            ]
         if not samples:
             continue
 
@@ -1203,14 +1252,12 @@ def _build_prompt_payload(
     for temporal_frame in temporal_frames:
         is_decision_frame = str(temporal_frame.get("frame_id")) == decision_frame_id
         evidence_frame = frame_input if is_decision_frame else temporal_frame
-        relations = list(evidence_frame.get("pairwise_relations", []))
-        if is_decision_frame:
-            relations = [
-                relation
-                for relation in relations
-                if str(relation.get("source_object_id")) in valid_output_object_ids
-                and str(relation.get("target_object_id")) in valid_output_object_ids
-            ]
+        relations = [
+            relation
+            for relation in _frame_pairwise_relations(evidence_frame)
+            if str(relation.get("source_object_id")) in valid_output_object_ids
+            and str(relation.get("target_object_id")) in valid_output_object_ids
+        ]
         window_frames.append(
             {
                 "frame_id": evidence_frame.get("frame_id"),
@@ -2155,6 +2202,40 @@ def _run_decision_for_frame(
     }
 
 
+def _compact_persisted_frame_decision(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep the stable per-frame decision contract without prompt-time snapshots."""
+    decision = dict(entry.get("decision", {}))
+    compact = {
+        "frame_id": entry.get("frame_id"),
+        "frame_index": entry.get("frame_index"),
+        "online_step": entry.get("online_step"),
+        "candidate_ids": entry.get("candidate_ids", []),
+        "model_invoked": bool(entry.get("model_invoked", False)),
+        "decision_source": entry.get("decision_source"),
+        "source_model_frame_id": entry.get("source_model_frame_id"),
+        "refresh_reasons": entry.get("refresh_reasons", []),
+        "performance": dict(entry.get("performance", {})),
+        "representative_images": list(entry.get("representative_images", [])),
+        "decision": {
+            key: decision.get(key)
+            for key in (
+                "model_target_object_id",
+                "target_object_id",
+                "reference_object_id",
+                "confidence",
+                "model_confidence",
+                "uncertain",
+                "uncertain_reason",
+            )
+        },
+    }
+    if entry.get("model_error") is not None:
+        compact["model_error"] = entry.get("model_error")
+    if entry.get("model_invoked") and entry.get("raw_text") is not None:
+        compact["raw_text"] = entry.get("raw_text")
+    return compact
+
+
 def _build_output_document(
     summary_path: Path,
     summary: Mapping[str, Any],
@@ -2168,9 +2249,15 @@ def _build_output_document(
     if not frame_decisions:
         raise ValueError("Cannot build object predictions without frame decisions")
     final_entry = frame_decisions[-1]
+    persisted_frame_decisions = (
+        [dict(item) for item in frame_decisions]
+        if dry_run
+        else [_compact_persisted_frame_decision(item) for item in frame_decisions]
+    )
     output = {
         "schema_version": summary.get("schema_version"),
         "artifact_type": "object_role_predictions",
+        "storage_layout": "debug_full_v1" if dry_run else "compact_v1",
         "generation_id": summary.get("generation_id"),
         "object_summary_json": str(summary_path),
         "decision_scope": decision_scope,
@@ -2182,7 +2269,7 @@ def _build_output_document(
         "role_spec_prior": summary.get("role_spec_prior"),
         "task_schema": final_entry.get("task_schema", {}),
         "candidate_ids": final_entry.get("candidate_ids", []),
-        "frame_decisions": list(frame_decisions),
+        "frame_decisions": persisted_frame_decisions,
     }
     performance_rows = [
         dict(item.get("performance", {})) for item in frame_decisions

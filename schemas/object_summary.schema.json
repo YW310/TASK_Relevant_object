@@ -7,6 +7,7 @@
   "properties": {
     "schema_version": {"const": 3},
     "artifact_type": {"const": "object_track_summary"},
+    "storage_layout": {"type": "string", "enum": ["compact_v1"]},
     "generation_id": {"type": "string", "format": "uuid"},
     "coordinate_frame": {"type": "string"},
     "units": {"type": "object"},

@@ -1,5 +1,9 @@
+import json
+import tempfile
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
+from pathlib import Path
 
 import numpy as np
 
@@ -7,13 +11,102 @@ from multiview_candidate_fusion import (
     Observation3D,
     assign_object_ids,
     build_candidate_lifecycle,
+    build_object_summary,
+    compact_candidate_outcomes,
     cluster_observations,
     filter_candidates_by_mask_area,
     filter_clusters_by_camera_support,
     filter_small_clusters,
     frame_index_from_frame,
+    split_fused_frame_artifacts,
     suppress_same_camera_duplicates,
+    _load_completed_frame,
+    _restore_track_state,
 )
+
+
+class CompactFusionArtifactTest(unittest.TestCase):
+    def test_verbose_lifecycle_and_tracking_move_to_debug_artifact(self) -> None:
+        frame = {
+            "schema_version": 3,
+            "generation_id": "generation",
+            "frame_id": "0",
+            "objects": [],
+            "candidate_lifecycle": [{
+                "camera": "front",
+                "candidate_id": "T1",
+                "final_status": "dropped",
+                "last_successful_stage": "backprojection",
+                "events": [{
+                    "stage": "cluster_filter",
+                    "status": "dropped",
+                    "reason_code": "min_fused_points",
+                    "reason_message": "verbose explanation",
+                }],
+            }],
+            "diagnostics": {"tracking_state": {"tracks": []}},
+            "_resume_tracking_state": {"tracks": []},
+        }
+
+        main, debug = split_fused_frame_artifacts(frame, "fusion_debug.json")
+
+        self.assertNotIn("candidate_lifecycle", main)
+        self.assertNotIn("diagnostics", main)
+        self.assertNotIn("_resume_tracking_state", main)
+        self.assertEqual("fusion_debug.json", main["diagnostics_ref"])
+        self.assertEqual("min_fused_points", main["candidate_outcomes"][0]["reason_code"])
+        self.assertNotIn("reason_message", main["candidate_outcomes"][0])
+        self.assertEqual(frame["candidate_lifecycle"], debug["candidate_lifecycle"])
+        self.assertEqual(frame["diagnostics"], debug["diagnostics"])
+
+    def test_compact_outcome_keeps_object_mapping(self) -> None:
+        outcomes = compact_candidate_outcomes([{
+            "camera": "front",
+            "candidate_id": "T1",
+            "final_status": "fused",
+            "fused_object_id": "O1",
+            "last_successful_stage": "fused_output",
+            "events": [],
+        }])
+
+        self.assertEqual("O1", outcomes[0]["object_id"])
+        self.assertEqual("fused", outcomes[0]["status"])
+
+    def test_resume_restores_tracking_checkpoint_from_debug_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            output_dir = Path(temporary_dir)
+            frame_dir = output_dir / "frames" / "000000_0"
+            frame_dir.mkdir(parents=True)
+            generation_id = "generation"
+            (frame_dir / "fused_objects.json").write_text(json.dumps({
+                "schema_version": 3,
+                "generation_id": generation_id,
+                "frame_id": "0",
+                "objects": [],
+                "diagnostics_ref": "fusion_debug.json",
+            }), encoding="utf-8")
+            expected_state = {
+                "next_object_index": 4,
+                "tracks": [{"index": 4, "centroid": [0, 0, 0]}],
+            }
+            (frame_dir / "fusion_debug.json").write_text(json.dumps({
+                "generation_id": generation_id,
+                "frame_id": "0",
+                "diagnostics": {"tracking_state": expected_state},
+            }), encoding="utf-8")
+            entry = {
+                "frame_id": "0",
+                "status": "complete",
+                "fused_objects_json": "frames/000000_0/fused_objects.json",
+                "fusion_debug_json": "frames/000000_0/fusion_debug.json",
+            }
+
+            loaded = _load_completed_frame(entry, output_dir, generation_id)
+            track_state = {}
+            self.assertIsNotNone(loaded)
+            _restore_track_state(loaded, track_state)
+
+            self.assertEqual(expected_state, track_state)
 
 
 class CandidateMaskAreaFilterTest(unittest.TestCase):
@@ -35,6 +128,77 @@ class CandidateMaskAreaFilterTest(unittest.TestCase):
         kept, suppressed = filter_candidates_by_mask_area(candidates, 0)
         self.assertEqual(candidates, kept)
         self.assertEqual([], suppressed)
+
+
+class CompactObjectSummaryTest(unittest.TestCase):
+    @patch(
+        "multiview_candidate_fusion.load_object_points",
+        return_value=np.zeros((3, 3), dtype=np.float64),
+    )
+    def test_summary_does_not_duplicate_verbose_frame_evidence(self, _load_points) -> None:
+        role_evidence = {
+            "target": {
+                "probability": 0.8,
+                "score_mass": 1.6,
+                "supporting_prompts": ["red block"],
+                "cameras": ["front"],
+                "frames": ["0"],
+            }
+        }
+        objects = []
+        for index, x in enumerate((0.0, 0.2), start=1):
+            objects.append(
+                {
+                    "id": f"O{index}",
+                    "centroid_world": [x, 0.0, 0.1],
+                    "bbox3d_world": [[x - 0.05, -0.05, 0.05], [x + 0.05, 0.05, 0.15]],
+                    "primary_camera": "front",
+                    "visible_camera": ["front"],
+                    "mask_area": 100,
+                    "sam_score": 0.9,
+                    "role_evidence": role_evidence,
+                    "observations": [
+                        {
+                            "camera": "front",
+                            "candidate_id": f"C{index}",
+                            "observation_id": f"0:front:C{index}",
+                            "provenance": {"very_verbose": ["unused"] * 20},
+                            "role_evidence": role_evidence,
+                            "mask_path": f"mask-{index}.png",
+                            "sam_score": 0.9,
+                        }
+                    ],
+                }
+            )
+        frame = {
+            "frame_id": "0",
+            "frame_index": 0,
+            "frame_ref": "frames/000000_0/fused_objects.json",
+            "objects": objects,
+        }
+
+        summary = build_object_summary(
+            [frame],
+            {},
+            {"instruction": "move the red block", "role_spec": {"target": "block"}},
+            schema_version=3,
+            generation_id="generation-id",
+        )
+
+        self.assertEqual("compact_v1", summary["storage_layout"])
+        self.assertNotIn("trajectory", summary["object_tracks"][0])
+        frame_input = summary["frame_decision_inputs"][0]
+        self.assertNotIn("instruction_prior", frame_input)
+        self.assertNotIn("role_spec_prior", frame_input)
+        self.assertEqual([], frame_input["pairwise_relations"])
+        candidate = frame_input["candidate_objects"][0]
+        self.assertEqual(
+            {"probability": 0.8, "score_mass": 1.6},
+            candidate["role_evidence"]["target"],
+        )
+        serialized = str(summary)
+        self.assertNotIn("very_verbose", serialized)
+        self.assertNotIn("observation_id", serialized)
 
 
 def _observation(name: str, camera: str, bbox: list[list[float]]) -> Observation3D:

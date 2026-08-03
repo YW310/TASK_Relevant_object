@@ -3,7 +3,7 @@
   "$id": "frame_fused_candidates.schema.json",
   "title": "Lightweight fused episode manifest",
   "type": "object",
-  "required": ["schema_version", "generation_id", "episode_metadata", "frame_order", "frames"],
+  "required": ["schema_version", "generation_id", "episode_metadata", "frames"],
   "properties": {
     "schema_version": {"const": 3},
     "artifact_type": {"const": "fused_episode_manifest"},
@@ -12,13 +12,13 @@
     "units": {"type": "object"},
     "summary": {"type": "object"},
     "episode_metadata": {"type": "object"},
-    "frame_order": {"type": "array", "items": {"type": "string"}},
     "frames": {"type": "array", "items": {
       "type": "object",
       "required": ["frame_id", "fused_objects_json", "status", "object_count"],
       "properties": {
         "frame_id": {"type": "string"}, "frame_index": {},
         "fused_objects_json": {"type": "string"},
+        "fusion_debug_json": {"type": "string"},
         "status": {"enum": ["pending", "complete", "failed"]},
         "object_count": {"type": "integer", "minimum": 0},
         "candidate_count": {"type": "integer", "minimum": 0},

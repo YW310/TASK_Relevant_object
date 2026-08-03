@@ -44,7 +44,6 @@ from camera_geometry import (
     transform_points,
 )
 from common_io import atomic_json_dump, parse_optional_csv as parse_csv
-from dynamic_role_reasoning import pairwise_geometry
 from fused_candidate_io import iter_fused_frames, load_object_points
 from fusion_matching import (
     _confidence,
@@ -1095,6 +1094,19 @@ def aggregate_summary_role_evidence(frames: Sequence[Mapping[str, Any]]) -> dict
     return result
 
 
+def compact_role_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep only the role values consumed by filters and Qwen prompts."""
+    return {
+        role: {
+            key: value.get(key)
+            for key in ("probability", "score_mass")
+            if value.get(key) is not None
+        }
+        for role, value in evidence.items()
+        if isinstance(value, Mapping)
+    }
+
+
 def candidate_to_observation(
     candidate: Mapping[str, Any],
     camera: str,
@@ -1141,23 +1153,6 @@ def stats_from_values(values: list[float]) -> dict[str, float | None]:
     }
 
 
-def relation_label(delta: np.ndarray) -> list[str]:
-    labels = []
-    if delta[0] > 0:
-        labels.append("right_of")
-    elif delta[0] < 0:
-        labels.append("left_of")
-    if delta[1] > 0:
-        labels.append("front_of")
-    elif delta[1] < 0:
-        labels.append("behind")
-    if delta[2] > 0:
-        labels.append("above")
-    elif delta[2] < 0:
-        labels.append("below")
-    return labels
-
-
 def build_object_summary(
     frames: Iterable[Mapping[str, Any]],
     result: Mapping[str, Any],
@@ -1188,33 +1183,14 @@ def build_object_summary(
                 {
                     "frame_id": frame_id,
                     "frame_index": frame_index,
-                    "frame_ref": frame.get("frame_ref"),
                     "centroid_world": obj["centroid_world"],
                     "bbox3d_world": obj["bbox3d_world"],
                     "point_count": int(len(load_object_points(frame, object_id))),
-                    "primary_camera": obj.get("primary_camera"),
                     "visible_camera": obj.get("visible_camera", []),
                     "camera_count": len(obj.get("visible_camera", [])),
                     "mask_area": int(obj.get("mask_area", 0)),
                     "sam_score": float(obj.get("sam_score", 0.0)),
-                    "observation_count": len(obj.get("observations", [])),
                     "role_evidence": obj.get("role_evidence", {}),
-                    "observations": [
-                        {
-                            "camera": obs.get("camera"),
-                            "candidate_id": obs.get("candidate_id"),
-                            "observation_id": obs.get("observation_id"),
-                            "role_evidence": obs.get("role_evidence", {}),
-                            "provenance": obs.get("provenance", {}),
-                            "mask_path": obs.get("mask_path"),
-                            "crop_path": obs.get("crop_path"),
-                            "masked_crop_path": obs.get("masked_crop_path"),
-                            "mask_area": obs.get("mask_area"),
-                            "sam_score": obs.get("sam_score"),
-                            "mask_bbox_xyxy": obs.get("mask_bbox_xyxy"),
-                        }
-                        for obs in obj.get("observations", [])
-                    ],
                 }
             )
 
@@ -1222,26 +1198,13 @@ def build_object_summary(
         candidates = []
         for obj in objects:
             candidates.append(_summary_object_record(frame, obj))
-        pairwise_relations = []
-        for i in range(len(objects)):
-            for j in range(i + 1, len(objects)):
-                src, dst = objects[i], objects[j]
-                c_src = np.asarray(src.get("centroid_world", [0.0] * 3), dtype=np.float64)
-                c_dst = np.asarray(dst.get("centroid_world", [0.0] * 3), dtype=np.float64)
-                delta = c_dst - c_src
-                pairwise_relations.append({
-                    **pairwise_geometry(src, dst),
-                    "source_object_id": src.get("id"), "target_object_id": dst.get("id"),
-                    "distance_m": float(np.linalg.norm(delta)), "delta_world": delta.tolist(),
-                    "source_to_target_labels": relation_label(delta),
-                    "target_to_source_labels": relation_label(-delta),
-                })
         frame_decision_inputs.append({
             "frame_id": frame_id, "frame_index": frame_index,
             "frame_ref": frame.get("frame_ref"),
-            "instruction_prior": candidates_summary.get("instruction"),
-            "role_spec_prior": candidates_summary.get("role_spec"),
-            "candidate_objects": candidates, "pairwise_relations": pairwise_relations,
+            "candidate_objects": candidates,
+            # Pairwise geometry is deterministic and O(objects^2). Stage 4 derives
+            # it from the candidate centroids/bboxes only for its active window.
+            "pairwise_relations": [],
         })
 
     object_tracks = []
@@ -1269,13 +1232,14 @@ def build_object_summary(
         object_tracks.append(
             {
                 "object_id": object_id,
-                "role_evidence": aggregate_summary_role_evidence(frames_sorted),
+                "role_evidence": compact_role_evidence(
+                    aggregate_summary_role_evidence(frames_sorted)
+                ),
                 "first_frame_id": frames_sorted[0]["frame_id"],
                 "last_frame_id": frames_sorted[-1]["frame_id"],
                 "first_frame_index": frames_sorted[0]["frame_index"],
                 "last_frame_index": frames_sorted[-1]["frame_index"],
                 "lifespan_frames": len(frames_sorted),
-                "frames_visible": [item["frame_id"] for item in frames_sorted],
                 "camera_set": sorted(camera_histogram),
                 "camera_histogram": camera_histogram,
                 "centroid_mean_world": np.mean(np.stack(centroids, axis=0), axis=0).tolist(),
@@ -1286,13 +1250,13 @@ def build_object_summary(
                 "camera_count_stats": stats_from_values([float(item["camera_count"]) for item in frames_sorted]),
                 "bbox_diagonal_m_stats": stats_from_values(bbox_diagonals),
                 "bbox_size_xyz_mean": np.mean(np.stack(bbox_sizes, axis=0), axis=0).tolist() if bbox_sizes else None,
-                "trajectory": frames_sorted,
             }
         )
 
     return {
         "schema_version": schema_version,
         "artifact_type": "object_track_summary",
+        "storage_layout": "compact_v1",
         "generation_id": generation_id,
         "coordinate_frame": "world",
         "units": {"distance": "meters", "mask_area": "pixels"},
@@ -1300,7 +1264,7 @@ def build_object_summary(
             "frame_count": len(frame_decision_inputs),
             "object_track_count": len(object_tracks),
             "visible_object_sample_count": sum(
-                len(track.get("trajectory", [])) for track in object_tracks
+                int(track.get("lifespan_frames", 0)) for track in object_tracks
             ),
         },
         "episode_dir": result.get("episode_dir"),
@@ -1329,7 +1293,8 @@ def build_object_summary(
 def _summary_object_record(frame: Mapping[str, Any], obj: Mapping[str, Any]) -> dict[str, Any]:
     """Strip a frame object to decision metadata (never embedded geometry)."""
     return {
-        "object_id": obj.get("id"), "role_evidence": obj.get("role_evidence", {}),
+        "object_id": obj.get("id"),
+        "role_evidence": compact_role_evidence(obj.get("role_evidence", {})),
         "centroid_world": obj.get("centroid_world"), "bbox3d_world": obj.get("bbox3d_world"),
         "primary_camera": obj.get("primary_camera"),
         "visible_camera": obj.get("visible_camera", []),
@@ -1338,9 +1303,9 @@ def _summary_object_record(frame: Mapping[str, Any], obj: Mapping[str, Any]) -> 
         "mask_area": obj.get("mask_area"), "sam_score": obj.get("sam_score"),
         "observation_count": len(obj.get("observations", [])),
         "observations": [{key: obs.get(key) for key in (
-            "camera", "candidate_id", "observation_id", "role_evidence", "provenance",
-            "mask_path", "crop_path", "masked_crop_path", "mask_area", "sam_score", "mask_bbox_xyxy"
-        )} for obs in obj.get("observations", [])],
+            "camera", "candidate_id", "mask_path", "crop_path", "masked_crop_path",
+            "mask_area", "sam_score", "mask_bbox_xyxy"
+        ) if obs.get(key) is not None} for obs in obj.get("observations", [])],
     }
 
 
@@ -1823,7 +1788,9 @@ def _fusion_parameters(args: argparse.Namespace, rlbench_low_dim_path: Path, has
 
 def _restore_track_state(frame: Mapping[str, Any], track_state: dict[str, Any]) -> None:
     """Advance tracking from a completed frame when resuming a partial run."""
-    persisted_state = frame.get("diagnostics", {}).get("tracking_state")
+    persisted_state = frame.get("_resume_tracking_state")
+    if not isinstance(persisted_state, Mapping):
+        persisted_state = frame.get("diagnostics", {}).get("tracking_state")
     if isinstance(persisted_state, Mapping) and isinstance(persisted_state.get("tracks"), list):
         track_state.clear()
         track_state.update(copy.deepcopy(dict(persisted_state)))
@@ -1867,7 +1834,78 @@ def _load_completed_frame(
         return None
     if frame.get("generation_id") != generation_id:
         return None
+    debug_ref = entry.get("fusion_debug_json") or frame.get("diagnostics_ref")
+    if debug_ref:
+        try:
+            debug_path = Path(str(debug_ref)).expanduser()
+            if not debug_path.is_absolute():
+                debug_path = output_dir / debug_path
+                if not debug_path.is_file():
+                    debug_path = path.parent / Path(str(debug_ref)).name
+            debug = json.loads(debug_path.read_text(encoding="utf-8"))
+            if (
+                debug.get("generation_id") == generation_id
+                and str(debug.get("frame_id")) == str(entry.get("frame_id"))
+            ):
+                frame["_resume_tracking_state"] = debug.get("diagnostics", {}).get(
+                    "tracking_state"
+                )
+        except (OSError, ValueError, TypeError):
+            pass
     return frame
+
+
+def compact_candidate_outcomes(
+    lifecycle: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep one concise, human-readable final outcome per Stage-1 candidate."""
+    outcomes: list[dict[str, Any]] = []
+    for entry in lifecycle:
+        outcome: dict[str, Any] = {
+            "camera": entry.get("camera"),
+            "candidate_id": entry.get("candidate_id"),
+            "status": entry.get("final_status"),
+        }
+        optional = {
+            "object_id": entry.get("fused_object_id"),
+            "replacement_candidate_id": entry.get("replacement_candidate_id"),
+            "last_successful_stage": entry.get("last_successful_stage"),
+        }
+        reason_code = next(
+            (
+                event.get("reason_code")
+                for event in reversed(entry.get("events", []))
+                if event.get("reason_code")
+            ),
+            None,
+        )
+        optional["reason_code"] = reason_code
+        outcome.update({key: value for key, value in optional.items() if value is not None})
+        outcomes.append(outcome)
+    return outcomes
+
+
+def split_fused_frame_artifacts(
+    frame: Mapping[str, Any], debug_ref: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Separate downstream results from verbose fusion diagnostics."""
+    main_frame = dict(frame)
+    main_frame.pop("_resume_tracking_state", None)
+    lifecycle = list(main_frame.pop("candidate_lifecycle", []))
+    diagnostics = dict(main_frame.pop("diagnostics", {}))
+    main_frame["candidate_outcomes"] = compact_candidate_outcomes(lifecycle)
+    main_frame["diagnostics_ref"] = debug_ref
+    debug_frame = {
+        "schema_version": frame.get("schema_version"),
+        "artifact_type": "frame_fusion_debug",
+        "generation_id": frame.get("generation_id"),
+        "frame_id": frame.get("frame_id"),
+        "frame_index": frame.get("frame_index"),
+        "source_fused_objects_json": "fused_objects.json",
+        "candidate_lifecycle": lifecycle,
+        "diagnostics": diagnostics,
+    }
+    return main_frame, debug_frame
 
 
 def main() -> None:
@@ -1908,12 +1946,14 @@ def main() -> None:
             raise ValueError(f"Frame ids produce duplicate filesystem key: {frame_key!r}")
         seen_frame_keys.add(frame_key)
         relative_path = (Path("frames") / frame_key / "fused_objects.json").as_posix()
+        debug_relative_path = (Path("frames") / frame_key / "fusion_debug.json").as_posix()
         old_entry = old_entries.get(frame_id, {})
         reusable = dict(old_entry) if old_entry.get("fused_objects_json") == relative_path else {}
         entries.append({
             "frame_id": frame_id,
             "frame_index": frame.get("frame_index"),
             "fused_objects_json": relative_path,
+            "fusion_debug_json": debug_relative_path,
             "object_count": int(reusable.get("object_count", 0)),
             "candidate_count": int(reusable.get("candidate_count", 0)),
             "dropped_candidate_count": int(
@@ -1935,7 +1975,6 @@ def main() -> None:
             "role_spec": summary.get("role_spec"),
         },
         "fusion_parameters": fusion_parameters,
-        "frame_order": [entry["frame_id"] for entry in entries],
         "frames": entries,
     }
     _write_fusion_manifest(manifest, output_path)
@@ -1948,6 +1987,19 @@ def main() -> None:
         if completed is not None:
             completed_count += 1
             _restore_track_state(completed, track_state)
+            # Transparently migrate resumable v3 artifacts written before the
+            # debug-sidecar layout, so the refreshed manifest never points to a
+            # missing fusion_debug.json.
+            if "diagnostics" in completed or "candidate_lifecycle" in completed:
+                completed, fusion_debug = split_fused_frame_artifacts(
+                    completed, "fusion_debug.json"
+                )
+                atomic_json_dump(
+                    fusion_debug, output_path.parent / entry["fusion_debug_json"]
+                )
+                atomic_json_dump(
+                    completed, output_path.parent / entry["fused_objects_json"]
+                )
             continue
         entry.update(
             {
@@ -1973,6 +2025,12 @@ def main() -> None:
                 **fused_frame,
             }
             save_frame_geometry(fused_frame, output_path)
+            fused_frame, fusion_debug = split_fused_frame_artifacts(
+                fused_frame, "fusion_debug.json"
+            )
+            atomic_json_dump(
+                fusion_debug, output_path.parent / entry["fusion_debug_json"]
+            )
             atomic_json_dump(fused_frame, output_path.parent / entry["fused_objects_json"])
         except Exception as exc:
             track_state.clear()
