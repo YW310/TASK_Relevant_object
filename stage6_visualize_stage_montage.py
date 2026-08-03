@@ -18,7 +18,7 @@ import textwrap
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from common_io import load_json
+from common_io import atomic_json_dump, load_json
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -183,13 +183,16 @@ def main() -> None:
         )
 
     summary = {
+        "schema_version": 1,
+        "artifact_type": "stage_comparison_report",
+        "summary": {"rendered_image_count": len(rendered)},
         "decision_meta_json": str(meta_path),
         "stage1_candidates_json": str(stage1_path),
         "output_dir": str(output_dir),
         "rendered": rendered,
     }
     summary_path = output_dir / "stage_compare.json"
-    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_json_dump(summary, summary_path)
     print(
         json.dumps(
             {

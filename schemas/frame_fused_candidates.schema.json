@@ -6,7 +6,11 @@
   "required": ["schema_version", "generation_id", "episode_metadata", "frame_order", "frames"],
   "properties": {
     "schema_version": {"const": 3},
+    "artifact_type": {"const": "fused_episode_manifest"},
     "generation_id": {"type": "string", "format": "uuid"},
+    "coordinate_frame": {"type": "string"},
+    "units": {"type": "object"},
+    "summary": {"type": "object"},
     "episode_metadata": {"type": "object"},
     "frame_order": {"type": "array", "items": {"type": "string"}},
     "frames": {"type": "array", "items": {
@@ -16,7 +20,9 @@
         "frame_id": {"type": "string"}, "frame_index": {},
         "fused_objects_json": {"type": "string"},
         "status": {"enum": ["pending", "complete", "failed"]},
-        "object_count": {"type": "integer", "minimum": 0}
+        "object_count": {"type": "integer", "minimum": 0},
+        "candidate_count": {"type": "integer", "minimum": 0},
+        "dropped_candidate_count": {"type": "integer", "minimum": 0}
       }
     }}
   }

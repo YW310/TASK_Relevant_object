@@ -45,7 +45,7 @@ from camera_geometry import (
     project_points,
     resolve_camera_param_for_frame,
 )
-from common_io import parse_optional_csv as parse_csv
+from common_io import atomic_json_dump, parse_optional_csv as parse_csv
 from fused_candidate_io import (
     iter_fused_frames,
     load_fused_manifest,
@@ -497,7 +497,13 @@ def main() -> None:
     if args.max_frames is not None:
         frames = frames[: args.max_frames]
 
-    report: dict[str, Any] = {"episode_dir": str(episode_dir), "source_fused_json": str(fused_path), "frames": []}
+    report: dict[str, Any] = {
+        "schema_version": 1,
+        "artifact_type": "fusion_visualization_report",
+        "episode_dir": str(episode_dir),
+        "source_fused_json": str(fused_path),
+        "frames": [],
+    }
     for frame in frames:
         frame_id = str(frame["frame_id"])
         frame_index = frame.get("frame_index")
@@ -588,7 +594,16 @@ def main() -> None:
         })
 
     report_path = output_dir / "sanity_report.json"
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    report["summary"] = {
+        "frame_count": len(report["frames"]),
+        "montage_count": sum(
+            bool(item.get("montage_path")) for item in report["frames"]
+        ),
+        "object_sample_count": sum(
+            len(item.get("objects", [])) for item in report["frames"]
+        ),
+    }
+    atomic_json_dump(report, report_path)
     print(json.dumps({"output_dir": str(output_dir), "sanity_report": str(report_path), "montages_rendered": sum(bool(item.get("montage_path")) for item in report["frames"]), "frames_rendered": len(report["frames"])}, ensure_ascii=False, indent=2))
 
 

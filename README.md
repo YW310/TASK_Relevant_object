@@ -187,6 +187,11 @@ same integer `schema_version` (currently `3`) and UUID `generation_id`:
    `objects`, their `observations`, and fusion `diagnostics`. Point arrays are
    still external in the sibling `fused_geometry.npz` and referenced by key.
    The key is `<six-digit frame_index>_<frame_id>` (for example `000000_0`).
+   The top-level `summary` gives candidate/object counts, while
+   `candidate_lifecycle` explains the final disposition of every Stage-1
+   candidate (`fused`, `merged`, `dropped`, or `unresolved`) with stable reason
+   codes, readable messages, and the resulting `fused_object_id` when one
+   exists. Backprojection failures are recorded instead of silently skipped.
 3. **`object_summary.json`** contains cross-frame tracks, aggregate statistics,
    decision-ready scalar metadata, and `frame_ref` links back to the per-frame
    files. It does not duplicate complete point clouds or other full geometry.
@@ -197,7 +202,19 @@ fields before joining artifacts; a schema mismatch or a `generation_id` from a
 different fusion run is an error rather than a silent mixed-run result. A
 compatible resumed run retains its generation ID, while a new run creates one.
 See `schemas/frame_fused_candidates.schema.json`,
-`schemas/fused_objects.schema.json`, and `schemas/object_summary.schema.json`.
+`schemas/fused_objects.schema.json`, `schemas/object_summary.schema.json`,
+`schemas/episode_candidates.schema.json`, and
+`schemas/object_predictions.schema.json`.
+
+#### JSON readability conventions
+
+Persisted JSON artifacts are UTF-8, two-space indented, newline-terminated,
+and written atomically where the shared I/O helper is used. Major artifacts
+start with `schema_version` and `artifact_type`, and expose a compact top-level
+`summary` before their detailed records. Existing fields remain available for
+backward compatibility. Stable machine-readable failure codes use
+`reason_code`; `reason_message` provides a concise human-readable explanation.
+Large point arrays remain in NPZ archives rather than being embedded in JSON.
 
 ### Stage 3: fused-object sanity visualization
 

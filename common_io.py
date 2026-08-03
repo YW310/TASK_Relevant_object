@@ -16,6 +16,7 @@ def atomic_json_dump(data: Any, path: str | Path) -> None:
     temporary = destination.with_suffix(destination.suffix + ".tmp")
     with temporary.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
     temporary.replace(destination)
 
 

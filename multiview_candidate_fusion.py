@@ -444,6 +444,29 @@ def filter_candidates_by_mask_area(
     return kept, suppressed
 
 
+def _cluster_diagnostic_identity(
+    cluster: Sequence[Observation3D],
+) -> dict[str, Any]:
+    """Return stable candidate/observation references for human-readable diagnostics."""
+    candidate_refs = [
+        {
+            "camera": obs.camera,
+            "candidate_id": obs.candidate.get("id"),
+            "observation_id": obs.observation_id,
+        }
+        for obs in cluster
+    ]
+    return {
+        "candidate_refs": candidate_refs,
+        "candidate_ids": [
+            ref["candidate_id"]
+            for ref in candidate_refs
+            if ref["candidate_id"] is not None
+        ],
+        "observation_ids": [ref["observation_id"] for ref in candidate_refs],
+    }
+
+
 def filter_clusters_by_camera_support(
     clusters: Sequence[Sequence[Observation3D]],
     args: argparse.Namespace,
@@ -502,6 +525,7 @@ def filter_clusters_by_camera_support(
         )
         visibility_exception = potential_camera_count < min_camera_count
         diagnostic = {
+            **_cluster_diagnostic_identity(cluster),
             "supporting_cameras": supporting_cameras,
             "supporting_camera_count": len(supporting_cameras),
             "required_camera_count": min_camera_count,
@@ -695,6 +719,7 @@ def filter_small_clusters(clusters: list[list[Observation3D]], args: argparse.Na
         if args.min_fused_points > 0 and len(all_points) < args.min_fused_points:
             if isinstance(diagnostics, list):
                 diagnostics.append({
+                    **_cluster_diagnostic_identity(cluster),
                     "reason": "min_fused_points",
                     "cameras": sorted({obs.camera for obs in cluster}),
                     "point_count": int(len(all_points)),
@@ -710,6 +735,7 @@ def filter_small_clusters(clusters: list[list[Observation3D]], args: argparse.Na
         if args.min_bbox_diagonal_m > 0.0 and diagonal < args.min_bbox_diagonal_m:
             if isinstance(diagnostics, list):
                 diagnostics.append({
+                    **_cluster_diagnostic_identity(cluster),
                     "reason": "min_bbox_diagonal_m",
                     "cameras": sorted({obs.camera for obs in cluster}),
                     "bbox_diagonal_m": diagonal,
@@ -731,6 +757,7 @@ def filter_small_clusters(clusters: list[list[Observation3D]], args: argparse.Na
         ):
             if isinstance(diagnostics, list):
                 diagnostics.append({
+                    **_cluster_diagnostic_identity(cluster),
                     "reason": "max_centroid_to_cloud_distance_m",
                     "cameras": sorted({obs.camera for obs in cluster}),
                     "centroid_world": centroid.tolist(),
@@ -763,6 +790,7 @@ def filter_small_clusters(clusters: list[list[Observation3D]], args: argparse.Na
         )
         if multiple_large_components:
             detail = {
+                **_cluster_diagnostic_identity(cluster),
                 "reason": "multiple_large_3d_components",
                 "cameras": sorted({obs.camera for obs in cluster}),
                 **component_stats,
@@ -806,6 +834,207 @@ def observation_to_json(obs: Observation3D) -> dict[str, Any]:
         "centroid_world": obs.centroid_world.tolist(),
         "bbox3d_world": obs.bbox3d_world.tolist(),
     }
+
+
+_LIFECYCLE_REASON_MESSAGES = {
+    "mask_area_pixels_below_threshold": "Candidate mask area was below the configured minimum.",
+    "legacy_overlap_or_containment": "Candidate was merged into a canonical observation with overlapping evidence.",
+    "missing_camera_parameters": "Camera parameters were unavailable, so the candidate could not be lifted to 3D.",
+    "empty_3d_backprojection": "No valid 3D points were produced from the candidate mask and depth image.",
+    "same_camera_2d_3d_nms": "Candidate was merged into a stronger duplicate from the same camera.",
+    "min_fused_points": "The fused cluster contained fewer points than required.",
+    "min_bbox_diagonal_m": "The fused cluster was smaller than the configured 3D extent.",
+    "max_centroid_to_cloud_distance_m": "The cluster centroid was too far from its observed point cloud.",
+    "multiple_large_3d_components": "The cluster contained multiple separated large 3D components.",
+    "min_fused_camera_count": "Too few cameras supported the object although other cameras could observe it.",
+    "not_in_fused_output": "Candidate reached 3D processing but was not present in the final fused objects.",
+}
+
+
+def build_candidate_lifecycle(
+    raw_candidates: Sequence[Mapping[str, Any]],
+    canonical_sources: Mapping[tuple[str, str], Sequence[str]],
+    backprojection_records: Sequence[Mapping[str, Any]],
+    mask_area_suppressed: Sequence[Mapping[str, Any]],
+    canonicalization_suppressed: Sequence[Mapping[str, Any]],
+    same_camera_nms_suppressed: Sequence[Mapping[str, Any]],
+    filtered_clusters: Sequence[Mapping[str, Any]],
+    objects: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Explain the final disposition of every Stage-1 candidate in one frame."""
+    entries: dict[tuple[str, str], dict[str, Any]] = {}
+    for candidate in raw_candidates:
+        camera = str(candidate.get("camera", ""))
+        candidate_id = str(candidate.get("candidate_id", ""))
+        if not camera or not candidate_id:
+            continue
+        entries[(camera, candidate_id)] = {
+            "camera": camera,
+            "candidate_id": candidate_id,
+            "canonical_observation_id": candidate.get("canonical_observation_id"),
+            "role": candidate.get("role"),
+            "sam_score": candidate.get("sam_score"),
+            "mask_area_pixels": candidate.get("mask_area_pixels"),
+            "final_status": "unresolved",
+            "fused_object_id": None,
+            "last_successful_stage": "candidate_input",
+            "events": [
+                {"stage": "candidate_input", "status": "accepted"}
+            ],
+        }
+
+    def targets(camera: Any, candidate_id: Any) -> list[dict[str, Any]]:
+        camera_text = str(camera or "")
+        candidate_text = str(candidate_id or "")
+        source_ids = canonical_sources.get(
+            (camera_text, candidate_text), (candidate_text,)
+        )
+        return [
+            entries[(camera_text, str(source_id))]
+            for source_id in source_ids
+            if (camera_text, str(source_id)) in entries
+        ]
+
+    def add_event(
+        entry: dict[str, Any],
+        stage: str,
+        status: str,
+        reason_code: str | None = None,
+        **details: Any,
+    ) -> None:
+        event: dict[str, Any] = {"stage": stage, "status": status}
+        if reason_code:
+            event["reason_code"] = reason_code
+            event["reason_message"] = _LIFECYCLE_REASON_MESSAGES.get(
+                reason_code, reason_code.replace("_", " ").capitalize() + "."
+            )
+        event.update({key: value for key, value in details.items() if value is not None})
+        entry["events"].append(event)
+
+    for (camera, canonical_id), source_ids in canonical_sources.items():
+        for source_id in source_ids:
+            entry = entries.get((camera, str(source_id)))
+            if entry is None:
+                continue
+            entry["canonical_observation_id"] = canonical_id
+            if str(source_id) != canonical_id:
+                entry["final_status"] = "merged"
+                entry["replacement_candidate_id"] = canonical_id
+                entry["last_successful_stage"] = "canonicalization"
+                add_event(
+                    entry,
+                    "canonicalization",
+                    "merged",
+                    "legacy_overlap_or_containment",
+                    replacement_candidate_id=canonical_id,
+                )
+
+    for detail in mask_area_suppressed:
+        for entry in targets(detail.get("camera"), detail.get("candidate_id")):
+            entry["final_status"] = "dropped"
+            add_event(entry, "mask_area_filter", "dropped", str(detail.get("reason")))
+
+    for detail in canonicalization_suppressed:
+        for entry in targets(detail.get("camera"), detail.get("candidate_id")):
+            entry["final_status"] = "merged"
+            add_event(entry, "canonicalization", "merged", str(detail.get("reason")))
+
+    for detail in backprojection_records:
+        for entry in targets(detail.get("camera"), detail.get("candidate_id")):
+            if detail.get("status") == "accepted":
+                entry["last_successful_stage"] = "backprojection"
+                add_event(
+                    entry,
+                    "backprojection",
+                    "accepted",
+                    observation_id=detail.get("observation_id"),
+                    point_count=detail.get("point_count"),
+                )
+            else:
+                entry["final_status"] = "dropped"
+                add_event(
+                    entry,
+                    "backprojection",
+                    "dropped",
+                    str(detail.get("reason")),
+                )
+
+    replacement_map: dict[tuple[str, str], str] = {}
+    for detail in same_camera_nms_suppressed:
+        camera = str(detail.get("camera", ""))
+        suppressed_id = str(detail.get("suppressed_candidate_id", ""))
+        kept_id = str(detail.get("kept_candidate_id", ""))
+        replacement_map[(camera, suppressed_id)] = kept_id
+        for entry in targets(camera, suppressed_id):
+            entry["final_status"] = "merged"
+            entry["replacement_candidate_id"] = kept_id
+            entry["last_successful_stage"] = "same_camera_nms"
+            add_event(
+                entry,
+                "same_camera_nms",
+                "merged",
+                str(detail.get("reason")),
+                replacement_candidate_id=kept_id,
+            )
+
+    for detail in filtered_clusters:
+        reason = str(detail.get("reason", "not_in_fused_output"))
+        for ref in detail.get("candidate_refs", []):
+            for entry in targets(ref.get("camera"), ref.get("candidate_id")):
+                entry["final_status"] = "dropped"
+                add_event(entry, "cluster_filter", "dropped", reason)
+
+    fused_by_candidate: dict[tuple[str, str], str] = {}
+    for obj in objects:
+        object_id = str(obj.get("id"))
+        for observation in obj.get("observations", []):
+            key = (
+                str(observation.get("camera", "")),
+                str(observation.get("candidate_id", "")),
+            )
+            fused_by_candidate[key] = object_id
+            for entry in targets(*key):
+                if entry["final_status"] == "unresolved":
+                    entry["final_status"] = "fused"
+                entry["fused_object_id"] = object_id
+                entry["last_successful_stage"] = "fused_output"
+                add_event(entry, "fused_output", "accepted", fused_object_id=object_id)
+
+    for (camera, suppressed_id), kept_id in replacement_map.items():
+        object_id = fused_by_candidate.get((camera, kept_id))
+        if object_id is None:
+            continue
+        for entry in targets(camera, suppressed_id):
+            entry["fused_object_id"] = object_id
+
+    for entry in entries.values():
+        if entry["final_status"] == "unresolved":
+            add_event(
+                entry,
+                "fused_output",
+                "unresolved",
+                "not_in_fused_output",
+            )
+
+    lifecycle = sorted(
+        entries.values(), key=lambda item: (item["camera"], item["candidate_id"])
+    )
+    summary = {
+        "input_candidate_count": len(lifecycle),
+        "directly_fused_candidate_count": sum(
+            item["final_status"] == "fused" for item in lifecycle
+        ),
+        "merged_candidate_count": sum(
+            item["final_status"] == "merged" for item in lifecycle
+        ),
+        "dropped_candidate_count": sum(
+            item["final_status"] == "dropped" for item in lifecycle
+        ),
+        "unresolved_candidate_count": sum(
+            item["final_status"] == "unresolved" for item in lifecycle
+        ),
+    }
+    return lifecycle, summary
 
 
 def aggregate_role_evidence(observations: Sequence[Observation3D], frame_id: str | None = None) -> dict[str, Any]:
@@ -1042,7 +1271,17 @@ def build_object_summary(
 
     return {
         "schema_version": schema_version,
+        "artifact_type": "object_track_summary",
         "generation_id": generation_id,
+        "coordinate_frame": "world",
+        "units": {"distance": "meters", "mask_area": "pixels"},
+        "summary": {
+            "frame_count": len(frame_decision_inputs),
+            "object_track_count": len(object_tracks),
+            "visible_object_sample_count": sum(
+                len(track.get("trajectory", [])) for track in object_tracks
+            ),
+        },
         "episode_dir": result.get("episode_dir"),
         "source_candidates_json": result.get("source_candidates_json"),
         "source_fused_json": None,
@@ -1277,6 +1516,9 @@ def fuse_frame(
     track_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     observations: list[Observation3D] = []
+    raw_candidate_records: list[dict[str, Any]] = []
+    canonical_sources: dict[tuple[str, str], tuple[str, ...]] = {}
+    backprojection_records: list[dict[str, Any]] = []
     mask_area_suppressed: list[dict[str, Any]] = []
     canonicalization_suppressed: list[dict[str, Any]] = []
     same_camera_nms_suppressed: list[dict[str, Any]] = []
@@ -1286,6 +1528,21 @@ def fuse_frame(
     for camera, view in frame.get("views", {}).items():
         if cameras is not None and camera not in cameras:
             continue
+        data = json.loads(Path(view["candidates_json"]).read_text(encoding="utf-8"))
+        raw_candidates = list(data.get("candidates", []))
+        for candidate in raw_candidates:
+            raw_candidate_records.append(
+                {
+                    "camera": camera,
+                    "candidate_id": candidate.get("id"),
+                    "canonical_observation_id": candidate.get(
+                        "canonical_observation_id"
+                    ),
+                    "role": candidate.get("role"),
+                    "sam_score": candidate.get("score"),
+                    "mask_area_pixels": candidate.get("mask_area_pixels"),
+                }
+            )
         params = resolve_camera_param_for_frame(
             camera,
             frame_index,
@@ -1296,6 +1553,15 @@ def fuse_frame(
             invert_rlbench_extrinsics=args.invert_rlbench_extrinsics,
         )
         if params is None:
+            backprojection_records.extend(
+                {
+                    "camera": camera,
+                    "candidate_id": candidate.get("id"),
+                    "status": "dropped",
+                    "reason": "missing_camera_parameters",
+                }
+                for candidate in raw_candidates
+            )
             print(
                 f"[warn] frame_id={frame_id} camera={camera}: no camera intrinsics/extrinsics found; "
                 "skipping 3D fusion for this view (visual-only matching not yet implemented).",
@@ -1310,9 +1576,8 @@ def fuse_frame(
             "extrinsics": params["extrinsics"],
             "depth": depth,
         }
-        data = json.loads(Path(view["candidates_json"]).read_text(encoding="utf-8"))
         area_filtered_candidates, area_suppressed = filter_candidates_by_mask_area(
-            data.get("candidates", []),
+            raw_candidates,
             args.min_candidate_mask_area_pixels,
         )
         mask_area_suppressed.extend({"camera": camera, **item} for item in area_suppressed)
@@ -1329,6 +1594,24 @@ def fuse_frame(
             containment_threshold=args.legacy_canonical_containment,
         )
         canonicalization_suppressed.extend({"camera": camera, **item} for item in legacy_suppressed)
+        raw_candidate_ids = {
+            str(candidate.get("id"))
+            for candidate in raw_candidates
+            if candidate.get("id") is not None
+        }
+        for candidate in canonical_candidates:
+            canonical_id = str(candidate.get("id"))
+            source_ids = tuple(
+                dict.fromkeys(
+                    str(item.get("original_candidate_id"))
+                    for item in candidate.get("prompt_provenance", [])
+                    if item.get("original_candidate_id") is not None
+                    and str(item.get("original_candidate_id")) in raw_candidate_ids
+                )
+            )
+            if not source_ids and canonical_id in raw_candidate_ids:
+                source_ids = (canonical_id,)
+            canonical_sources[(camera, canonical_id)] = source_ids
         if legacy_suppressed:
             print(f"[info] frame_id={frame_id} camera={camera}: legacy canonicalization suppressed "
                   f"{len(legacy_suppressed)} duplicate candidates", file=sys.stderr)
@@ -1338,19 +1621,37 @@ def fuse_frame(
             points_cam = backproject_mask(depth, mask, params["intrinsics"], args.max_points_per_candidate)
             points_world = transform_points(points_cam, params["extrinsics"])
             if len(points_world) == 0:
+                backprojection_records.append(
+                    {
+                        "camera": camera,
+                        "candidate_id": cand.get("id"),
+                        "status": "dropped",
+                        "reason": "empty_3d_backprojection",
+                    }
+                )
                 continue
             centroid = points_world.mean(axis=0)
             bbox = np.stack([points_world.min(axis=0), points_world.max(axis=0)])
+            observation = candidate_to_observation(
+                cand,
+                camera,
+                frame_id,
+                points_world,
+                centroid,
+                bbox,
+            )
+            backprojection_records.append(
+                {
+                    "camera": camera,
+                    "candidate_id": cand.get("id"),
+                    "observation_id": observation.observation_id,
+                    "status": "accepted",
+                    "point_count": int(len(points_world)),
+                }
+            )
             camera_observations.append(
                 (
-                    candidate_to_observation(
-                        cand,
-                        camera,
-                        frame_id,
-                        points_world,
-                        centroid,
-                        bbox,
-                    ),
+                    observation,
                     mask,
                 )
             )
@@ -1377,13 +1678,26 @@ def fuse_frame(
     clusters = filter_small_clusters(clusters, args)
     clusters = filter_clusters_by_camera_support(clusters, args, camera_contexts)
     objects, updated_track_state = assign_object_ids(clusters, track_state or {}, args, frame_id)
+    candidate_lifecycle, lifecycle_summary = build_candidate_lifecycle(
+        raw_candidate_records,
+        canonical_sources,
+        backprojection_records,
+        mask_area_suppressed,
+        canonicalization_suppressed,
+        same_camera_nms_suppressed,
+        filtered_cluster_diagnostics,
+        objects,
+    )
     if track_state is not None:
         track_state.clear()
         track_state.update(updated_track_state)
-    return {"frame_index": frame.get("frame_index"), "frame_id": frame_id, "objects": objects,
+    return {"frame_index": frame.get("frame_index"), "frame_id": frame_id,
+            "summary": {**lifecycle_summary, "fused_object_count": len(objects)},
+            "objects": objects, "candidate_lifecycle": candidate_lifecycle,
             "diagnostics": {"mask_area_suppressed": mask_area_suppressed,
                             "canonicalization_suppressed": canonicalization_suppressed,
                             "same_camera_nms_suppressed": same_camera_nms_suppressed,
+                            "backprojection": backprojection_records,
                             "attempted_same_camera_cluster_insertions": same_camera_diagnostics,
                             "camera_support": camera_support_diagnostics,
                             "filtered_clusters": filtered_cluster_diagnostics,
@@ -1391,6 +1705,39 @@ def fuse_frame(
 
 
 FUSED_MANIFEST_SCHEMA_VERSION = 3
+
+
+def _write_fusion_manifest(manifest: dict[str, Any], output_path: Path) -> None:
+    """Refresh the human-readable run summary before atomically writing it."""
+    entries = list(manifest.get("frames", []))
+    manifest["summary"] = {
+        "frame_count": len(entries),
+        "completed_frame_count": sum(
+            entry.get("status") == "complete" for entry in entries
+        ),
+        "failed_frame_count": sum(
+            entry.get("status") == "failed" for entry in entries
+        ),
+        "pending_frame_count": sum(
+            entry.get("status") == "pending" for entry in entries
+        ),
+        "fused_object_count": sum(
+            int(entry.get("object_count", 0))
+            for entry in entries
+            if entry.get("status") == "complete"
+        ),
+        "input_candidate_count": sum(
+            int(entry.get("candidate_count", 0))
+            for entry in entries
+            if entry.get("status") == "complete"
+        ),
+        "dropped_candidate_count": sum(
+            int(entry.get("dropped_candidate_count", 0))
+            for entry in entries
+            if entry.get("status") == "complete"
+        ),
+    }
+    atomic_json_dump(manifest, output_path)
 
 
 def _fusion_parameters(args: argparse.Namespace, rlbench_low_dim_path: Path, has_rlbench_observations: bool) -> dict[str, Any]:
@@ -1527,12 +1874,19 @@ def main() -> None:
             "frame_index": frame.get("frame_index"),
             "fused_objects_json": relative_path,
             "object_count": int(reusable.get("object_count", 0)),
+            "candidate_count": int(reusable.get("candidate_count", 0)),
+            "dropped_candidate_count": int(
+                reusable.get("dropped_candidate_count", 0)
+            ),
             "status": reusable.get("status", "pending"),
         })
 
     manifest: dict[str, Any] = {
         "schema_version": FUSED_MANIFEST_SCHEMA_VERSION,
+        "artifact_type": "fused_episode_manifest",
         "generation_id": generation_id,
+        "coordinate_frame": "world",
+        "units": {"distance": "meters", "mask_area": "pixels"},
         "episode_metadata": {
             "episode_dir": str(episode_dir),
             "source_candidates_json": str(candidates_path),
@@ -1543,7 +1897,7 @@ def main() -> None:
         "frame_order": [entry["frame_id"] for entry in entries],
         "frames": entries,
     }
-    atomic_json_dump(manifest, output_path)
+    _write_fusion_manifest(manifest, output_path)
 
     track_state: dict[str, Any] = {}
     completed_count = 0
@@ -1554,16 +1908,29 @@ def main() -> None:
             completed_count += 1
             _restore_track_state(completed, track_state)
             continue
-        entry.update({"status": "pending", "object_count": 0})
-        atomic_json_dump(manifest, output_path)
+        entry.update(
+            {
+                "status": "pending",
+                "object_count": 0,
+                "candidate_count": 0,
+                "dropped_candidate_count": 0,
+            }
+        )
+        _write_fusion_manifest(manifest, output_path)
         previous_track_state = copy.deepcopy(track_state)
         try:
             fused_frame = fuse_frame(
                 source_frame, episode_dir, camera_params, rlbench_observations,
                 cameras, args, track_state=track_state,
             )
-            fused_frame["schema_version"] = FUSED_MANIFEST_SCHEMA_VERSION
-            fused_frame["generation_id"] = generation_id
+            fused_frame = {
+                "schema_version": FUSED_MANIFEST_SCHEMA_VERSION,
+                "artifact_type": "frame_fused_objects",
+                "generation_id": generation_id,
+                "coordinate_frame": "world",
+                "units": {"distance": "meters", "mask_area": "pixels"},
+                **fused_frame,
+            }
             save_frame_geometry(fused_frame, output_path)
             atomic_json_dump(fused_frame, output_path.parent / entry["fused_objects_json"])
         except Exception as exc:
@@ -1571,12 +1938,24 @@ def main() -> None:
             track_state.update(previous_track_state)
             entry["status"] = "failed"
             failures += 1
-            atomic_json_dump(manifest, output_path)
+            _write_fusion_manifest(manifest, output_path)
             print(f"[error] frame_id={entry['frame_id']}: {exc}", file=sys.stderr)
             continue
-        entry.update({"status": "complete", "object_count": len(fused_frame.get("objects", []))})
+        frame_summary = fused_frame.get("summary", {})
+        entry.update(
+            {
+                "status": "complete",
+                "object_count": len(fused_frame.get("objects", [])),
+                "candidate_count": int(
+                    frame_summary.get("input_candidate_count", 0)
+                ),
+                "dropped_candidate_count": int(
+                    frame_summary.get("dropped_candidate_count", 0)
+                ),
+            }
+        )
         completed_count += 1
-        atomic_json_dump(manifest, output_path)
+        _write_fusion_manifest(manifest, output_path)
 
     # Keep the legacy-shaped context private to the optional summary builder;
     # the persisted manifest remains deliberately lightweight.

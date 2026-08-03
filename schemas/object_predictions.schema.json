@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "object_predictions.schema.json",
+  "title": "Per-frame object-role decisions",
+  "type": "object",
+  "required": ["artifact_type", "summary", "frame_decisions"],
+  "properties": {
+    "schema_version": {},
+    "artifact_type": {"const": "object_role_predictions"},
+    "generation_id": {},
+    "summary": {"type": "object"},
+    "performance": {"type": "object"},
+    "frame_decisions": {"type": "array"},
+    "decision": {"type": ["object", "null"]}
+  }
+}

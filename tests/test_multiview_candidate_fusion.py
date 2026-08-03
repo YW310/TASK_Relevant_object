@@ -6,6 +6,7 @@ import numpy as np
 from multiview_candidate_fusion import (
     Observation3D,
     assign_object_ids,
+    build_candidate_lifecycle,
     cluster_observations,
     filter_candidates_by_mask_area,
     filter_clusters_by_camera_support,
@@ -44,7 +45,7 @@ def _observation(name: str, camera: str, bbox: list[list[float]]) -> Observation
         role_evidence={"target": 0.9},
         provenance={},
         camera=camera,
-        candidate={"score": 0.9},
+        candidate={"id": name, "score": 0.9},
         points_world=points,
         centroid_world=points.mean(axis=0),
         bbox3d_world=bounds,
@@ -385,6 +386,7 @@ class CentroidCloudConsistencyTest(unittest.TestCase):
         self.assertEqual(1, len(kept))
         self.assertIs(good, kept[0][0])
         self.assertEqual("max_centroid_to_cloud_distance_m", diagnostics[0]["reason"])
+        self.assertEqual(["front:bad"], diagnostics[0]["candidate_ids"])
         self.assertAlmostEqual(0.05, diagnostics[0]["centroid_to_cloud_distance_m"])
 
     def test_centroid_distance_filter_can_be_disabled(self) -> None:
@@ -456,6 +458,103 @@ class CentroidCloudConsistencyTest(unittest.TestCase):
 
         self.assertEqual(1, len(kept))
         self.assertIs(candidate, kept[0][0])
+
+
+class CandidateLifecycleTest(unittest.TestCase):
+    def test_every_candidate_has_a_clear_final_disposition(self) -> None:
+        raw_candidates = [
+            {
+                "camera": "front",
+                "candidate_id": candidate_id,
+                "sam_score": 0.9,
+                "mask_area_pixels": 100,
+            }
+            for candidate_id in ("C1", "C2", "C3", "C4")
+        ]
+        canonical_sources = {
+            ("front", candidate_id): (candidate_id,)
+            for candidate_id in ("C1", "C2", "C3", "C4")
+        }
+        backprojection = [
+            {
+                "camera": "front",
+                "candidate_id": "C1",
+                "observation_id": "f:front:C1",
+                "status": "accepted",
+                "point_count": 40,
+            },
+            {
+                "camera": "front",
+                "candidate_id": "C2",
+                "observation_id": "f:front:C2",
+                "status": "accepted",
+                "point_count": 30,
+            },
+            {
+                "camera": "front",
+                "candidate_id": "C3",
+                "status": "dropped",
+                "reason": "empty_3d_backprojection",
+            },
+            {
+                "camera": "front",
+                "candidate_id": "C4",
+                "observation_id": "f:front:C4",
+                "status": "accepted",
+                "point_count": 10,
+            },
+        ]
+        nms = [
+            {
+                "camera": "front",
+                "kept_candidate_id": "C1",
+                "suppressed_candidate_id": "C2",
+                "reason": "same_camera_2d_3d_nms",
+            }
+        ]
+        filtered = [
+            {
+                "reason": "min_fused_points",
+                "candidate_refs": [
+                    {
+                        "camera": "front",
+                        "candidate_id": "C4",
+                        "observation_id": "f:front:C4",
+                    }
+                ],
+            }
+        ]
+        objects = [
+            {
+                "id": "O1",
+                "observations": [
+                    {"camera": "front", "candidate_id": "C1"}
+                ],
+            }
+        ]
+
+        lifecycle, summary = build_candidate_lifecycle(
+            raw_candidates,
+            canonical_sources,
+            backprojection,
+            [],
+            [],
+            nms,
+            filtered,
+            objects,
+        )
+
+        by_id = {item["candidate_id"]: item for item in lifecycle}
+        self.assertEqual("fused", by_id["C1"]["final_status"])
+        self.assertEqual("O1", by_id["C1"]["fused_object_id"])
+        self.assertEqual("merged", by_id["C2"]["final_status"])
+        self.assertEqual("O1", by_id["C2"]["fused_object_id"])
+        self.assertEqual("dropped", by_id["C3"]["final_status"])
+        self.assertEqual("dropped", by_id["C4"]["final_status"])
+        self.assertEqual(1, summary["directly_fused_candidate_count"])
+        self.assertEqual(1, summary["merged_candidate_count"])
+        self.assertEqual(2, summary["dropped_candidate_count"])
+        self.assertEqual(0, summary["unresolved_candidate_count"])
 
 
 if __name__ == "__main__":

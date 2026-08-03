@@ -6,9 +6,17 @@
   "required": ["schema_version", "generation_id", "frame_id", "objects", "diagnostics"],
   "properties": {
     "schema_version": {"const": 3},
+    "artifact_type": {"const": "frame_fused_objects"},
     "generation_id": {"type": "string", "format": "uuid"},
+    "coordinate_frame": {"type": "string"},
+    "units": {"type": "object"},
     "frame_id": {"type": "string"}, "frame_index": {},
+    "summary": {"type": "object"},
     "objects": {"type": "array", "items": {"type": "object", "required": ["id", "observations"]}},
+    "candidate_lifecycle": {"type": "array", "items": {
+      "type": "object",
+      "required": ["camera", "candidate_id", "final_status", "events"]
+    }},
     "diagnostics": {"type": "object"}
   }
 }

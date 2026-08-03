@@ -2165,6 +2165,9 @@ def _build_output_document(
         raise ValueError("Cannot build object predictions without frame decisions")
     final_entry = frame_decisions[-1]
     output = {
+        "schema_version": summary.get("schema_version"),
+        "artifact_type": "object_role_predictions",
+        "generation_id": summary.get("generation_id"),
         "object_summary_json": str(summary_path),
         "decision_scope": decision_scope,
         "decision_policy": decision_policy,
@@ -2226,6 +2229,17 @@ def _build_output_document(
         "total_input_visual_pixels": sum(
             int(item.get("input_visual_pixels") or 0) for item in performance_rows
         ),
+    }
+    output["summary"] = {
+        "frame_count": len(frame_decisions),
+        "model_call_count": output["performance"]["model_call_count"],
+        "propagated_frame_count": output["performance"]["propagated_frame_count"],
+        "uncertain_frame_count": sum(
+            1
+            for item in frame_decisions
+            if bool(item.get("decision", {}).get("uncertain", False))
+        ),
+        "final_candidate_count": len(final_entry.get("candidate_ids", [])),
     }
     if dry_run:
         output["dry_run"] = True

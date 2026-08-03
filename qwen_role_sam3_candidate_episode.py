@@ -691,6 +691,14 @@ def process_camera(
         )
         candidates.append(item)
     result = {
+        "schema_version": 1,
+        "artifact_type": "camera_frame_candidates",
+        "summary": {
+            "raw_candidate_count": len(generated_candidates),
+            "canonical_candidate_count": len(candidates),
+            "suppressed_candidate_count": len(suppressed),
+        },
+        "units": {"image_coordinates": "pixels", "mask_area": "pixels"},
         "image_path": str(image_path),
         "candidates": candidates,
         "prompt_attempts": prompt_attempts,
@@ -854,7 +862,20 @@ def main() -> None:
             )
             frame_entry["contact_sheet"] = str(contact_sheet)
         frames_summary.append(frame_entry)
+    total_candidates = sum(
+        int(view.get("num_candidates", 0))
+        for frame in frames_summary
+        for view in frame.get("views", {}).values()
+    )
     summary = {
+        "schema_version": 1,
+        "artifact_type": "episode_candidates",
+        "summary": {
+            "frame_count": len(frames_summary),
+            "camera_count": len(args.cameras),
+            "candidate_count": total_candidates,
+        },
+        "units": {"image_coordinates": "pixels", "mask_area": "pixels"},
         "episode_dir": str(episode_dir),
         "instruction": instruction,
         "role_spec": role_doc,

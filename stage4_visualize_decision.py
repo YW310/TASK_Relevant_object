@@ -30,7 +30,7 @@ from camera_geometry import (
     project_points,
     resolve_camera_param_for_frame,
 )
-from common_io import load_json, parse_optional_csv as parse_csv
+from common_io import atomic_json_dump, load_json, parse_optional_csv as parse_csv
 from fused_candidate_io import load_fused_frame, load_fused_manifest, load_object_points
 from visualization_utils import object_color_for_id
 
@@ -341,6 +341,12 @@ def main() -> None:
             )
 
     metadata = {
+        "schema_version": 1,
+        "artifact_type": "decision_visualization_report",
+        "summary": {
+            "decision_frame_count": len(_frame_decision_entries(pred)),
+            "rendered_image_count": len(rendered),
+        },
         "object_predictions_json": str(pred_path),
         "source_fused_json": str(fused_path),
         "decision_frame_id": pred.get("decision_frame_id"),
@@ -359,7 +365,7 @@ def main() -> None:
         "rendered": rendered,
     }
     meta_path = output_dir / "decision_visualization.json"
-    meta_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_json_dump(metadata, meta_path)
     print(
         json.dumps(
             {
