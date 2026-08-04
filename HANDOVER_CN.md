@@ -28,18 +28,27 @@
 
 本次交接检查中，`run_full_pipeline.sh` 已通过 `bash -n` 语法检查。本机基础 Conda 环境为 Python 3.10.12，但未安装 `pytest`，因此需要在正式模型环境中重新执行测试集。
 
+研究主线已收敛为 **Retrospective World Topology Repair**：当前 `frame_fused_candidates.json`、逐帧 O-ID 和 `object_predictions.json` 仍是现有 pipeline 的兼容输出，不应被解释为最终物理身份。高层入口是 [`CONSERVE3D_THESIS_CARD_CN.md`](CONSERVE3D_THESIS_CARD_CN.md)，完整方案是 [`RESEARCH_PROPOSAL_CONSERVE3D_CN.md`](RESEARCH_PROPOSAL_CONSERVE3D_CN.md)，整体叙事是 [`CONSERVE3D_IDEA_OVERVIEW_CN.md`](CONSERVE3D_IDEA_OVERVIEW_CN.md)。
+
 ## 3. 系统架构与数据流
 
 | 阶段 | 入口文件 | 主要输入 | 主要输出 |
 | --- | --- | --- | --- |
 | 1. 角色解析与候选生成 | `qwen_role_sam3_candidate_episode.py` | 指令、RGB、Qwen3-VL、SAM3 | `role_spec.json`、`episode_candidates.json`、掩码与裁剪图 |
-| 2. 多视角融合与跟踪 | `multiview_candidate_fusion.py` | 候选、深度、相机参数 | `frame_fused_candidates.json`、逐帧物体 JSON/NPZ、可选 `object_summary.json` |
+| 2. 多视角融合与跟踪 | `multiview_candidate_fusion.py` | 候选、深度、相机参数 | 当前 observation-level `frame_fused_candidates.json`、逐帧物体 JSON/NPZ、可选 `object_summary.json`；后续作为 world belief 输入 |
 | 3. 融合可视化 | `visualize_fused_candidates.py` | 融合结果、RGB、相机参数 | `viz/*_montage.png`、`sanity_report.json` |
-| 4. 目标/参考物体决策 | `qwen3vl_object_role_decision.py` | `object_summary.json`、Qwen3-VL | `object_predictions.json`、`decision_inputs/` |
+| 4. 目标/参考物体决策 | `qwen3vl_object_role_decision.py` | 当前 `object_summary.json`、Qwen3-VL | `object_predictions.json`、`decision_inputs/`；目标架构改为读取 typed world queries |
 | 5. 决策可视化 | `stage4_visualize_decision.py` | 决策结果、融合结果 | `viz_decision/`、`decision_visualization.json` |
 | 6. 阶段对比 | `stage6_visualize_stage_montage.py` | 阶段 1、3、5 结果 | `viz_compare/` |
 
 默认执行阶段 1、2、3。设置 `SKIP_DECISION=0` 后执行阶段 4 和 5；再设置 `SKIP_STAGE_COMPARE=0` 执行阶段 6。
+
+### 3.1 接手时必须区分的两层
+
+- **当前工程层：** SAM3 候选、融合 O-ID、时域传播和 Qwen 角色输出，用于运行、可视化和回归；
+- **目标研究层：** immutable evidence ledger、versioned entity–site–event belief、`Conserve–Test–Repair` 以及 typed world-query addresses。
+
+不要通过延长 TTL、增加 appearance feature 或强制单一 ID 来掩盖不可辨识性。优先检查候选 evidence、world hypothesis、topology edit provenance 和 role query 是否一致。
 
 ## 4. 仓库目录与模块职责
 

@@ -571,6 +571,22 @@ by the optional object decision stage; this is enabled automatically when
 
 ## Additional documentation
 
+- [`CONSERVE3D_THESIS_CARD_CN.md`](CONSERVE3D_THESIS_CARD_CN.md) is the one-page
+  thesis card for presentations, proposal framing, and quick project alignment.
+- [`CONSERVE3D_IDEA_OVERVIEW_CN.md`](CONSERVE3D_IDEA_OVERVIEW_CN.md) is the
+  high-level research narrative: treating objects as persistent but falsifiable
+  physical hypotheses through a Conserve–Test–Repair loop with separate frame and
+  world-topology clocks.
+- [`RESEARCH_PROPOSAL_CONSERVE3D_CN.md`](RESEARCH_PROPOSAL_CONSERVE3D_CN.md)
+  develops interaction-grounded retrospective world topology repair over persistent
+  Carrier–Site–Event belief, including novelty boundaries, falsification tests,
+  evaluation protocol, and an implementation roadmap.
+- [`TCIO_METHOD_SPEC_CN.md`](TCIO_METHOD_SPEC_CN.md) is the compact method
+  contract for the downstream identity-decision interface and possible
+  follow-up theory, rather than a co-equal main-paper contribution.
+- [`PROJECT_REPORT_CN.md`](PROJECT_REPORT_CN.md) and
+  [`HANDOVER_CN.md`](HANDOVER_CN.md) provide the current project report and
+  operational handover guide.
 - [`README_qwen_role_sam3_candidates.md`](README_qwen_role_sam3_candidates.md)
   contains detailed stage-one, tuning, and troubleshooting guidance.
 - [`README_CN.md`](README_CN.md) contains Chinese notes for local SAM3

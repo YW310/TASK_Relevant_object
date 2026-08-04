@@ -17,6 +17,8 @@
 
 本阶段的核心工作，是推动项目从“单帧、单阶段能力验证”向“可分阶段运行、可复用中间结果、可追踪问题、可持续维护”的 episode 级工程方案演进。
 
+本阶段同时完成了研究主线收敛：项目不再把每帧检测框或 O-ID 视为物理真值，而是将其视为 observation evidence，下一阶段在 Stage 2 与 Stage 4 之间维护可版本化的 entity–site–event world belief，并用机器人交互回溯修订历史 world topology。高层 thesis 见 [`CONSERVE3D_THESIS_CARD_CN.md`](CONSERVE3D_THESIS_CARD_CN.md)，完整研究方案见 [`RESEARCH_PROPOSAL_CONSERVE3D_CN.md`](RESEARCH_PROPOSAL_CONSERVE3D_CN.md)。
+
 ## 3. 项目背景与目标
 
 机器人操作任务中的“相关物体”并不等同于单纯的物体检测结果。例如，在“把杯子放到架子上”任务中，系统不仅需要识别杯子，还需要区分当前目标、放置位置、交互部位，以及这些角色随操作进度发生的变化。
@@ -25,7 +27,7 @@
 
 1. 从自然语言任务中提取目标、参考物体、交互部位和空间关系。
 2. 在多个相机视角中生成高召回率的实例候选。
-3. 将不同视角中的同一实体融合为统一、角色中立的物体 ID。
+3. 将不同视角中的 observation fragments 融合为可回溯的 world belief；当前 O-ID 仅作为兼容层地址，不承诺其等同于最终物理身份。
 4. 在 episode 时间维度上保持稳定的物体身份。
 5. 根据视觉语义、机械臂交互和三维关系判断当前目标与参考物体。
 6. 提供可检查、可回放的中间产物和可视化，支持问题定位与参数调优。
@@ -53,7 +55,7 @@ flowchart LR
 ### 4.2 多视角三维融合与时序跟踪
 
 - 结合深度图和相机内外参，将二维候选反投影为世界坐标系点云。
-- 使用角色中立的 `O*` ID 表示物理实体，避免候选阶段的语义标签直接绑定最终物体身份。
+- 当前输出使用角色中立的 `O*` ID 作为兼容层索引，避免候选阶段的语义标签直接绑定角色；研究目标是由 versioned world belief 提供可回溯的 entity/site address，而不是强制唯一 ID。
 - 使用锚点相机分配和相机内一对一匹配替代简单的传递式聚类，控制错误链式合并。
 - 通过中心点距离、三维包围盒、最近点距离、点云直径、尺寸比例和可见性检查约束融合结果。
 - 对同相机重复候选执行严格的二维与三维联合 NMS。
@@ -62,7 +64,7 @@ flowchart LR
 
 ### 4.3 目标与参考物体决策
 
-- 阶段 4 使用融合后的 `object_summary.json`，而不是直接使用 SAM3 的角色标签。
+- 当前阶段 4 使用融合后的 `object_summary.json`，而不是直接使用 SAM3 的角色标签；后续应将其升级为 typed world query 的输入，而非把其中的 O-ID 当作物理真值。
 - 每个采样帧均可生成决策；默认采用自适应关键帧策略，在稳定帧复用语义结果，并重新计算当前几何、夹爪状态和动态角色。
 - 使用滚动时间窗口评估物体接近、运动、抓取、释放、支撑和包含关系。
 - 将语义兼容性与确定性的物理状态检查分离，保留模型原始结果和调整依据，便于复核。
@@ -75,6 +77,10 @@ flowchart LR
 - 阶段 5 将最终目标和参考物体直接替换为 `T*`、`R*` 标签，避免重复标签遮挡小物体。
 - 阶段 6 汇总候选、融合和决策结果，支持快速比较错误来自哪一阶段。
 - 输出中保留模型调用来源、传播来源、刷新原因、置信度组成和耗时统计。
+
+### 4.5 下一阶段的统一研究接口
+
+将现有链路解释为：Stage 1 生成 immutable evidence；Stage 2 生成当前融合版本；world layer 维护 `Conserve–Test–Repair` 的 entity–site–event belief；Stage 3/5/6 展示 belief、uncertainty 和 revision provenance；Stage 4 通过 typed `target/reference/support` query 获取任务角色。若后续实验不能证明历史 topology repair 优于固定拓扑 smoother，则该方向应收缩为系统/benchmark 工作。
 
 ## 5. 本阶段完成的主要工作
 
