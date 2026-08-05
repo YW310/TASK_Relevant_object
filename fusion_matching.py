@@ -47,8 +47,22 @@ def symmetric_percentile_nearest_distance(
 
 def _confidence(obs: Observation3D) -> float:
     return max(
-        obs.role_evidence.values(),
+        (
+            float(entry.get("score", 0.0))
+            for entry in obs.semantic_evidence.values()
+        ),
         default=float(obs.candidate.get("score", 0.0)),
+    )
+
+
+def _semantic_role_score(obs: Observation3D, role: str) -> float:
+    return max(
+        (
+            float(entry.get("score", 0.0))
+            for entry in obs.semantic_evidence.values()
+            if role in entry.get("compatible_roles", [])
+        ),
+        default=0.0,
     )
 
 
@@ -68,10 +82,10 @@ def _source_prompts(obs: Observation3D) -> set[str]:
 
 
 def _is_specific_interaction_part(obs: Observation3D) -> bool:
-    part_score = float(obs.role_evidence.get("interaction_part", 0.0))
+    part_score = _semantic_role_score(obs, "interaction_part")
     object_score = max(
-        float(obs.role_evidence.get("target", 0.0)),
-        float(obs.role_evidence.get("reference", 0.0)),
+        _semantic_role_score(obs, "target"),
+        _semantic_role_score(obs, "reference"),
     )
     return part_score >= 0.25 and part_score >= object_score
 
@@ -205,25 +219,39 @@ def weighted_cluster_centroid(
     return weighted_sum / total_weight
 
 
-def _merge_same_camera_role_evidence(
+def _merge_same_camera_semantic_evidence(
     primary: Observation3D,
     duplicate: Observation3D,
 ) -> None:
     """Retain semantic evidence from a geometry duplicate without duplicating points."""
-    roles = set(primary.role_evidence).union(duplicate.role_evidence)
-    primary.role_evidence = {
-        role: 1.0
-        - (1.0 - float(primary.role_evidence.get(role, 0.0)))
-        * (1.0 - float(duplicate.role_evidence.get(role, 0.0)))
-        for role in roles
-    }
+    merged: dict[str, dict[str, Any]] = {}
+    for group_id in set(primary.semantic_evidence).union(duplicate.semantic_evidence):
+        first = dict(primary.semantic_evidence.get(group_id, {}))
+        second = dict(duplicate.semantic_evidence.get(group_id, {}))
+        first_score = float(first.get("score", 0.0))
+        second_score = float(second.get("score", 0.0))
+        roles = list(dict.fromkeys([
+            *first.get("compatible_roles", []),
+            *second.get("compatible_roles", []),
+        ]))
+        prompts = list(dict.fromkeys([
+            *first.get("supporting_prompts", []),
+            *second.get("supporting_prompts", []),
+        ]))
+        merged[group_id] = {
+            "semantic_group_id": group_id,
+            "score": 1.0 - (1.0 - first_score) * (1.0 - second_score),
+            "compatible_roles": roles,
+            "supporting_prompts": prompts,
+        }
+    primary.semantic_evidence = merged
     provenance = dict(primary.provenance)
     suppressed = list(provenance.get("same_camera_nms_suppressed", []))
     suppressed.append(
         {
             "observation_id": duplicate.observation_id,
             "candidate_id": duplicate.candidate.get("id"),
-            "role_evidence": dict(duplicate.role_evidence),
+            "semantic_evidence": dict(duplicate.semantic_evidence),
             "provenance": dict(duplicate.provenance),
         }
     )
@@ -387,7 +415,7 @@ def suppress_same_camera_duplicates(
         ):
             kept_observation, suppressed_observation = observation, primary
             kept[kept_index] = (observation, mask)
-        _merge_same_camera_role_evidence(kept_observation, suppressed_observation)
+        _merge_same_camera_semantic_evidence(kept_observation, suppressed_observation)
         diagnostics.append(
             {
                 "camera": observation.camera,

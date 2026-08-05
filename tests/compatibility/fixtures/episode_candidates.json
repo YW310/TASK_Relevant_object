@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "artifact_type": "episode_candidates",
   "summary": {"frame_count": 1, "candidate_count": 1},
   "units": {"bbox": "pixels"},
@@ -10,6 +10,17 @@
     "reference": null,
     "interaction_part": null
   },
+  "semantic_groups": [
+    {
+      "semantic_group_id": "SG1",
+      "name": "red block",
+      "prompts": ["red block"],
+      "identity_cues": ["red"],
+      "negative_cues": [],
+      "compatible_roles": ["target"],
+      "role_discriminative": true
+    }
+  ],
   "camera_names": ["front"],
   "frames": [
     {
@@ -20,4 +31,3 @@
     }
   ]
 }
-

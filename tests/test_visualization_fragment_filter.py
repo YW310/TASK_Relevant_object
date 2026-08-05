@@ -20,9 +20,12 @@ def _object(
         "bbox3d_world": bbox,
         "centroid_world": centroid,
         "visible_camera": cameras,
-        "role_evidence": {
-            "interaction_part": {"probability": interaction_probability}
-        },
+        "semantic_evidence": [{
+            "semantic_group_id": "SG_PART",
+            "score": interaction_probability,
+            "compatible_roles": ["interaction_part"],
+            "supporting_prompts": [prompt],
+        }],
         "observations": [
             {
                 "provenance": {
@@ -101,13 +104,16 @@ def test_different_semantic_prompts_are_not_aliased():
     frame["objects"][1]["observations"][0]["provenance"]["prompt_provenance"][0][
         "source_prompt"
     ] = "a different physical object"
+    frame["objects"][1]["semantic_evidence"][0]["supporting_prompts"] = [
+        "a different physical object"
+    ]
 
     assert detect_suspect_fragment_aliases([frame])["aliases"] == {}
 
 
 def test_interaction_part_evidence_protects_a_small_real_part():
     frame = _fragment_frame()
-    frame["objects"][1]["role_evidence"]["interaction_part"]["probability"] = 0.8
+    frame["objects"][1]["semantic_evidence"][0]["score"] = 0.8
 
     assert detect_suspect_fragment_aliases([frame])["aliases"] == {}
 

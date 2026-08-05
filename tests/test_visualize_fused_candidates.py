@@ -71,7 +71,7 @@ def test_pointcloud_is_rendered_to_memory_for_montage():
             [0.01, -0.01, 0.0],
             [0.0, 0.01, 0.02],
         ],
-        "role_evidence": {},
+        "semantic_evidence": [],
     }
     frame = {"frame_id": "0", "objects": [obj]}
 

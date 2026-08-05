@@ -267,7 +267,7 @@ call C:\ProgramData\miniforge3\condabin\conda.bat activate base
 | `MAX_FRAMES` | 未设置 | 限制处理帧数量 |
 | `THRESHOLD` | `0.25` | SAM3 候选置信度阈值 |
 | `MIN_MASK_AREA` | `4` | 最小掩码像素面积 |
-| `TOP_K_PER_ROLE` | `8` | 每个语义角色保留的候选上限 |
+| `TOP_K_PER_SEMANTIC_GROUP` | `8` | 每个语义概念组保留的候选上限 |
 | `MASK_NMS_IOU` | `0.80` | 阶段 1 掩码 NMS 阈值 |
 | `ROLE_SPEC_JSON` | 未设置 | 复用已有角色解析结果 |
 
@@ -422,7 +422,7 @@ python -m pip install pytest
 
 1. 查看阶段 1 的候选网格和掩码，而不是直接调整融合参数。
 2. 适当降低 `THRESHOLD`，或使用 `CAMERA_THRESHOLD_OVERRIDES` 单独调整困难相机。
-3. 增加 `TOP_K_PER_ROLE` 或候选池大小。
+3. 增加 `TOP_K_PER_SEMANTIC_GROUP` 或候选池大小。
 4. 检查 `MIN_MASK_AREA`、多实例掩码抑制和 NMS 是否过强。
 5. 确认角色描述是否正确；必要时复查 `role_spec.json`。
 

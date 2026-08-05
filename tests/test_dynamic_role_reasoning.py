@@ -182,7 +182,11 @@ def test_grasp_release_between_sampled_frames_is_not_lost():
 def test_confidence_is_calibrated_from_evidence_not_copied_from_model():
     candidate = {
         "object_id": "O2",
-        "role_evidence": {"target": {"probability": 0.8}},
+        "semantic_evidence": [{
+            "semantic_group_id": "SG1",
+            "score": 0.8,
+            "compatible_roles": ["target", "reference"],
+        }],
         "sam_score": 0.9,
         "camera_count": 2,
     }

@@ -3,16 +3,32 @@
   "$id": "episode_candidates.schema.json",
   "title": "Episode-level Stage-1 candidate manifest",
   "type": "object",
-  "required": ["schema_version", "artifact_type", "summary", "episode_dir", "frames"],
+  "required": ["schema_version", "artifact_type", "summary", "episode_dir", "semantic_groups", "frames"],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "artifact_type": {"const": "episode_candidates"},
     "summary": {"type": "object"},
     "units": {"type": "object"},
     "episode_dir": {"type": "string"},
     "instruction": {"type": "string"},
     "role_spec": {"type": "object"},
+    "semantic_groups": {"type": "array", "items": {"$ref": "#/$defs/semantic_group"}},
     "camera_names": {"type": "array", "items": {"type": "string"}},
     "frames": {"type": "array"}
+  },
+  "$defs": {
+    "semantic_group": {
+      "type": "object",
+      "required": ["semantic_group_id", "name", "prompts", "compatible_roles", "role_discriminative"],
+      "properties": {
+        "semantic_group_id": {"type": "string"},
+        "name": {"type": "string"},
+        "prompts": {"type": "array", "items": {"type": "string"}},
+        "identity_cues": {"type": "array", "items": {"type": "string"}},
+        "negative_cues": {"type": "array", "items": {"type": "string"}},
+        "compatible_roles": {"type": "array", "items": {"enum": ["target", "reference", "interaction_part"]}},
+        "role_discriminative": {"type": "boolean"}
+      }
+    }
   }
 }

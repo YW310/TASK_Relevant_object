@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from fused_candidate_io import load_fused_frame, load_fused_manifest, load_object_points
 
@@ -28,6 +29,17 @@ def test_candidate_fixture_keeps_the_stage_one_schema() -> None:
     artifact = json.loads(
         (FIXTURES / "episode_candidates.json").read_text(encoding="utf-8")
     )
-    assert artifact["schema_version"] == 1
+    assert artifact["schema_version"] == 2
     assert artifact["artifact_type"] == "episode_candidates"
 
+
+@pytest.mark.parametrize("legacy_version", [1, 2, 3])
+def test_legacy_fused_manifests_are_explicitly_rejected(tmp_path, legacy_version) -> None:
+    path = tmp_path / "frame_fused_candidates.json"
+    path.write_text(
+        json.dumps({"schema_version": legacy_version, "generation_id": "old", "frames": []}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="use a new output directory"):
+        load_fused_manifest(path)

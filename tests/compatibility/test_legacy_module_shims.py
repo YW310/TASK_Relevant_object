@@ -30,7 +30,6 @@ def test_legacy_exports_have_the_same_identity_as_package_exports() -> None:
     from relevant_object.geometry import camera, mask
 
     assert fusion_types.Observation3D is models.Observation3D
-    assert fusion_types.ROLE_NAMES is models.ROLE_NAMES
     assert camera_geometry.project_points is camera.project_points
     assert camera_geometry.backproject_mask is camera.backproject_mask
     assert mask_geometry.mask_iou is mask.mask_iou

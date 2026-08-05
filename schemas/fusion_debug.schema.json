@@ -5,7 +5,7 @@
   "type": "object",
   "required": ["schema_version", "artifact_type", "generation_id", "frame_id", "candidate_lifecycle", "diagnostics"],
   "properties": {
-    "schema_version": {"const": 3},
+    "schema_version": {"const": 4},
     "artifact_type": {"const": "frame_fusion_debug"},
     "generation_id": {"type": "string", "format": "uuid"},
     "frame_id": {"type": "string"},

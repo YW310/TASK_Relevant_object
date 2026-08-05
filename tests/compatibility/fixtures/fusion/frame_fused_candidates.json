@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "artifact_type": "fused_episode_manifest",
   "generation_id": "00000000-0000-4000-8000-000000000001",
   "coordinate_frame": "world",
@@ -22,4 +22,3 @@
     }
   ]
 }
-

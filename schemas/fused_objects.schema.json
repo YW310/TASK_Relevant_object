@@ -5,18 +5,36 @@
   "type": "object",
   "required": ["schema_version", "generation_id", "frame_id", "objects", "candidate_outcomes", "diagnostics_ref"],
   "properties": {
-    "schema_version": {"const": 3},
+    "schema_version": {"const": 4},
     "artifact_type": {"const": "frame_fused_objects"},
     "generation_id": {"type": "string", "format": "uuid"},
     "coordinate_frame": {"type": "string"},
     "units": {"type": "object"},
     "frame_id": {"type": "string"}, "frame_index": {},
     "summary": {"type": "object"},
-    "objects": {"type": "array", "items": {"type": "object", "required": ["id", "observations"]}},
+    "objects": {"type": "array", "items": {"type": "object", "required": ["id", "semantic_evidence", "observations"], "properties": {
+      "semantic_evidence": {"type": "array", "items": {"$ref": "#/$defs/semantic_evidence"}}
+    }}},
     "candidate_outcomes": {"type": "array", "items": {
       "type": "object",
       "required": ["camera", "candidate_id", "status"]
     }},
     "diagnostics_ref": {"type": "string"}
+  },
+  "$defs": {
+    "semantic_evidence": {
+      "type": "object",
+      "required": ["semantic_group_id", "score", "score_mass", "support_count", "supporting_prompts", "compatible_roles"],
+      "properties": {
+        "semantic_group_id": {"type": "string"},
+        "score": {"type": "number", "minimum": 0, "maximum": 1},
+        "score_mass": {"type": "number", "minimum": 0},
+        "support_count": {"type": "integer", "minimum": 0},
+        "supporting_prompts": {"type": "array", "items": {"type": "string"}},
+        "compatible_roles": {"type": "array", "items": {"type": "string"}},
+        "cameras": {"type": "array", "items": {"type": "string"}},
+        "frames": {"type": "array"}
+      }
+    }
   }
 }

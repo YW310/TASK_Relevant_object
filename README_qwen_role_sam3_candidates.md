@@ -202,7 +202,7 @@ python qwen_role_sam3_candidate_episode.py \
   --device cuda \
   --cameras front,left_shoulder,right_shoulder \
   --frame-interval 1 \
-  --top-k-per-role 8 \
+  --top-k-per-semantic-group 8 \
   --threshold 0.25
 ```
 
@@ -226,7 +226,7 @@ python qwen_role_sam3_candidate_episode.py \
   --threshold 0.20 \
   --candidate-pool-size 20 \
   --prompt-variants 5 \
-  --top-k-per-role 8 \
+  --top-k-per-semantic-group 8 \
   --min-mask-area 4 \
   --split-disconnected-masks \
   --max-mask-components 4 \
@@ -394,35 +394,31 @@ python multiview_candidate_fusion.py \
   --bbox-iou-threshold 0.0
 ```
 
-Objects are clustered by physical geometry across all role hypotheses. Stable,
+Objects are clustered by physical geometry across all semantic concepts. Stable,
 role-neutral IDs use one global monotonic sequence: `O1`, `O2`, `O3`, and so on.
-Each object reports `role_evidence` separately, with probabilities, score mass,
-supporting prompts, cameras, and frames for target, reference, and interaction-part
-evidence. The original candidate role and prompt remain available in observation
-provenance for backward compatibility.
+Each object reports independent `semantic_evidence` scores with score mass,
+support count, supporting prompts, cameras, frames, and compatible roles. Scores
+are not normalized across target/reference. A shared group can confirm identity
+without pretending to distinguish dynamic roles; distinct concepts such as a
+white-cup target and yellow-plate reference remain separate groups.
 
 ### Canonical per-view observations
 
-SAM outputs are still generated independently for every role and prompt
-variant, but are canonicalized before `candidates.json` is written. Masks are
-associated across roles using strong mask IoU (`--mask-nms-iou`), smaller-mask
+Normalized duplicate prompts are executed only once per image and attributed to
+every semantic group that cites them. Masks are canonicalized only within a
+semantic group using strong mask IoU (`--mask-nms-iou`), smaller-mask
 coverage (`--canonical-containment`), and optionally bbox overlap
 (`--canonical-bbox-iou`). Bbox overlap is never sufficient without at least
 50% smaller-mask coverage, so adjacent instances are not merged. Ambiguous masks that would
 bridge two observations remain separate.
 
 Each output row has one `canonical_observation_id`, one representative mask,
-complete `prompt_provenance`, and per-role `role_scores`. Role scores use
+complete `prompt_provenance`, and per-group `semantic_evidence`. Group scores use
 **noisy-OR** (`1 - product(1 - score)`) and retain `raw_scores` for auditing.
 The `canonicalization.suppressed_candidates` diagnostic records collapsed and
-top-k-suppressed inputs. Multi-view fusion defensively canonicalizes legacy
-role-prefixed JSON and enforces a single observation per camera in every fused
-object; rejected same-camera insertions are recorded in frame diagnostics. The
-legacy adapter defaults to 0.35 IoU or 0.50 smaller-mask coverage so shifted
-prompt masks for the same object are normally collapsed. Both thresholds remain
-configurable with `--legacy-canonical-iou` and
-`--legacy-canonical-containment`; inspect the suppressed-candidate diagnostics
-when tuning them further to avoid merging adjacent instances.
+top-k-suppressed inputs. Multi-view fusion accepts Stage1 v2 only and enforces a
+single observation per camera in every fused object; v1 artifacts are rejected
+with an instruction to rerun into a new output directory.
 
 Current canonical artifacts also receive a strict same-camera 2D+3D NMS pass
 before cross-camera assignment. This closes the anchor-camera duplication case:

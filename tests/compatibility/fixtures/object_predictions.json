@@ -1,8 +1,9 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "artifact_type": "object_role_predictions",
-  "storage_layout": "compact_v1",
+  "storage_layout": "compact_v2",
   "generation_id": "00000000-0000-4000-8000-000000000001",
+  "semantic_groups_prior": [{"semantic_group_id": "SG1", "name": "red block", "compatible_roles": ["target"], "role_discriminative": true}],
   "summary": {"frame_count": 1, "decision_count": 1},
   "performance": {},
   "frame_decisions": [
@@ -23,4 +24,3 @@
     "uncertain": false
   }
 }
-

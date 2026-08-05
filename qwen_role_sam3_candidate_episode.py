@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -49,8 +50,8 @@ from qwen3vl_rlbench_episode_grounding import (
 )
 from visualization_utils import color_for_index, load_font
 
-ROLE_PREFIX = {"target": "T", "reference": "R", "interaction_part": "P"}
 ROLE_ORDER = ("target", "reference", "interaction_part")
+STAGE1_SCHEMA_VERSION = 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -103,7 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
             "lower threshold than --threshold to avoid missing real objects entirely."
         ),
     )
-    parser.add_argument("--top-k-per-role", type=int, default=8)
+    parser.add_argument("--top-k-per-semantic-group", type=int, default=8)
     parser.add_argument(
         "--candidate-pool-size",
         type=int,
@@ -244,7 +245,7 @@ def load_or_identify_role_spec(
 
 def _append_unique_text(values: list[str], value: Any) -> None:
     text = str(value).strip() if value is not None else ""
-    if text and text.lower() not in {item.lower() for item in values}:
+    if text and normalize_prompt(text) not in {normalize_prompt(item) for item in values}:
         values.append(text)
 
 
@@ -254,6 +255,11 @@ def _iter_text_list(value: Any) -> list[str]:
     if not isinstance(value, Sequence):
         return []
     return [str(item) for item in value if str(item).strip()]
+
+
+def normalize_prompt(value: Any) -> str:
+    """Return the stable cache/deduplication key for one semantic prompt."""
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
 
 
 def text_prompts_for_role(role_spec: Mapping[str, Any], role: str, max_variants: int) -> list[str]:
@@ -285,18 +291,100 @@ def text_prompts_for_role(role_spec: Mapping[str, Any], role: str, max_variants:
     return prompts[:cap]
 
 
+def build_semantic_groups(
+    role_spec: Mapping[str, Any], max_variants: int
+) -> list[dict[str, Any]]:
+    """Group roles only when their complete visual specifications match."""
+    grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
+    ordered: list[dict[str, Any]] = []
+    for role in ROLE_ORDER:
+        spec = role_spec.get(role)
+        if not isinstance(spec, Mapping):
+            continue
+        prompts = text_prompts_for_role(role_spec, role, max_variants)
+        if not prompts:
+            continue
+        name = next(
+            (
+                str(spec.get(key)).strip()
+                for key in ("name", "object", "category", "type", "class", "label")
+                if str(spec.get(key) or "").strip()
+            ),
+            role,
+        )
+        identity_cues = _iter_text_list(spec.get("identity_cues"))
+        negative_cues = _iter_text_list(spec.get("negative_cues"))
+        signature = (
+            normalize_prompt(name),
+            tuple(normalize_prompt(item) for item in prompts),
+            tuple(normalize_prompt(item) for item in identity_cues),
+            tuple(normalize_prompt(item) for item in negative_cues),
+        )
+        group = grouped.get(signature)
+        if group is None:
+            group = {
+                "semantic_group_id": f"SG{len(ordered) + 1}",
+                "name": name,
+                "prompts": prompts,
+                "identity_cues": identity_cues,
+                "negative_cues": negative_cues,
+                "compatible_roles": [],
+                "role_discriminative": True,
+            }
+            grouped[signature] = group
+            ordered.append(group)
+        group["compatible_roles"].append(role)
+        group["role_discriminative"] = len(group["compatible_roles"]) == 1
+    return ordered
+
+
+def semantic_prompt_plan(
+    semantic_groups: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build one SAM3 execution row per normalized prompt."""
+    by_prompt: dict[str, dict[str, Any]] = {}
+    ordered: list[dict[str, Any]] = []
+    for group in semantic_groups:
+        group_id = str(group["semantic_group_id"])
+        roles = [str(role) for role in group.get("compatible_roles", [])]
+        for prompt_index, prompt in enumerate(group.get("prompts", [])):
+            key = normalize_prompt(prompt)
+            if not key:
+                continue
+            row = by_prompt.get(key)
+            if row is None:
+                row = {
+                    "normalized_prompt": key,
+                    "source_prompt": str(prompt),
+                    "semantic_group_ids": [],
+                    "compatible_roles": [],
+                    "roles_by_group": {},
+                    "group_prompt_indices": {},
+                }
+                by_prompt[key] = row
+                ordered.append(row)
+            if group_id not in row["semantic_group_ids"]:
+                row["semantic_group_ids"].append(group_id)
+            for compatible_role in roles:
+                if compatible_role not in row["compatible_roles"]:
+                    row["compatible_roles"].append(compatible_role)
+            row["roles_by_group"][group_id] = roles
+            row["group_prompt_indices"][group_id] = prompt_index
+    return ordered
+
+
 def canonicalize_candidates(
     candidates: Sequence[dict[str, Any]], iou_threshold: float,
     containment_threshold: float, bbox_iou_threshold: float = 0.0,
     max_containment_area_ratio: float = 3.0,
     suppress_multi_instance_masks: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Collapse prompt/role duplicates without joining merely adjacent objects.
+    """Collapse prompt/concept duplicates without joining merely adjacent objects.
 
     The highest-scoring mask is the canonical mask. A candidate joins it with
     strong pixel IoU, or with same-role containment/bbox support guarded by mask
-    area similarity. Broad same-role group masks containing multiple independent
-    candidates can be suppressed. Role scores use noisy-OR over raw SAM scores;
+    area similarity. Broad same-group masks containing multiple independent
+    candidates can be suppressed. Semantic scores use noisy-OR over raw SAM scores;
     ``prompt_provenance`` retains every input value.
     """
     groups: list[list[dict[str, Any]]] = []
@@ -305,10 +393,9 @@ def canonicalize_candidates(
         for index, group in enumerate(groups):
             representative = group[0]
             iou, coverage = mask_overlap_metrics(candidate["mask"], representative["mask"])
-            # A same-role partial mask may already have joined a full-mask
-            # representative. Compare against every member for strict IoU so
-            # its target/reference twin can still enter the same physical
-            # group instead of becoming a second canonical candidate.
+            # Compare against every member for strict IoU, but aggregate only
+            # within one semantic group. Distinct groups remain independent
+            # even when a shared prompt produced identical masks.
             member_iou = max(
                 mask_overlap_metrics(candidate["mask"], member["mask"])[0]
                 for member in group
@@ -322,9 +409,12 @@ def canonicalize_candidates(
                 if smaller_area > 0
                 else float("inf")
             )
-            same_role = str(candidate.get("role")) == str(representative.get("role"))
+            same_concept = bool(
+                set(candidate.get("semantic_group_ids", []))
+                & set(representative.get("semantic_group_ids", []))
+            )
             containment_match = (
-                same_role
+                same_concept
                 and coverage >= containment_threshold
                 and (
                     max_containment_area_ratio <= 0.0
@@ -332,12 +422,12 @@ def canonicalize_candidates(
                 )
             )
             bbox_support_match = (
-                same_role
+                same_concept
                 and bbox_iou_threshold > 0
                 and biou >= bbox_iou_threshold
                 and coverage >= 0.50
             )
-            if member_iou >= iou_threshold or containment_match or bbox_support_match:
+            if (same_concept and member_iou >= iou_threshold) or containment_match or bbox_support_match:
                 matches.append((index, max(iou, member_iou), coverage, biou, area_ratio))
         # Do not bridge two distinct objects through a broad/ambiguous mask.
         if len(matches) == 1:
@@ -349,18 +439,38 @@ def canonicalize_candidates(
     for canonical_index, group in enumerate(groups, 1):
         representative = group[0]
         canonical_id = f"C{canonical_index}"
-        role_scores: dict[str, Any] = {}
+        semantic_scores: dict[str, Any] = {}
         provenance = []
         for item in group:
             iou, coverage = mask_overlap_metrics(item["mask"], representative["mask"])
             raw = float(item["score"])
-            role = str(item["role"])
-            entry = role_scores.setdefault(role, {"aggregation": "noisy_or", "raw_scores": [], "score": 0.0})
-            entry["raw_scores"].append(raw)
-            entry["score"] = 1.0 - (1.0 - float(entry["score"])) * (1.0 - raw)
+            for semantic_group_id in item.get("semantic_group_ids", []):
+                entry = semantic_scores.setdefault(
+                    str(semantic_group_id),
+                    {
+                        "semantic_group_id": str(semantic_group_id),
+                        "aggregation": "noisy_or",
+                        "raw_scores": [],
+                        "score": 0.0,
+                        "supporting_prompts": [],
+                        "compatible_roles": list(
+                            item.get("roles_by_group", {}).get(
+                                str(semantic_group_id), []
+                            )
+                        ),
+                    },
+                )
+                entry["raw_scores"].append(raw)
+                entry["score"] = 1.0 - (1.0 - float(entry["score"])) * (1.0 - raw)
+                _append_unique_text(entry["supporting_prompts"], item.get("source_prompt"))
             provenance.append({
-                "role": role, "source_prompt": item.get("source_prompt"),
-                "prompt_index": item.get("prompt_index"), "sam_output_index": item.get("sam_output_index"),
+                "semantic_group_ids": list(item.get("semantic_group_ids", [])),
+                "compatible_roles": list(item.get("compatible_roles", [])),
+                "source_prompt": item.get("source_prompt"),
+                "normalized_prompt": item.get("normalized_prompt"),
+                "group_prompt_indices": dict(item.get("group_prompt_indices", {})),
+                "roles_by_group": dict(item.get("roles_by_group", {})),
+                "sam_output_index": item.get("sam_output_index"),
                 "original_candidate_id": item["id"], "score": raw,
                 "mask_area": int(item["mask_area_pixels"]), "overlap_with_canonical_mask": iou,
                 "coverage_with_canonical_mask": coverage,
@@ -368,9 +478,21 @@ def canonicalize_candidates(
             if item is not representative:
                 suppressed.append({"original_candidate_id": item["id"], "canonical_observation_id": canonical_id,
                                    "reason": "overlap_or_containment", "mask_iou": iou, "coverage": coverage})
-        output = {key: value for key, value in representative.items() if key != "mask"}
+        output = {
+            key: value
+            for key, value in representative.items()
+            if key
+            not in {
+                "mask",
+                "semantic_group_ids",
+                "compatible_roles",
+                "group_prompt_indices",
+                "roles_by_group",
+            }
+        }
         output.update({"id": canonical_id, "canonical_observation_id": canonical_id,
-                       "role_scores": role_scores, "prompt_provenance": provenance,
+                       "semantic_evidence": list(semantic_scores.values()),
+                       "prompt_provenance": provenance,
                        "mask": representative["mask"]})
         canonical.append(output)
 
@@ -384,8 +506,11 @@ def canonicalize_candidates(
         for candidate in canonical:
             candidate_mask = candidate["mask"]
             candidate_area = int(candidate_mask.sum())
-            candidate_roles = set(candidate.get("role_scores", {}))
-            contained_by_role: dict[str, list[str]] = {}
+            candidate_groups = {
+                str(entry.get("semantic_group_id"))
+                for entry in candidate.get("semantic_evidence", [])
+            }
+            contained_by_group: dict[str, list[str]] = {}
             for other in canonical:
                 if other is candidate:
                     continue
@@ -396,22 +521,28 @@ def canonicalize_candidates(
                 intersection = int(np.logical_and(candidate_mask, other_mask).sum())
                 if intersection / other_area < containment_threshold:
                     continue
-                for role in candidate_roles.intersection(other.get("role_scores", {})):
-                    contained_by_role.setdefault(role, []).append(
+                other_groups = {
+                    str(entry.get("semantic_group_id"))
+                    for entry in other.get("semantic_evidence", [])
+                }
+                for semantic_group_id in candidate_groups.intersection(other_groups):
+                    contained_by_group.setdefault(semantic_group_id, []).append(
                         str(other["canonical_observation_id"])
                     )
-            ambiguous_roles = {
-                role: ids for role, ids in contained_by_role.items() if len(ids) >= 2
+            ambiguous_groups = {
+                group_id: ids
+                for group_id, ids in contained_by_group.items()
+                if len(ids) >= 2
             }
-            if ambiguous_roles:
+            if ambiguous_groups:
                 suppressed.append(
                     {
                         "original_candidate_id": candidate["id"],
                         "canonical_observation_id": candidate[
                             "canonical_observation_id"
                         ],
-                        "reason": "contains_multiple_same_role_instances",
-                        "contained_candidates_by_role": ambiguous_roles,
+                        "reason": "contains_multiple_same_semantic_group_instances",
+                        "contained_candidates_by_semantic_group": ambiguous_groups,
                     }
                 )
             else:
@@ -423,12 +554,13 @@ def canonicalize_candidates(
 def candidate_generation_parameters(
     args: argparse.Namespace,
     threshold: float,
+    semantic_groups: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     """Parameters whose changes require regenerating cached Stage-1 masks."""
     return {
         # Bump this whenever canonicalization semantics change so resume mode does
         # not silently reuse masks produced by an older grouping algorithm.
-        "canonicalization_algorithm": "group_member_iou_v2",
+        "canonicalization_algorithm": "semantic_group_member_iou_v3",
         "threshold": float(threshold),
         "candidate_pool_size": int(args.candidate_pool_size),
         "min_mask_area": int(args.min_mask_area),
@@ -440,7 +572,8 @@ def candidate_generation_parameters(
         "canonical_max_area_ratio": float(args.canonical_max_area_ratio),
         "canonical_bbox_iou": float(args.canonical_bbox_iou),
         "suppress_multi_instance_masks": bool(args.suppress_multi_instance_masks),
-        "top_k_per_role": int(args.top_k_per_role),
+        "top_k_per_semantic_group": int(args.top_k_per_semantic_group),
+        "semantic_groups": list(semantic_groups),
     }
 
 
@@ -564,7 +697,7 @@ def resolve_camera_threshold(camera: str | None, overrides: Mapping[str, float],
 def process_camera(
     processor: Any,
     image_path: Path,
-    role_doc: Mapping[str, Any],
+    semantic_groups: Sequence[Mapping[str, Any]],
     out_dir: Path,
     args: argparse.Namespace,
     progress_label: str | None = None,
@@ -577,9 +710,14 @@ def process_camera(
         out_dir / "candidate_grid.png",
     )
     threshold = resolve_camera_threshold(camera, camera_threshold_overrides or {}, args.threshold)
-    generation_parameters = candidate_generation_parameters(args, threshold)
+    generation_parameters = candidate_generation_parameters(args, threshold, semantic_groups)
     if args.resume and all(path.is_file() for path in resume_files):
         cached = json.loads((out_dir / "candidates.json").read_text(encoding="utf-8"))
+        if cached.get("schema_version") != STAGE1_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Incompatible cached Stage1 schema {cached.get('schema_version')!r} in "
+                f"{out_dir}; use a new output directory for schema v{STAGE1_SCHEMA_VERSION}."
+            )
         cached_parameters = cached.get("generation_parameters")
         debug_ref = cached.get("diagnostics_ref")
         if cached_parameters is None and debug_ref:
@@ -605,94 +743,110 @@ def process_camera(
         print(f"SAM3 progress {progress_label}: start {image_path} (threshold={threshold})", flush=True)
     generated_candidates: list[dict[str, Any]] = []
     prompt_attempts: list[dict[str, Any]] = []
-    for role in ROLE_ORDER:
-        prompts = text_prompts_for_role(role_doc, role, args.prompt_variants)
-        if not prompts:
-            continue
-        prefix = ROLE_PREFIX[role]
-        role_candidates: list[dict[str, Any]] = []
-        for prompt_index, prompt in enumerate(prompts):
-            masks, scores, boxes = run_text_prompt(processor, image, prompt, args, threshold)
-            prompt_attempts.append(
-                {
-                    "role": role,
+    prompt_plan = semantic_prompt_plan(semantic_groups)
+    for prompt_index, prompt_row in enumerate(prompt_plan):
+        prompt = str(prompt_row["source_prompt"])
+        masks, scores, boxes = run_text_prompt(processor, image, prompt, args, threshold)
+        prompt_attempts.append(
+            {
+                "text_prompt": prompt,
+                "source_prompt": prompt,
+                "normalized_prompt": prompt_row["normalized_prompt"],
+                "prompt_index": prompt_index,
+                "semantic_group_ids": list(prompt_row["semantic_group_ids"]),
+                "compatible_roles": list(prompt_row["compatible_roles"]),
+                "raw_masks": int(len(masks)),
+                "non_empty_masks": int(
+                    sum(mask_bbox(mask) is not None for mask in masks)
+                ),
+            }
+        )
+        if args.progress and progress_label:
+            print(
+                f"SAM3 progress {progress_label}: semantic_groups="
+                f"{','.join(prompt_row['semantic_group_ids'])} "
+                f"prompt={prompt_index + 1}/{len(prompt_plan)} raw_masks={len(masks)}",
+                flush=True,
+            )
+        for output_index, (mask, score) in enumerate(zip(masks, scores)):
+            source_area = int(mask.sum())
+            if args.split_disconnected_masks:
+                components = split_mask_components(
+                    mask,
+                    args.min_mask_area,
+                    args.max_mask_components,
+                )
+            elif source_area >= args.min_mask_area:
+                components = [np.asarray(mask, dtype=bool)]
+            else:
+                components = []
+            for component_index, component in enumerate(components):
+                bbox = mask_bbox(component)
+                if bbox is None:
+                    continue
+                area = int(component.sum())
+                item: dict[str, Any] = {
                     "text_prompt": prompt,
                     "source_prompt": prompt,
+                    "normalized_prompt": prompt_row["normalized_prompt"],
                     "prompt_index": prompt_index,
-                    "raw_masks": int(len(masks)),
-                    "non_empty_masks": int(
-                        sum(mask_bbox(mask) is not None for mask in masks)
+                    "semantic_group_ids": list(prompt_row["semantic_group_ids"]),
+                    "compatible_roles": list(prompt_row["compatible_roles"]),
+                    "group_prompt_indices": dict(prompt_row["group_prompt_indices"]),
+                    "roles_by_group": dict(prompt_row["roles_by_group"]),
+                    "sam_output_index": output_index,
+                    "sam_mask_component_index": component_index,
+                    "sam_mask_component_count": len(components),
+                    "sam_source_mask_area_pixels": source_area,
+                    "sam_mask_component_area_ratio": (
+                        float(area / source_area) if source_area > 0 else 0.0
                     ),
+                    "score": float(score),
+                    "mask_bbox_xyxy": bbox,
+                    "mask_area_pixels": area,
+                    "mask": component,
                 }
-            )
-            if args.progress and progress_label:
-                print(
-                    f"SAM3 progress {progress_label}: role={role} "
-                    f"prompt={prompt_index + 1}/{len(prompts)} raw_masks={len(masks)}",
-                    flush=True,
-                )
-            for output_index, (mask, score) in enumerate(zip(masks, scores)):
-                source_area = int(mask.sum())
-                if args.split_disconnected_masks:
-                    components = split_mask_components(
-                        mask,
-                        args.min_mask_area,
-                        args.max_mask_components,
-                    )
-                elif source_area >= args.min_mask_area:
-                    components = [np.asarray(mask, dtype=bool)]
-                else:
-                    components = []
-                for component_index, component in enumerate(components):
-                    bbox = mask_bbox(component)
-                    if bbox is None:
-                        continue
-                    area = int(component.sum())
-                    item: dict[str, Any] = {
-                        "role": role,
-                        "text_prompt": prompt,
-                        "source_prompt": prompt,
-                        "prompt_index": prompt_index,
-                        "sam_output_index": output_index,
-                        "sam_mask_component_index": component_index,
-                        "sam_mask_component_count": len(components),
-                        "sam_source_mask_area_pixels": source_area,
-                        "sam_mask_component_area_ratio": (
-                            float(area / source_area) if source_area > 0 else 0.0
-                        ),
-                        "score": float(score),
-                        "mask_bbox_xyxy": bbox,
-                        "mask_area_pixels": area,
-                        "mask": component,
-                    }
-                    if boxes is not None and output_index < len(boxes):
-                        item["sam_box_xyxy"] = [float(v) for v in boxes[output_index]]
-                    role_candidates.append(item)
+                if boxes is not None and output_index < len(boxes):
+                    item["sam_box_xyxy"] = [float(v) for v in boxes[output_index]]
+                generated_candidates.append(item)
 
-        # IDs describe the raw role-prefixed SAM outputs. Canonical IDs below
-        # are the stable per-view identities consumed by fusion.
-        for saved_index, item in enumerate(role_candidates, start=1):
-            item["id"] = f"{prefix}{saved_index}"
-            generated_candidates.append(item)
+    for saved_index, item in enumerate(generated_candidates, start=1):
+        item["id"] = f"S{saved_index}"
 
     canonical, suppressed = canonicalize_candidates(
         generated_candidates, args.mask_nms_iou, args.canonical_containment,
         args.canonical_bbox_iou, args.canonical_max_area_ratio,
         args.suppress_multi_instance_masks,
     )
-    # Preserve the old per-role top-k control without discarding provenance:
-    # retain a canonical object if it is in the top-k for at least one role.
-    if args.top_k_per_role > 0:
+    if args.top_k_per_semantic_group > 0:
         allowed = set()
-        for role in ROLE_ORDER:
-            ranked = sorted(canonical, key=lambda c: float(c.get("role_scores", {}).get(role, {}).get("score", 0.0)), reverse=True)
-            allowed.update(c["canonical_observation_id"] for c in ranked[: args.top_k_per_role]
-                           if role in c.get("role_scores", {}))
+        for semantic_group in semantic_groups:
+            group_id = str(semantic_group["semantic_group_id"])
+            ranked = sorted(
+                canonical,
+                key=lambda candidate: max(
+                    (
+                        float(entry.get("score", 0.0))
+                        for entry in candidate.get("semantic_evidence", [])
+                        if str(entry.get("semantic_group_id")) == group_id
+                    ),
+                    default=0.0,
+                ),
+                reverse=True,
+            )
+            allowed.update(
+                candidate["canonical_observation_id"]
+                for candidate in ranked[: args.top_k_per_semantic_group]
+                if any(
+                    str(entry.get("semantic_group_id")) == group_id
+                    for entry in candidate.get("semantic_evidence", [])
+                )
+            )
         for item in canonical:
             if item["canonical_observation_id"] not in allowed:
                 suppressed.append({"original_candidate_id": item["id"],
                                    "canonical_observation_id": item["canonical_observation_id"],
-                                   "reason": "top_k_per_role"})
+                                   "reason": "top_k_per_semantic_group"})
         canonical = [item for item in canonical if item["canonical_observation_id"] in allowed]
 
     candidates: list[dict[str, Any]] = []
@@ -712,7 +866,7 @@ def process_camera(
         )
         candidates.append(item)
     result = {
-        "schema_version": 1,
+        "schema_version": STAGE1_SCHEMA_VERSION,
         "artifact_type": "camera_frame_candidates",
         "summary": {
             "raw_candidate_count": len(generated_candidates),
@@ -725,7 +879,7 @@ def process_camera(
         "diagnostics_ref": "candidate_debug.json",
     }
     debug_result = {
-        "schema_version": 1,
+        "schema_version": STAGE1_SCHEMA_VERSION,
         "artifact_type": "camera_frame_candidate_debug",
         "source_candidates_json": "candidates.json",
         "prompt_attempts": prompt_attempts,
@@ -742,12 +896,17 @@ def process_camera(
     atomic_json_dump(result, out_dir / "candidates.json")
     save_visuals(image, candidates, out_dir, args.mask_alpha)
     if args.progress and progress_label:
-        role_counts = {role: 0 for role in ROLE_ORDER}
+        semantic_group_counts = {
+            str(group["semantic_group_id"]): 0 for group in semantic_groups
+        }
         for candidate in candidates:
-            role_counts[str(candidate["role"])] += 1
+            for entry in candidate.get("semantic_evidence", []):
+                group_id = str(entry.get("semantic_group_id"))
+                if group_id in semantic_group_counts:
+                    semantic_group_counts[group_id] += 1
         print(
             f"SAM3 progress {progress_label}: done total_candidates={len(candidates)} "
-            f"role_counts={role_counts}",
+            f"semantic_group_counts={semantic_group_counts}",
             flush=True,
         )
     return result
@@ -813,6 +972,11 @@ def main() -> None:
         if args.role_spec_json:
             loaded = json.loads(Path(args.role_spec_json).read_text(encoding="utf-8"))
             role_doc = role_spec_document(instruction, loaded.get("role_spec", loaded))
+        semantic_groups = (
+            build_semantic_groups(role_doc, args.prompt_variants)
+            if role_doc is not None
+            else None
+        )
         plan = {
             "dry_run": True,
             "episode_dir": str(episode_dir),
@@ -822,6 +986,7 @@ def main() -> None:
             "selected_frame_ids": list(selected_frame_ids),
             "role_frame_id": role_frame_id,
             "role_spec": role_doc,
+            "semantic_groups": semantic_groups,
             "would_load_qwen": role_doc is None,
             "would_load_sam3": True,
         }
@@ -832,6 +997,7 @@ def main() -> None:
         raise RuntimeError("CUDA requested but torch.cuda.is_available() is False.")
 
     role_doc = load_or_identify_role_spec(args, instruction, role_views, output_dir)
+    semantic_groups = build_semantic_groups(role_doc, args.prompt_variants)
 
     Sam3Processor, build_sam3_image_model = load_sam3_components()
     model_dir = Path(args.sam_model_dir).expanduser().resolve()
@@ -865,7 +1031,7 @@ def main() -> None:
             result = process_camera(
                 processor,
                 camera_frames[camera][frame_id],
-                role_doc,
+                semantic_groups,
                 out,
                 args,
                 progress_label=progress_label,
@@ -897,7 +1063,7 @@ def main() -> None:
         for view in frame.get("views", {}).values()
     )
     summary = {
-        "schema_version": 1,
+        "schema_version": STAGE1_SCHEMA_VERSION,
         "artifact_type": "episode_candidates",
         "summary": {
             "frame_count": len(frames_summary),
@@ -908,6 +1074,7 @@ def main() -> None:
         "episode_dir": str(episode_dir),
         "instruction": instruction,
         "role_spec": role_doc,
+        "semantic_groups": semantic_groups,
         "camera_names": list(args.cameras),
         "frames": frames_summary,
     }

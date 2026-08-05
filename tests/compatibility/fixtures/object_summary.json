@@ -1,14 +1,28 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "artifact_type": "object_track_summary",
-  "storage_layout": "compact_v1",
+  "storage_layout": "compact_v2",
   "generation_id": "00000000-0000-4000-8000-000000000001",
   "coordinate_frame": "world",
   "units": {"distance": "meters"},
   "summary": {"frame_count": 1, "track_count": 1},
   "source_fused_json": "fusion/frame_fused_candidates.json",
+  "semantic_groups_prior": [
+    {
+      "semantic_group_id": "SG1",
+      "name": "red block",
+      "compatible_roles": ["target"],
+      "role_discriminative": true
+    }
+  ],
   "object_tracks": [
-    {"object_id": "O1", "frame_ids": ["0"]}
+    {"object_id": "O1", "frame_ids": ["0"], "semantic_evidence": [{
+      "semantic_group_id": "SG1", "score": 0.9,
+      "score_stats": {"min": 0.9, "max": 0.9, "mean": 0.9, "std": 0.0},
+      "score_mass": 0.9, "support_count": 1,
+      "supporting_prompts": ["red block"], "compatible_roles": ["target"],
+      "cameras": ["front"], "frames": ["0"]
+    }]}
   ],
   "frame_decision_inputs": [
     {
@@ -18,11 +32,14 @@
         {
           "object_id": "O1",
           "point_count": 2,
-          "visible_camera": ["front"]
+          "visible_camera": ["front"],
+          "semantic_evidence": [{
+            "semantic_group_id": "SG1", "score": 0.9,
+            "support_count": 1, "compatible_roles": ["target"]
+          }]
         }
       ],
       "pairwise_relations": []
     }
   ]
 }
-

@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "artifact_type": "frame_fusion_debug",
   "generation_id": "00000000-0000-4000-8000-000000000001",
   "frame_id": "0",
@@ -10,4 +10,3 @@
     "tracking_state": {"next_object_index": 2, "tracks": []}
   }
 }
-

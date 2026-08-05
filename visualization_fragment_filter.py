@@ -68,34 +68,36 @@ def _camera_count(obj: Mapping[str, Any]) -> int:
     return len({str(camera) for camera in obj.get("visible_camera", [])})
 
 
-def _role_probability(obj: Mapping[str, Any], role: str) -> float:
-    evidence = obj.get("role_evidence", {})
-    if not isinstance(evidence, Mapping):
-        return 0.0
-    value = evidence.get(role, 0.0)
-    if isinstance(value, Mapping):
-        value = next(
-            (
-                value.get(key)
-                for key in ("probability", "score", "score_mass")
-                if value.get(key) is not None
-            ),
-            0.0,
-        )
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return 0.0
+def _semantic_role_score(obj: Mapping[str, Any], role: str) -> float:
+    evidence = obj.get("semantic_evidence", [])
+    entries = evidence.values() if isinstance(evidence, Mapping) else evidence
+    scores = []
+    for entry in entries if isinstance(entries, (list, tuple)) or hasattr(entries, "__iter__") else []:
+        if not isinstance(entry, Mapping) or role not in entry.get("compatible_roles", []):
+            continue
+        try:
+            scores.append(max(0.0, float(entry.get("score", 0.0))))
+        except (TypeError, ValueError):
+            continue
+    return max(scores, default=0.0)
 
 
 def _source_prompts(obj: Mapping[str, Any]) -> set[str]:
     prompts: set[str] = set()
+    evidence = obj.get("semantic_evidence", [])
+    entries = evidence.values() if isinstance(evidence, Mapping) else evidence
+    for entry in entries if isinstance(entries, (list, tuple)) or hasattr(entries, "__iter__") else []:
+        if not isinstance(entry, Mapping):
+            continue
+        for prompt in entry.get("supporting_prompts", []):
+            if prompt:
+                prompts.add(str(prompt).strip().casefold())
     for observation in obj.get("observations", []):
         provenance = observation.get("provenance", {})
         for item in provenance.get("prompt_provenance", []):
             prompt = item.get("source_prompt") or item.get("prompt")
             if prompt:
-                prompts.add(str(prompt).strip().lower())
+                prompts.add(str(prompt).strip().casefold())
     return prompts
 
 
@@ -149,7 +151,7 @@ def _frame_fragment_evidence(
         donor_count = _point_count(donor)
         if not donor_id or donor_bbox is None or donor_centroid is None or donor_count <= 0:
             continue
-        if _role_probability(donor, "interaction_part") > config.max_interaction_probability:
+        if _semantic_role_score(donor, "interaction_part") > config.max_interaction_probability:
             continue
         donor_prompts = _source_prompts(donor)
         if not donor_prompts:

@@ -58,7 +58,7 @@ from fusion_matching import (
     warn_near_miss_unmerged_clusters,
     weighted_cluster_centroid,
 )
-from fusion_types import ROLE_NAMES, Observation3D
+from fusion_types import Observation3D
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -396,66 +396,24 @@ def load_mask(path: Path) -> np.ndarray:
     return np.asarray(Image.open(path).convert("L")) > 127
 
 
-def canonicalize_legacy_candidates(
+def validate_semantic_candidates(
     candidates: Sequence[Mapping[str, Any]],
     iou_threshold: float = 0.35,
     containment_threshold: float = 0.50,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Defensive adapter for old one-role-per-mask candidate artifacts.
-
-    By default, legacy rows are grouped at IoU >= .35 or smaller-mask coverage
-    >= .50. This tolerates prompt-dependent mask drift while still requiring
-    substantial pixel overlap, so merely touching/adjacent instances remain
-    distinct. The best scoring mask is retained and role evidence is noisy-OR
-    aggregated with raw audit values preserved.
-    """
-    if all(candidate.get("canonical_observation_id") for candidate in candidates):
-        return [dict(candidate) for candidate in candidates], []
-    groups: list[list[tuple[Mapping[str, Any], np.ndarray]]] = []
-    suppressed: list[dict[str, Any]] = []
-    loaded = [(candidate, load_mask(Path(str(candidate["mask_path"])))) for candidate in candidates]
-    for candidate, mask in sorted(loaded, key=lambda pair: float(pair[0].get("score", 0.0)), reverse=True):
-        match = None
-        match_metrics = (0.0, 0.0)
-        for index, group in enumerate(groups):
-            other = group[0][1]
-            inter = int(np.logical_and(mask, other).sum())
-            union = int(np.logical_or(mask, other).sum())
-            smaller = min(int(mask.sum()), int(other.sum()))
-            iou = inter / union if union else 0.0
-            coverage = inter / smaller if smaller else 0.0
-            if iou >= iou_threshold or coverage >= containment_threshold:
-                if match is not None:  # ambiguous bridge: conservatively keep separate
-                    match = None
-                    break
-                match, match_metrics = index, (iou, coverage)
-        if match is None:
-            groups.append([(candidate, mask)])
-        else:
-            groups[match].append((candidate, mask))
-            suppressed.append({"candidate_id": candidate.get("id"), "reason": "legacy_overlap_or_containment",
-                               "mask_iou": match_metrics[0], "coverage": match_metrics[1]})
-    output = []
-    for index, group in enumerate(groups, 1):
-        representative = dict(group[0][0])
-        canonical_id = f"legacy-C{index}"
-        role_scores: dict[str, dict[str, Any]] = {}
-        provenance = []
-        for candidate, mask in group:
-            role, score = str(candidate.get("role", "")), float(candidate.get("score", 0.0))
-            entry = role_scores.setdefault(role, {"aggregation": "noisy_or", "raw_scores": [], "score": 0.0})
-            entry["raw_scores"].append(score)
-            entry["score"] = 1.0 - (1.0 - entry["score"]) * (1.0 - score)
-            inter = int(np.logical_and(mask, group[0][1]).sum())
-            union = int(np.logical_or(mask, group[0][1]).sum())
-            provenance.append({"role": role, "source_prompt": candidate.get("source_prompt") or candidate.get("text_prompt"),
-                               "prompt_index": candidate.get("prompt_index"), "sam_output_index": candidate.get("sam_output_index"),
-                               "original_candidate_id": candidate.get("id"), "score": score,
-                               "mask_area": int(mask.sum()), "overlap_with_canonical_mask": inter / union if union else 0.0})
-        representative.update({"id": canonical_id, "canonical_observation_id": canonical_id,
-                               "role_scores": role_scores, "prompt_provenance": provenance})
-        output.append(representative)
-    return output, suppressed
+    """Require Stage1 v2 canonical candidates; legacy rows are unsupported."""
+    invalid = [
+        candidate.get("id")
+        for candidate in candidates
+        if not candidate.get("canonical_observation_id")
+        or not isinstance(candidate.get("semantic_evidence"), list)
+    ]
+    if invalid:
+        raise ValueError(
+            "Incompatible Stage1 candidates without v2 semantic_evidence: "
+            f"{invalid}; rerun Stage1 in a new output directory."
+        )
+    return [dict(candidate) for candidate in candidates], []
 
 
 def filter_candidates_by_mask_area(
@@ -866,7 +824,7 @@ def observation_to_json(obs: Observation3D) -> dict[str, Any]:
         "camera": obs.camera,
         "candidate_id": c.get("id"),
         "observation_id": obs.observation_id,
-        "role_evidence": dict(obs.role_evidence),
+        "semantic_evidence": list(obs.semantic_evidence.values()),
         "provenance": dict(obs.provenance),
         "mask_path": c.get("mask_path"),
         "crop_path": c.get("crop_path"),
@@ -1081,55 +1039,152 @@ def build_candidate_lifecycle(
     return lifecycle, summary
 
 
-def aggregate_role_evidence(observations: Sequence[Observation3D], frame_id: str | None = None) -> dict[str, Any]:
-    """Combine semantic evidence while leaving physical object identity untouched."""
-    evidence: dict[str, Any] = {}
-    total_mass = 0.0
-    for role in ROLE_NAMES:
-        supporting = [obs for obs in observations if float(obs.role_evidence.get(role, 0.0)) > 0.0]
-        mass = float(sum(float(obs.role_evidence.get(role, 0.0)) for obs in supporting))
-        total_mass += mass
-        evidence[role] = {
-            "score_mass": mass,
-            "supporting_prompts": sorted({str(obs.provenance.get("prompt")) for obs in supporting if obs.provenance.get("prompt")}),
-            "cameras": sorted({obs.camera for obs in supporting}),
-            "frames": [frame_id] if supporting and frame_id is not None else [],
-        }
-    for value in evidence.values():
-        value["probability"] = value["score_mass"] / total_mass if total_mass > 0 else 0.0
-    return evidence
+def _semantic_evidence_by_id(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return {}
+    return {
+        str(entry.get("semantic_group_id")): dict(entry)
+        for entry in value
+        if isinstance(entry, Mapping) and entry.get("semantic_group_id") is not None
+    }
 
 
-def aggregate_summary_role_evidence(frames: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Aggregate per-frame evidence for a tracked object without selecting a role."""
-    result: dict[str, Any] = {}
-    total_mass = 0.0
-    for role in ROLE_NAMES:
-        entries = [frame.get("role_evidence", {}).get(role, {}) for frame in frames]
-        mass = float(sum(float(entry.get("score_mass", 0.0)) for entry in entries))
-        total_mass += mass
-        result[role] = {
-            "score_mass": mass,
-            "supporting_prompts": sorted({prompt for entry in entries for prompt in entry.get("supporting_prompts", [])}),
-            "cameras": sorted({camera for entry in entries for camera in entry.get("cameras", [])}),
-            "frames": sorted({frame for entry in entries for frame in entry.get("frames", [])}),
-        }
-    for entry in result.values():
-        entry["probability"] = entry["score_mass"] / total_mass if total_mass > 0 else 0.0
+def _semantic_supporting_prompts(
+    observation: Observation3D, semantic_group_id: str
+) -> set[str]:
+    prompts = {
+        str(prompt)
+        for prompt in observation.semantic_evidence.get(semantic_group_id, {}).get(
+            "supporting_prompts", []
+        )
+        if str(prompt).strip()
+    }
+    for item in observation.provenance.get("prompt_provenance", []):
+        if not isinstance(item, Mapping):
+            continue
+        if semantic_group_id not in {
+            str(value) for value in item.get("semantic_group_ids", [])
+        }:
+            continue
+        prompt = item.get("source_prompt") or item.get("prompt")
+        if prompt:
+            prompts.add(str(prompt))
+    return prompts
+
+
+def aggregate_semantic_evidence(
+    observations: Sequence[Observation3D],
+    args: argparse.Namespace,
+    frame_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Aggregate independent identity scores without role normalization."""
+    group_ids = sorted(
+        {group_id for observation in observations for group_id in observation.semantic_evidence}
+    )
+    result = []
+    for group_id in group_ids:
+        supporting = [
+            observation
+            for observation in observations
+            if float(observation.semantic_evidence.get(group_id, {}).get("score", 0.0))
+            > 0.0
+        ]
+        if not supporting:
+            continue
+        scores = [
+            float(observation.semantic_evidence[group_id].get("score", 0.0))
+            for observation in supporting
+        ]
+        weights = [camera_priority_weight(observation.camera, args) for observation in supporting]
+        result.append(
+            {
+                "semantic_group_id": group_id,
+                "score": float(np.average(np.asarray(scores), weights=np.asarray(weights))),
+                "score_mass": float(sum(scores)),
+                "support_count": len(supporting),
+                "compatible_roles": sorted(
+                    {
+                        str(role)
+                        for observation in supporting
+                        for role in observation.semantic_evidence[group_id].get(
+                            "compatible_roles", []
+                        )
+                    }
+                ),
+                "supporting_prompts": sorted(
+                    {
+                        prompt
+                        for observation in supporting
+                        for prompt in _semantic_supporting_prompts(observation, group_id)
+                    }
+                ),
+                "cameras": sorted({observation.camera for observation in supporting}),
+                "frames": [frame_id] if frame_id is not None else [],
+            }
+        )
     return result
 
 
-def compact_role_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
-    """Keep only the role values consumed by filters and Qwen prompts."""
-    return {
-        role: {
-            key: value.get(key)
-            for key in ("probability", "score_mass")
-            if value.get(key) is not None
+def aggregate_summary_semantic_evidence(
+    frames: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    group_ids = sorted(
+        {
+            str(entry.get("semantic_group_id"))
+            for frame in frames
+            for entry in frame.get("semantic_evidence", [])
+            if isinstance(entry, Mapping) and entry.get("semantic_group_id") is not None
         }
-        for role, value in evidence.items()
-        if isinstance(value, Mapping)
-    }
+    )
+    result = []
+    for group_id in group_ids:
+        entries = [
+            entry
+            for frame in frames
+            for entry in frame.get("semantic_evidence", [])
+            if isinstance(entry, Mapping)
+            and str(entry.get("semantic_group_id")) == group_id
+        ]
+        scores = [float(entry.get("score", 0.0)) for entry in entries]
+        result.append(
+            {
+                "semantic_group_id": group_id,
+                "score": float(np.mean(scores)) if scores else 0.0,
+                "score_stats": stats_from_values(scores),
+                "score_mass": float(sum(float(entry.get("score_mass", 0.0)) for entry in entries)),
+                "support_count": sum(int(entry.get("support_count", 0)) for entry in entries),
+                "compatible_roles": sorted(
+                    {str(role) for entry in entries for role in entry.get("compatible_roles", [])}
+                ),
+                "supporting_prompts": sorted(
+                    {str(prompt) for entry in entries for prompt in entry.get("supporting_prompts", [])}
+                ),
+                "cameras": sorted(
+                    {str(camera) for entry in entries for camera in entry.get("cameras", [])}
+                ),
+                "frames": sorted(
+                    {str(frame) for entry in entries for frame in entry.get("frames", [])}
+                ),
+            }
+        )
+    return result
+
+
+def compact_semantic_evidence(evidence: Any) -> list[dict[str, Any]]:
+    return [
+        {
+            key: entry.get(key)
+            for key in (
+                "semantic_group_id",
+                "score",
+                "support_count",
+                "compatible_roles",
+            )
+            if entry.get(key) is not None
+        }
+        for entry in evidence
+        if isinstance(entry, Mapping)
+    ]
 
 
 def candidate_to_observation(
@@ -1140,23 +1195,21 @@ def candidate_to_observation(
     centroid_world: np.ndarray,
     bbox3d_world: np.ndarray,
 ) -> Observation3D:
-    """Adapt canonical and legacy scalar-role candidate records."""
-    legacy_role = str(candidate.get("role", ""))
-    prompt = candidate.get("source_prompt") or candidate.get("text_prompt")
-    score = float(candidate.get("score", 0.0))
+    """Adapt one canonical Stage1 v2 semantic candidate."""
     candidate_id = str(candidate.get("id", "unknown"))
     canonical_id = str(candidate.get("canonical_observation_id", candidate_id))
-    raw_role_scores = candidate.get("role_scores")
-    if isinstance(raw_role_scores, Mapping):
-        role_evidence = {role: float(raw_role_scores.get(role, {}).get("score", 0.0)) for role in ROLE_NAMES}
-        provenance: Mapping[str, Any] = {"prompt_provenance": candidate.get("prompt_provenance", []),
-                                        "canonical_observation_id": canonical_id}
-    else:
-        role_evidence = {role: score if role == legacy_role else 0.0 for role in ROLE_NAMES}
-        provenance = {"role": legacy_role, "prompt": prompt, "candidate_id": candidate_id}
+    semantic_evidence = _semantic_evidence_by_id(candidate.get("semantic_evidence"))
+    if not semantic_evidence:
+        raise ValueError(
+            f"Stage1 v2 candidate {candidate_id} has no semantic_evidence"
+        )
+    provenance: Mapping[str, Any] = {
+        "prompt_provenance": candidate.get("prompt_provenance", []),
+        "canonical_observation_id": canonical_id,
+    }
     return Observation3D(
         observation_id=f"{frame_id}:{camera}:{canonical_id}",
-        role_evidence=role_evidence,
+        semantic_evidence=semantic_evidence,
         provenance=provenance,
         camera=camera,
         candidate=candidate,
@@ -1215,7 +1268,7 @@ def build_object_summary(
                     "camera_count": len(obj.get("visible_camera", [])),
                     "mask_area": int(obj.get("mask_area", 0)),
                     "sam_score": float(obj.get("sam_score", 0.0)),
-                    "role_evidence": obj.get("role_evidence", {}),
+                    "semantic_evidence": obj.get("semantic_evidence", []),
                 }
             )
 
@@ -1257,9 +1310,7 @@ def build_object_summary(
         object_tracks.append(
             {
                 "object_id": object_id,
-                "role_evidence": compact_role_evidence(
-                    aggregate_summary_role_evidence(frames_sorted)
-                ),
+                "semantic_evidence": aggregate_summary_semantic_evidence(frames_sorted),
                 "first_frame_id": frames_sorted[0]["frame_id"],
                 "last_frame_id": frames_sorted[-1]["frame_id"],
                 "first_frame_index": frames_sorted[0]["frame_index"],
@@ -1281,7 +1332,7 @@ def build_object_summary(
     return {
         "schema_version": schema_version,
         "artifact_type": "object_track_summary",
-        "storage_layout": "compact_v1",
+        "storage_layout": "compact_v2",
         "generation_id": generation_id,
         "coordinate_frame": "world",
         "units": {"distance": "meters", "mask_area": "pixels"},
@@ -1297,6 +1348,7 @@ def build_object_summary(
         "source_fused_json": None,
         "instruction_prior": candidates_summary.get("instruction"),
         "role_spec_prior": candidates_summary.get("role_spec"),
+        "semantic_groups_prior": candidates_summary.get("semantic_groups", []),
         "fusion_params": {
             "fusion_algorithm": result.get("fusion_algorithm"),
             "cluster_distance_m": result.get("cluster_distance_m"),
@@ -1319,7 +1371,7 @@ def _summary_object_record(frame: Mapping[str, Any], obj: Mapping[str, Any]) -> 
     """Strip a frame object to decision metadata (never embedded geometry)."""
     return {
         "object_id": obj.get("id"),
-        "role_evidence": compact_role_evidence(obj.get("role_evidence", {})),
+        "semantic_evidence": compact_semantic_evidence(obj.get("semantic_evidence", [])),
         "centroid_world": obj.get("centroid_world"), "bbox3d_world": obj.get("bbox3d_world"),
         "primary_camera": obj.get("primary_camera"),
         "visible_camera": obj.get("visible_camera", []),
@@ -1430,7 +1482,7 @@ def assign_object_ids(
         )
         objects.append({
             "id": f"O{index}",
-            "role_evidence": aggregate_role_evidence(cluster, frame_id),
+            "semantic_evidence": aggregate_semantic_evidence(cluster, args, frame_id),
             "_points_world": all_points,
             "centroid_world": centroid.tolist(),
             "centroid_to_cloud_distance_m": centroid_to_cloud_distance,
@@ -1619,7 +1671,7 @@ def fuse_frame(
                 f"{args.min_candidate_mask_area_pixels} pixels",
                 file=sys.stderr,
             )
-        canonical_candidates, legacy_suppressed = canonicalize_legacy_candidates(
+        canonical_candidates, legacy_suppressed = validate_semantic_candidates(
             area_filtered_candidates,
             iou_threshold=args.legacy_canonical_iou,
             containment_threshold=args.legacy_canonical_containment,
@@ -1736,7 +1788,7 @@ def fuse_frame(
                             "tracking_state": updated_track_state}}
 
 
-FUSED_MANIFEST_SCHEMA_VERSION = 3
+FUSED_MANIFEST_SCHEMA_VERSION = 4
 
 
 def _write_fusion_manifest(manifest: dict[str, Any], output_path: Path) -> None:
@@ -1946,6 +1998,11 @@ def main() -> None:
     candidates_path = Path(args.candidates_json).expanduser().resolve()
     output_path = Path(args.output_json).expanduser().resolve() if args.output_json else episode_dir / "frame_fused_candidates.json"
     summary = json.loads(candidates_path.read_text(encoding="utf-8"))
+    if summary.get("schema_version") != 2 or summary.get("artifact_type") != "episode_candidates":
+        raise RuntimeError(
+            "Fusion requires a Stage1 episode_candidates v2 artifact. "
+            "Use a new output directory and rerun Stage1; legacy artifacts are not converted."
+        )
     camera_params = load_camera_params(Path(args.camera_params_json).expanduser().resolve() if args.camera_params_json else None)
     rlbench_low_dim_override = Path(args.rlbench_low_dim_obs).expanduser().resolve() if args.rlbench_low_dim_obs else None
     rlbench_low_dim_path = resolve_rlbench_low_dim_path(episode_dir, rlbench_low_dim_override)
@@ -1958,6 +2015,11 @@ def main() -> None:
         old_manifest = json.loads(output_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         pass
+    if old_manifest and old_manifest.get("schema_version") != FUSED_MANIFEST_SCHEMA_VERSION:
+        raise RuntimeError(
+            "The fusion output directory contains a legacy or incompatible manifest. "
+            "Use a new output directory and rerun the pipeline; mixed generations are rejected."
+        )
     may_resume = (
         old_manifest.get("schema_version") == FUSED_MANIFEST_SCHEMA_VERSION
         and old_manifest.get("episode_metadata", {}).get("source_candidates_json") == str(candidates_path)
@@ -2005,6 +2067,7 @@ def main() -> None:
             "source_candidates_json": str(candidates_path),
             "instruction": summary.get("instruction"),
             "role_spec": summary.get("role_spec"),
+            "semantic_groups": summary.get("semantic_groups", []),
         },
         "fusion_parameters": fusion_parameters,
         "frames": entries,

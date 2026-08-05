@@ -5,7 +5,7 @@ from _legacy_bootstrap import ensure_src_path
 
 ensure_src_path()
 
-from relevant_object.domain.models import ROLE_NAMES, Observation3D
+from relevant_object.domain.models import Observation3D
 
 
-__all__ = ["ROLE_NAMES", "Observation3D"]
+__all__ = ["Observation3D"]

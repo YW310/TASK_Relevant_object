@@ -304,20 +304,40 @@ def _resize_to_pixel_limit(
     )
 
 
-def _semantic_role_score(candidate: Mapping[str, Any], role_name: str) -> float:
-    role_evidence = candidate.get("role_evidence", {})
-    if not isinstance(role_evidence, Mapping):
-        return 0.0
-    value = role_evidence.get(role_name, 0.0)
-    if isinstance(value, Mapping):
-        for key in ("probability", "score", "score_mass"):
-            if value.get(key) is not None:
-                return float(value[key])
-        return 0.0
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
+def _semantic_evidence_entries(candidate: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    evidence = candidate.get("semantic_evidence", [])
+    if isinstance(evidence, Mapping):
+        return [value for value in evidence.values() if isinstance(value, Mapping)]
+    if isinstance(evidence, list):
+        return [value for value in evidence if isinstance(value, Mapping)]
+    return []
+
+
+def _semantic_identity_score(candidate: Mapping[str, Any], role_name: str) -> float:
+    """Return independent identity evidence from every group compatible with a role."""
+    scores = []
+    for entry in _semantic_evidence_entries(candidate):
+        if role_name not in entry.get("compatible_roles", []):
+            continue
+        try:
+            scores.append(float(entry.get("score", 0.0)))
+        except (TypeError, ValueError):
+            continue
+    return max(scores, default=0.0)
+
+
+def _semantic_discriminative_score(candidate: Mapping[str, Any], role_name: str) -> float:
+    """Exclude shared groups when ranking target versus reference identities."""
+    scores = []
+    for entry in _semantic_evidence_entries(candidate):
+        roles = set(entry.get("compatible_roles", []))
+        if role_name not in roles or len(roles) != 1:
+            continue
+        try:
+            scores.append(float(entry.get("score", 0.0)))
+        except (TypeError, ValueError):
+            continue
+    return max(scores, default=0.0)
 
 
 def _target_proximity_cues(context: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -390,8 +410,8 @@ def _candidate_observation_cards(
                 "object_id": str(candidate.get("object_id")),
                 "camera": camera,
                 "sam_score": float(observation.get("sam_score") or 0.0),
-                "target_prior": _semantic_role_score(candidate, "target"),
-                "reference_prior": _semantic_role_score(candidate, "reference"),
+                "target_identity_score": _semantic_identity_score(candidate, "target"),
+                "reference_identity_score": _semantic_identity_score(candidate, "reference"),
                 "image_path": image_path,
             }
         )
@@ -869,7 +889,7 @@ def _collect_temporal_scene_montages(
 def _compact_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "object_id": candidate.get("object_id"),
-        "role_evidence": candidate.get("role_evidence", {}),
+        "semantic_evidence": candidate.get("semantic_evidence", []),
         "centroid_world": candidate.get("centroid_world"),
         "bbox3d_world": candidate.get("bbox3d_world"),
         "visible_camera": candidate.get("visible_camera", []),
@@ -948,7 +968,7 @@ def _filter_candidates(
         kept = [dict(item) for item in candidates]
 
     best_target_score = max(
-        (_semantic_role_score(item, "target") for item in kept),
+        (_semantic_identity_score(item, "target") for item in kept),
         default=0.0,
     )
     target_gate_threshold = (
@@ -960,7 +980,7 @@ def _filter_candidates(
         # compatibility tier and let visual Qwen evidence perform the filtering.
         if best_target_score <= 0.0:
             return 0
-        return int(_semantic_role_score(item, "target") < target_gate_threshold)
+        return int(_semantic_identity_score(item, "target") < target_gate_threshold)
 
     kept.sort(
         key=lambda item: (
@@ -969,8 +989,8 @@ def _filter_candidates(
                 str(item.get("object_id")),
                 temporal_context_by_object,
             ),
-            -_semantic_role_score(item, "target"),
-            -_semantic_role_score(item, "reference"),
+            -_semantic_discriminative_score(item, "target"),
+            -_semantic_discriminative_score(item, "reference"),
             -int(item.get("camera_count") or 0),
             -float(item.get("sam_score") or 0.0),
             -int(item.get("point_count") or 0),
@@ -991,7 +1011,7 @@ def _filter_candidates(
             "max_ee_distance_m": args.max_ee_distance_m,
             "max_candidates_for_decision": args.max_candidates_for_decision,
             "target_gate_threshold": target_gate_threshold,
-            "target_gate_basis": "stage1_target_role_evidence",
+            "target_gate_basis": "compatible_semantic_group_identity_score",
             "within_target_gate_order": (
                 "current_ee_distance, consistent_approach, approach_fraction, "
                 "approach_delta, window_min_distance"
@@ -1097,7 +1117,7 @@ def _build_temporal_object_context(
 
     context_by_object: dict[str, Any] = {}
     compact_samples_by_object: dict[str, list[dict[str, Any]]] = {}
-    if summary.get("storage_layout") == "compact_v1":
+    if summary.get("storage_layout") == "compact_v2":
         for frame in selected_frames:
             for candidate in frame.get("candidate_objects", []):
                 object_id = str(candidate.get("object_id"))
@@ -1110,7 +1130,7 @@ def _build_temporal_object_context(
                 )
     for track in summary.get("object_tracks", []):
         object_id = str(track.get("object_id"))
-        if summary.get("storage_layout") == "compact_v1":
+        if summary.get("storage_layout") == "compact_v2":
             samples = compact_samples_by_object.get(object_id, [])
         else:
             trajectory = list(track.get("trajectory", []))
@@ -1278,7 +1298,7 @@ def _build_prompt_payload(
 
     payload = {
         "instruction_prior": summary.get("instruction_prior"),
-        "role_spec_prior": summary.get("role_spec_prior"),
+        "semantic_groups_prior": summary.get("semantic_groups_prior", []),
         "decision_frame_id": frame_input.get("frame_id"),
         "decision_frame_index": frame_input.get("frame_index"),
         "temporal_window": temporal_window,
@@ -1359,6 +1379,10 @@ def _decision_prompt(
         "independently and do not copy a previous choice when current visual evidence contradicts it.\n"
         "- task_schema expresses the instruction as a generic action and goal predicate; use it to distinguish "
         "manipulated_object, goal_anchor and interaction_part roles.\n"
+        "- semantic_groups_prior defines appearance concepts and their compatible roles. A group compatible "
+        "with both target and reference only confirms object identity (for example, rose block); its score "
+        "must not rank those objects as target versus reference. A distinct reference-only group (for example, "
+        "yellow plate) is valid semantic evidence for reference selection.\n"
         "- dynamic_role_context contains deterministic gripper events and 3D relations. Treat confirmed GRASPED, "
         "PLACED_ON and PLACED_IN events as stronger physical evidence than model decision history.\n"
         "- Object IDs are role-neutral. A previously manipulated target may become the current reference after it "
@@ -1379,7 +1403,8 @@ def _decision_prompt(
         "are compatible, prefer the smallest current_distance_m, then consistently_approaching=true, "
         "higher approaching_step_fraction, and larger approach_delta_m over t-2 to t.\n"
         "5. Select reference_object_id only from reference_compatible_object_ids. Prefer the candidate "
-        "whose reference-role evidence and visual identity best match the goal anchor.\n"
+        "whose role-discriminative reference semantic group and visual identity best match the goal anchor. "
+        "Never use a target/reference-shared group to break that tie.\n"
         "6. Prefer objects with stable multi-view support over tiny/noisy single-view fragments unless evidence strongly contradicts.\n"
         "7. reference_object_id=null can be a confident semantic decision; it does not imply uncertainty.\n"
         "8. Distinguish the manipulated object from its interaction part and from descriptive surroundings.\n"
@@ -1451,19 +1476,22 @@ def _apply_two_stage_target_selection(
         raw_compatible if isinstance(raw_compatible, list) else [raw_compatible]
     )
 
+    candidate_by_id = {
+        str(candidate.get("object_id")): candidate for candidate in candidates
+    }
     compatible_ids = []
     for value in raw_compatible_values:
         object_id = str(value)
-        if object_id not in valid_ids:
+        if (
+            object_id not in valid_ids
+            or _semantic_identity_score(candidate_by_id[object_id], "target") <= 0.0
+        ):
             if object_id not in ignored_invalid_ids:
                 ignored_invalid_ids.append(object_id)
             continue
         if object_id not in compatible_ids:
             compatible_ids.append(object_id)
 
-    candidate_by_id = {
-        str(candidate.get("object_id")): candidate for candidate in candidates
-    }
     with_current_distance = [
         object_id
         for object_id in compatible_ids
@@ -1480,7 +1508,7 @@ def _apply_two_stage_target_selection(
                     object_id,
                     temporal_context_by_object,
                 ),
-                -_semantic_role_score(candidate_by_id[object_id], "target"),
+                -_semantic_discriminative_score(candidate_by_id[object_id], "target"),
                 object_id,
             ),
         )
@@ -1497,12 +1525,11 @@ def _apply_two_stage_target_selection(
         candidate_order = sorted(
             compatible_ids,
             key=lambda object_id: (
-                -_semantic_role_score(candidate_by_id[object_id], "target"),
                 object_id,
             ),
         )
         final_target = candidate_order[0] if candidate_order else None
-        strategy = "instruction_gate_then_semantic_fallback_no_current_gripper_pose"
+        strategy = "instruction_gate_then_stable_id_no_current_gripper_pose"
 
     selected["model_target_object_id"] = model_target
     selected["instruction_compatible_object_ids"] = compatible_ids
@@ -1570,43 +1597,47 @@ def _apply_reference_semantic_selection(
     else:
         raw_values = raw_compatible if isinstance(raw_compatible, list) else [raw_compatible]
 
+    candidate_by_id = {
+        str(candidate.get("object_id")): candidate
+        for candidate in candidates
+        if candidate.get("object_id") is not None
+    }
     compatible_ids: list[str] = []
     ignored_ids: list[str] = []
     for value in raw_values:
         if value is None:
             continue
         object_id = str(value)
-        if object_id not in valid_ids or object_id == target_id:
+        if (
+            object_id not in valid_ids
+            or object_id == target_id
+            or _semantic_identity_score(candidate_by_id[object_id], "reference") <= 0.0
+        ):
             if object_id not in ignored_ids:
                 ignored_ids.append(object_id)
             continue
         if object_id not in compatible_ids:
             compatible_ids.append(object_id)
 
-    candidate_by_id = {
-        str(candidate.get("object_id")): candidate
-        for candidate in candidates
-        if candidate.get("object_id") is not None
-    }
-    role_scores = {
-        object_id: _semantic_role_score(candidate_by_id[object_id], "reference")
+    semantic_scores = {
+        object_id: _semantic_discriminative_score(candidate_by_id[object_id], "reference")
         for object_id in compatible_ids
     }
     semantic_order = sorted(
         compatible_ids,
         key=lambda object_id: (
-            -role_scores[object_id],
+            -semantic_scores[object_id],
             object_id != model_reference,
             object_id,
         ),
     )
-    if compatible_ids and any(score > 0.0 for score in role_scores.values()):
+    if compatible_ids and any(score > 0.0 for score in semantic_scores.values()):
         best_semantic = semantic_order[0]
-        model_score = role_scores.get(str(model_reference), 0.0)
+        model_score = semantic_scores.get(str(model_reference), 0.0)
         if (
             model_reference in compatible_ids
             and best_semantic != model_reference
-            and role_scores[best_semantic] < model_score + 0.15
+            and semantic_scores[best_semantic] < model_score + 0.15
         ):
             candidate_order = [
                 model_reference,
@@ -1615,7 +1646,7 @@ def _apply_reference_semantic_selection(
             strategy = "instruction_gate_model_reference_with_semantic_hysteresis"
         else:
             candidate_order = semantic_order
-            strategy = "instruction_gate_then_reference_role_evidence"
+            strategy = "instruction_gate_then_reference_semantic_group"
     elif model_reference in compatible_ids:
         candidate_order = [
             model_reference,
@@ -1636,7 +1667,7 @@ def _apply_reference_semantic_selection(
             else strategy
         ),
         "candidate_order": candidate_order,
-        "reference_role_scores": role_scores,
+        "reference_semantic_scores": semantic_scores,
         "ignored_invalid_or_target_object_ids": ignored_ids,
     }
     if final_reference is None:
@@ -2545,7 +2576,7 @@ def _build_output_document(
     output = {
         "schema_version": summary.get("schema_version"),
         "artifact_type": "object_role_predictions",
-        "storage_layout": "debug_full_v1" if dry_run else "compact_v1",
+        "storage_layout": "debug_full_v2" if dry_run else "compact_v2",
         "generation_id": summary.get("generation_id"),
         "object_summary_json": str(summary_path),
         "decision_scope": decision_scope,
@@ -2555,6 +2586,7 @@ def _build_output_document(
         "decision_frame_index": final_entry.get("frame_index"),
         "instruction_prior": summary.get("instruction_prior"),
         "role_spec_prior": summary.get("role_spec_prior"),
+        "semantic_groups_prior": summary.get("semantic_groups_prior", []),
         "task_schema": final_entry.get("task_schema", {}),
         "candidate_ids": final_entry.get("candidate_ids", []),
         "frame_decisions": persisted_frame_decisions,
@@ -2638,6 +2670,30 @@ def main() -> None:
     )
 
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if (
+        summary.get("schema_version") != 4
+        or summary.get("artifact_type") != "object_track_summary"
+        or summary.get("storage_layout") != "compact_v2"
+    ):
+        raise RuntimeError(
+            "Decision requires object_summary v4 with compact_v2 layout. "
+            "Use a new output directory and rerun Stage1 and Fusion; legacy artifacts are not converted."
+        )
+    if output_path.exists():
+        try:
+            existing_output = json.loads(output_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(
+                "The decision output path already contains an unreadable artifact; use a new output directory."
+            ) from exc
+        if (
+            existing_output.get("schema_version") != 4
+            or existing_output.get("generation_id") != summary.get("generation_id")
+        ):
+            raise RuntimeError(
+                "The decision output path contains a legacy or different-generation artifact. "
+                "Use a new output directory; mixed generations are rejected."
+            )
     args._task_schema = compile_task_schema(
         summary.get("instruction_prior"),
         summary.get("role_spec_prior"),

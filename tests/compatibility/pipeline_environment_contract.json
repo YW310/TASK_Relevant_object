@@ -318,7 +318,7 @@
     ]
   },
   {
-    "name": "TOP_K_PER_ROLE",
+    "name": "TOP_K_PER_SEMANTIC_GROUP",
     "line": 172,
     "default_expression": "8",
     "value_kind": "integer",
@@ -327,7 +327,7 @@
       "candidates"
     ],
     "cli_flags": [
-      "--top-k-per-role"
+      "--top-k-per-semantic-group"
     ]
   },
   {

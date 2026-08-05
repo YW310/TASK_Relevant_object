@@ -526,24 +526,21 @@ def apply_dynamic_role_selection(
     return selected
 
 
-def _candidate_role_score(candidate: Mapping[str, Any], role: str) -> float | None:
-    evidence = candidate.get("role_evidence", {})
-    if not isinstance(evidence, Mapping) or role not in evidence:
+def _candidate_identity_score(candidate: Mapping[str, Any], role: str) -> float | None:
+    """Return identity confidence from independent semantic groups compatible with role."""
+    evidence = candidate.get("semantic_evidence", [])
+    entries = evidence.values() if isinstance(evidence, Mapping) else evidence
+    if not isinstance(entries, (list, tuple)) and not hasattr(entries, "__iter__"):
         return None
-    value = evidence[role]
-    if isinstance(value, Mapping):
-        value = next(
-            (
-                value[key]
-                for key in ("probability", "score", "score_mass")
-                if value.get(key) is not None
-            ),
-            None,
-        )
-    try:
-        return min(1.0, max(0.0, float(value))) if value is not None else None
-    except (TypeError, ValueError):
-        return None
+    scores = []
+    for entry in entries:
+        if not isinstance(entry, Mapping) or role not in entry.get("compatible_roles", []):
+            continue
+        try:
+            scores.append(min(1.0, max(0.0, float(entry.get("score", 0.0)))))
+        except (TypeError, ValueError):
+            continue
+    return max(scores) if scores else None
 
 
 def calibrate_decision_confidence(
@@ -587,7 +584,7 @@ def calibrate_decision_confidence(
         }
         return selected
 
-    semantic = _candidate_role_score(target, "target")
+    semantic = _candidate_identity_score(target, "target")
     if semantic is None:
         semantic = model_confidence
     sam_score = min(1.0, max(0.0, float(target.get("sam_score") or 0.0)))

@@ -309,7 +309,7 @@ def sanity_report_for_object(frame: Mapping[str, Any], obj: Mapping[str, Any]) -
     bbox = np.asarray(obj["bbox3d_world"], dtype=np.float64)
     return {
         "id": obj["id"],
-        "role_evidence": obj.get("role_evidence", {}),
+        "semantic_evidence": obj.get("semantic_evidence", []),
         "num_points": len(points),
         "centroid_world": obj["centroid_world"],
         "recomputed_centroid_world": (
@@ -389,9 +389,12 @@ def render_pointcloud(
             if len(points) == 0:
                 continue
             color = np.array(object_color_for_id(obj.get("id"))) / 255.0
-            evidence = obj.get("role_evidence", {})
-            top_role = max(evidence, key=lambda role: evidence[role].get("probability", 0.0)) if evidence else None
-            suffix = f" ({top_role} evidence)" if top_role else ""
+            evidence = [
+                entry for entry in obj.get("semantic_evidence", [])
+                if isinstance(entry, Mapping)
+            ]
+            top_group = max(evidence, key=lambda entry: float(entry.get("score", 0.0))) if evidence else None
+            suffix = f" ({top_group.get('semantic_group_id')} semantic)" if top_group else ""
             ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=2, color=color, label=f'{obj["id"]}{suffix}')
             centroid = np.asarray(obj["centroid_world"], dtype=np.float64)
             ax.scatter([centroid[0]], [centroid[1]], [centroid[2]], s=90, marker="x", color=color)

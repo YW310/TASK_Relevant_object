@@ -5,7 +5,7 @@
   "type": "object",
   "required": ["schema_version", "artifact_type", "prompt_attempts", "generation_parameters", "canonicalization"],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "artifact_type": {"const": "camera_frame_candidate_debug"},
     "source_candidates_json": {"type": "string"},
     "prompt_attempts": {"type": "array"},

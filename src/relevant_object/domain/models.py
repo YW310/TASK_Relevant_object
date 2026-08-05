@@ -8,13 +8,10 @@ from typing import Any, Mapping
 import numpy as np
 
 
-ROLE_NAMES = ("target", "reference", "interaction_part")
-
-
 @dataclass
 class Observation3D:
     observation_id: str
-    role_evidence: Mapping[str, float]
+    semantic_evidence: Mapping[str, Mapping[str, Any]]
     provenance: Mapping[str, Any]
     camera: str
     candidate: Mapping[str, Any]

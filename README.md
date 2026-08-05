@@ -80,7 +80,7 @@ Candidate generation and runtime arguments:
 | `--threshold` | `THRESHOLD` | `0.25` | Global SAM3 confidence cutoff. Lower it to improve recall for small objects. |
 | `--camera-threshold-overrides` | `CAMERA_THRESHOLD_OVERRIDES` | unset | Per-camera cutoffs such as `left_shoulder=0.15`. |
 | `--candidate-pool-size` | — | `20` | Raw masks inspected per prompt before final selection. |
-| `--top-k-per-role` | — | `8` | Maximum candidates retained for each semantic role. |
+| `--top-k-per-semantic-group` | `TOP_K_PER_SEMANTIC_GROUP` | `8` | Maximum candidates retained for each semantic concept group. |
 | `--prompt-variants` | — | `5` | Maximum Qwen/SAM text variants attempted per role. |
 | `--min-mask-area` | — | `4` px | Remove tiny mask fragments. |
 | `--[no-]split-disconnected-masks` | `SPLIT_DISCONNECTED_MASKS` | enabled | Split disconnected regions from one SAM3 mask before computing candidate bboxes. |
@@ -194,7 +194,7 @@ automatically when Stage 4 is enabled.
 
 Stage 2 deliberately separates episode indexing, frame evidence, and temporal
 reasoning. The schemas live in `schemas/` and all three JSON layers carry the
-same integer `schema_version` (currently `3`) and UUID `generation_id`:
+same integer `schema_version` (currently `4`) and UUID `generation_id`:
 
 1. **`frame_fused_candidates.json`** is a lightweight episode manifest. Its
    frame entries contain status, object count, and a relative
@@ -211,13 +211,13 @@ same integer `schema_version` (currently `3`) and UUID `generation_id`:
    intermediate event.
    The sibling **`fusion_debug.json`** retains the complete candidate lifecycle,
    readable reason messages, backprojection/filter diagnostics, and tracking
-   checkpoint. Resume mode reads that checkpoint, while older outputs with
-   inline `diagnostics.tracking_state` remain supported.
+   checkpoint. Resume mode reads that checkpoint. Schema v1-v3 and mixed
+   generation outputs are rejected; rerun into a new output directory.
 3. **`object_summary.json`** contains cross-frame tracks, aggregate statistics,
    decision-ready scalar metadata, and `frame_ref` links back to the per-frame
    files. It does not duplicate complete point clouds or other full geometry.
 
-`object_summary.json` uses the `compact_v1` storage layout. Per-frame candidates
+`object_summary.json` uses the `compact_v2` storage layout. Per-frame candidates
 retain only Qwen filtering and visualization fields; verbose observation
 provenance remains in the referenced `fused_objects.json`. Track statistics are
 stored once without duplicating trajectories, and pairwise geometry is derived
@@ -348,7 +348,7 @@ object. A non-relational instruction is allowed to produce a confident
 themselves create a separate reference object.
 
 Reference selection uses a separate `reference_compatible_object_ids` semantic
-gate and Stage-1 reference-role evidence; it never reuses the target-compatible
+gate and role-discriminative semantic-group evidence; it never reuses the target-compatible
 set as an implicit goal anchor. A selected Reference is temporally locked. A new
 ID needs consecutive confirmation (two sampled frames by default), while a
 briefly missing locked ID yields `reference_object_id=null` instead of rebinding
@@ -363,12 +363,12 @@ statistics. The top-level `performance` block aggregates model calls, propagated
 frames, scene/patch image counts, visual preparation time, model time, visual
 pixels, and input/output tokens.
 
-Normal `object_predictions.json` output uses `compact_v1`: each frame keeps IDs,
+Normal `object_predictions.json` output uses `compact_v2`: each frame keeps IDs,
 model-call provenance, refresh reasons, performance, one non-duplicated image
 metadata list, and the final target/reference/confidence fields. Prompt-time
 snapshots such as `dynamic_role_context`, `online_history`, repeated montage
 lists, and detailed intermediate selection structures are not persisted per
-frame. `--dry-run` uses `debug_full_v1` and intentionally retains complete
+frame. `--dry-run` uses `debug_full_v2` and intentionally retains complete
 messages so the exact Qwen request remains inspectable.
 Malformed JSON is marked uncertain and schedules another adaptive refresh on
 the next frame instead of immediately repeating an expensive call.

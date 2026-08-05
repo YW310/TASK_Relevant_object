@@ -20,6 +20,7 @@ from multiview_candidate_fusion import (
     frame_index_from_frame,
     split_fused_frame_artifacts,
     suppress_same_camera_duplicates,
+    validate_semantic_candidates,
     _load_completed_frame,
     _restore_track_state,
 )
@@ -28,7 +29,7 @@ from multiview_candidate_fusion import (
 class CompactFusionArtifactTest(unittest.TestCase):
     def test_verbose_lifecycle_and_tracking_move_to_debug_artifact(self) -> None:
         frame = {
-            "schema_version": 3,
+            "schema_version": 4,
             "generation_id": "generation",
             "frame_id": "0",
             "objects": [],
@@ -79,7 +80,7 @@ class CompactFusionArtifactTest(unittest.TestCase):
             frame_dir.mkdir(parents=True)
             generation_id = "generation"
             (frame_dir / "fused_objects.json").write_text(json.dumps({
-                "schema_version": 3,
+                "schema_version": 4,
                 "generation_id": generation_id,
                 "frame_id": "0",
                 "objects": [],
@@ -110,6 +111,14 @@ class CompactFusionArtifactTest(unittest.TestCase):
 
 
 class CandidateMaskAreaFilterTest(unittest.TestCase):
+    def test_legacy_stage1_candidate_is_rejected_without_conversion(self) -> None:
+        with self.assertRaisesRegex(ValueError, "rerun Stage1"):
+            validate_semantic_candidates([{
+                "id": "T1",
+                "role": "target",
+                "role_scores": {"target": 1.0},
+            }])
+
     def test_candidates_below_threshold_are_removed(self) -> None:
         candidates = [
             {"id": "C-small", "mask_area_pixels": 39},
@@ -136,15 +145,16 @@ class CompactObjectSummaryTest(unittest.TestCase):
         return_value=np.zeros((3, 3), dtype=np.float64),
     )
     def test_summary_does_not_duplicate_verbose_frame_evidence(self, _load_points) -> None:
-        role_evidence = {
-            "target": {
-                "probability": 0.8,
+        semantic_evidence = [{
+                "semantic_group_id": "SG1",
+                "score": 0.8,
                 "score_mass": 1.6,
+                "support_count": 2,
                 "supporting_prompts": ["red block"],
+                "compatible_roles": ["target"],
                 "cameras": ["front"],
                 "frames": ["0"],
-            }
-        }
+        }]
         objects = []
         for index, x in enumerate((0.0, 0.2), start=1):
             objects.append(
@@ -156,14 +166,14 @@ class CompactObjectSummaryTest(unittest.TestCase):
                     "visible_camera": ["front"],
                     "mask_area": 100,
                     "sam_score": 0.9,
-                    "role_evidence": role_evidence,
+                    "semantic_evidence": semantic_evidence,
                     "observations": [
                         {
                             "camera": "front",
                             "candidate_id": f"C{index}",
                             "observation_id": f"0:front:C{index}",
                             "provenance": {"very_verbose": ["unused"] * 20},
-                            "role_evidence": role_evidence,
+                            "semantic_evidence": semantic_evidence,
                             "mask_path": f"mask-{index}.png",
                             "sam_score": 0.9,
                         }
@@ -180,12 +190,12 @@ class CompactObjectSummaryTest(unittest.TestCase):
         summary = build_object_summary(
             [frame],
             {},
-            {"instruction": "move the red block", "role_spec": {"target": "block"}},
-            schema_version=3,
+            {"instruction": "move the red block", "role_spec": {"target": "block"}, "semantic_groups": [{"semantic_group_id": "SG1"}]},
+            schema_version=4,
             generation_id="generation-id",
         )
 
-        self.assertEqual("compact_v1", summary["storage_layout"])
+        self.assertEqual("compact_v2", summary["storage_layout"])
         self.assertNotIn("trajectory", summary["object_tracks"][0])
         frame_input = summary["frame_decision_inputs"][0]
         self.assertNotIn("instruction_prior", frame_input)
@@ -193,9 +203,10 @@ class CompactObjectSummaryTest(unittest.TestCase):
         self.assertEqual([], frame_input["pairwise_relations"])
         candidate = frame_input["candidate_objects"][0]
         self.assertEqual(
-            {"probability": 0.8, "score_mass": 1.6},
-            candidate["role_evidence"]["target"],
+            {"semantic_group_id": "SG1", "score": 0.8, "support_count": 2, "compatible_roles": ["target"]},
+            candidate["semantic_evidence"][0],
         )
+        self.assertEqual(["red block"], summary["object_tracks"][0]["semantic_evidence"][0]["supporting_prompts"])
         serialized = str(summary)
         self.assertNotIn("very_verbose", serialized)
         self.assertNotIn("observation_id", serialized)
@@ -206,7 +217,7 @@ def _observation(name: str, camera: str, bbox: list[list[float]]) -> Observation
     points = np.array([bounds[0], bounds[1], (bounds[0] + bounds[1]) / 2])
     return Observation3D(
         observation_id=name,
-        role_evidence={"target": 0.9},
+        semantic_evidence={"SG1": {"semantic_group_id": "SG1", "score": 0.9, "compatible_roles": ["target"], "supporting_prompts": ["target"]}},
         provenance={},
         camera=camera,
         candidate={"id": name, "score": 0.9},
@@ -221,13 +232,21 @@ def _observation_from_points(
     camera: str,
     points: list[list[float]],
     prompt: str,
-    role_evidence: dict[str, float] | None = None,
+    semantic_roles: dict[str, float] | None = None,
     score: float = 0.9,
 ) -> Observation3D:
     cloud = np.asarray(points, dtype=np.float64)
     return Observation3D(
         observation_id=name,
-        role_evidence=role_evidence or {"target": score},
+        semantic_evidence={
+            f"SG_{role.upper()}": {
+                "semantic_group_id": f"SG_{role.upper()}",
+                "score": value,
+                "compatible_roles": [role],
+                "supporting_prompts": [prompt],
+            }
+            for role, value in (semantic_roles or {"target": score}).items()
+        },
         provenance={"prompt_provenance": [{"source_prompt": prompt}]},
         camera=camera,
         candidate={"id": name.split(":")[-1], "score": score},
@@ -297,8 +316,8 @@ class CrossCameraFusionTest(unittest.TestCase):
     def test_preferred_camera_weight_seeds_hypothesis(self) -> None:
         front = _observation("front:C1", "front", [[0, 0, 0], [0.10, 0.10, 0.10]])
         left = _observation("left:C1", "left", [[0.01, 0, 0], [0.11, 0.10, 0.10]])
-        front.role_evidence = {"target": 0.7}
-        left.role_evidence = {"target": 0.9}
+        front.semantic_evidence["SG1"]["score"] = 0.7
+        left.semantic_evidence["SG1"]["score"] = 0.9
         self.args.preferred_camera = "front"
         self.args.preferred_camera_weight = 1.5
 
@@ -332,7 +351,7 @@ class SameCameraNmsTest(unittest.TestCase):
             "front",
             [[0.005, 0.0, 1.0], [0.105, 0.10, 1.10]],
         )
-        duplicate.role_evidence = {"reference": 0.8}
+        duplicate.semantic_evidence = {"SG_REFERENCE": {"semantic_group_id": "SG_REFERENCE", "score": 0.8, "compatible_roles": ["reference"], "supporting_prompts": ["reference"]}}
         duplicate.candidate = {"id": "C2", "score": 0.8}
         primary.candidate = {"id": "C1", "score": 0.9}
         mask_a = np.zeros((16, 16), dtype=bool)
@@ -349,7 +368,7 @@ class SameCameraNmsTest(unittest.TestCase):
         self.assertIs(primary, kept[0])
         self.assertEqual(1, len(diagnostics))
         self.assertEqual("same_camera_2d_3d_nms", diagnostics[0]["reason"])
-        self.assertAlmostEqual(0.8, primary.role_evidence["reference"])
+        self.assertAlmostEqual(0.8, primary.semantic_evidence["SG_REFERENCE"]["score"])
         self.assertEqual(
             "front:C2",
             primary.provenance["same_camera_nms_suppressed"][0][
@@ -412,7 +431,7 @@ class SameCameraNmsTest(unittest.TestCase):
                 [0.06, 0.05, 1.05],
             ],
             "a magenta block",
-            role_evidence={"reference": 0.22},
+            semantic_roles={"reference": 0.22},
             score=0.22,
         )
         main_mask = np.zeros((16, 16), dtype=bool)
@@ -468,7 +487,7 @@ class SameCameraNmsTest(unittest.TestCase):
             "front",
             [[0.04, 0.04, 1.04], [0.05, 0.05, 1.05], [0.06, 0.06, 1.06]],
             "drawer",
-            role_evidence={"interaction_part": 0.9},
+            semantic_roles={"interaction_part": 0.9},
             score=0.9,
         )
         mask = np.ones((12, 12), dtype=bool)

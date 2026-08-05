@@ -3,6 +3,7 @@ import json
 import sys
 
 from PIL import Image, ImageDraw
+import pytest
 
 import qwen3vl_object_role_decision as decision_module
 from qwen3vl_object_role_decision import (
@@ -38,6 +39,15 @@ def _frames(count=7):
     ]
 
 
+def _semantic(role, score, *, group_id=None, compatible_roles=None):
+    return [{
+        "semantic_group_id": group_id or f"SG_{role.upper()}",
+        "score": score,
+        "support_count": 1,
+        "compatible_roles": compatible_roles or [role],
+    }]
+
+
 def test_compact_summary_derives_pairwise_relations_on_read():
     frame = {
         "pairwise_relations": [],
@@ -63,11 +73,11 @@ def test_compact_summary_derives_pairwise_relations_on_read():
     assert relations[0]["source_to_target_labels"] == ["right_of", "above"]
 
 
-def test_reference_selection_uses_instruction_gate_and_reference_role_evidence():
+def test_reference_selection_uses_instruction_gate_and_distinct_reference_semantics():
     candidates = [
-        {"object_id": "O1", "role_evidence": {"target": {"probability": 0.9}}},
-        {"object_id": "O2", "role_evidence": {"reference": {"probability": 0.3}}},
-        {"object_id": "O3", "role_evidence": {"reference": {"probability": 0.8}}},
+        {"object_id": "O1", "semantic_evidence": _semantic("target", 0.9)},
+        {"object_id": "O2", "semantic_evidence": _semantic("reference", 0.3)},
+        {"object_id": "O3", "semantic_evidence": _semantic("reference", 0.8)},
     ]
 
     selected = _apply_reference_semantic_selection(
@@ -112,14 +122,52 @@ def test_reference_semantic_score_needs_margin_to_override_visual_model_choice()
         },
         [
             {"object_id": "O1"},
-            {"object_id": "O2", "role_evidence": {"reference": {"probability": 0.55}}},
-            {"object_id": "O3", "role_evidence": {"reference": {"probability": 0.60}}},
+            {"object_id": "O2", "semantic_evidence": _semantic("reference", 0.55)},
+            {"object_id": "O3", "semantic_evidence": _semantic("reference", 0.60)},
         ],
         {"reference_required": True},
     )
 
     assert selected["reference_object_id"] == "O2"
     assert "semantic_hysteresis" in selected["reference_selection"]["strategy"]
+
+
+def test_shared_target_reference_group_does_not_rank_reference_candidates():
+    shared_roles = ["target", "reference"]
+    selected = _apply_reference_semantic_selection(
+        {
+            "target_object_id": "O1",
+            "reference_object_id": "O2",
+            "reference_compatible_object_ids": ["O2", "O3"],
+        },
+        [
+            {"object_id": "O1", "semantic_evidence": _semantic("target", 0.9, group_id="SG_SHARED", compatible_roles=shared_roles)},
+            {"object_id": "O2", "semantic_evidence": _semantic("reference", 0.4, group_id="SG_SHARED", compatible_roles=shared_roles)},
+            {"object_id": "O3", "semantic_evidence": _semantic("reference", 0.95, group_id="SG_SHARED", compatible_roles=shared_roles)},
+        ],
+        {"reference_required": True},
+    )
+
+    assert selected["reference_object_id"] == "O2"
+    assert selected["reference_selection"]["reference_semantic_scores"] == {"O2": 0.0, "O3": 0.0}
+    assert selected["reference_selection"]["strategy"] == "instruction_gate_then_model_reference"
+
+
+def test_role_compatibility_gate_rejects_interaction_part_only_candidate():
+    selected = _apply_two_stage_target_selection(
+        {
+            "instruction_compatible_object_ids": ["O1", "P1"],
+            "target_object_id": "P1",
+        },
+        [
+            {"object_id": "O1", "semantic_evidence": _semantic("target", 0.8)},
+            {"object_id": "P1", "semantic_evidence": _semantic("interaction_part", 0.95)},
+        ],
+        {},
+    )
+
+    assert selected["instruction_compatible_object_ids"] == ["O1"]
+    assert selected["target_object_id"] == "O1"
 
 
 def test_reference_switch_requires_two_consecutive_proposals():
@@ -222,10 +270,11 @@ def test_normal_prediction_output_uses_compact_frame_records(tmp_path):
         "raw_text": '{"target_object_id":"O1"}',
     }
     summary = {
-        "schema_version": 3,
+        "schema_version": 4,
         "generation_id": "g1",
         "instruction_prior": "move it",
         "role_spec_prior": {},
+        "semantic_groups_prior": [],
     }
 
     output = _build_output_document(
@@ -237,7 +286,7 @@ def test_normal_prediction_output_uses_compact_frame_records(tmp_path):
         decision_policy="adaptive",
     )
 
-    assert output["storage_layout"] == "compact_v1"
+    assert output["storage_layout"] == "compact_v2"
     persisted = output["frame_decisions"][0]
     assert persisted["decision"]["target_object_id"] == "O1"
     assert persisted["representative_images"] == frame["representative_images"]
@@ -254,6 +303,26 @@ def _payload_from_call(call):
             "\n\nChronological ", 1
         )[0]
     )
+
+
+@pytest.mark.parametrize("legacy_version", [1, 2, 3])
+def test_main_rejects_legacy_object_summary(tmp_path, monkeypatch, legacy_version):
+    summary_path = tmp_path / "object_summary.json"
+    summary_path.write_text(json.dumps({
+        "schema_version": legacy_version,
+        "artifact_type": "object_track_summary",
+        "storage_layout": "compact_v1",
+        "generation_id": "old",
+    }))
+    monkeypatch.setattr(sys, "argv", [
+        "qwen3vl_object_role_decision.py",
+        "--object-summary-json", str(summary_path),
+        "--output-json", str(tmp_path / "predictions.json"),
+        "--dry-run",
+    ])
+
+    with pytest.raises(RuntimeError, match="object_summary v4"):
+        decision_module.main()
 
 
 def test_temporal_window_at_middle_frame():
@@ -363,16 +432,19 @@ def _run_main_with_grounder(
 ):
     manifest_path = tmp_path / "frame_fused_candidates.json"
     manifest_path.write_text(
-        json.dumps({"schema_version": 1, "generation_id": "g1"})
+        json.dumps({"schema_version": 4, "generation_id": "g1"})
     )
     summary_path = tmp_path / "object_summary.json"
     output_path = tmp_path / "decision.json"
     summary = {
-        "schema_version": 1,
+        "schema_version": 4,
+        "artifact_type": "object_track_summary",
+        "storage_layout": "compact_v2",
         "generation_id": "g1",
         "source_fused_json": str(manifest_path),
         "frame_decision_inputs": frames,
         "object_tracks": [],
+        "semantic_groups_prior": [],
     }
     summary.update(summary_overrides or {})
     summary_path.write_text(json.dumps(summary))
@@ -448,14 +520,17 @@ def test_main_calls_grounder_once_per_frame_with_rolling_windows(tmp_path, monke
     for frame in frames:
         frame["candidate_objects"] = [{"object_id": "O1", "camera_count": 1, "point_count": 5, "sam_score": 0.9}]
     manifest_path = tmp_path / "frame_fused_candidates.json"
-    manifest_path.write_text(json.dumps({"schema_version": "v1", "generation_id": "g1"}))
+    manifest_path.write_text(json.dumps({"schema_version": 4, "generation_id": "g1"}))
     summary_path = tmp_path / "object_summary.json"
     summary_path.write_text(json.dumps({
-        "schema_version": "v1",
+        "schema_version": 4,
+        "artifact_type": "object_track_summary",
+        "storage_layout": "compact_v2",
         "generation_id": "g1",
         "source_fused_json": str(manifest_path),
         "frame_decision_inputs": frames,
         "object_tracks": [],
+        "semantic_groups_prior": [],
     }))
     grounder = _MockGrounder()
     monkeypatch.setattr(decision_module, "Qwen3VLRLBenchGrounder", lambda **kwargs: grounder)
@@ -647,14 +722,17 @@ def test_single_scope_keeps_explicit_debug_behavior(tmp_path, monkeypatch):
             {"object_id": "O1", "camera_count": 1, "point_count": 5, "sam_score": 0.9}
         ]
     manifest_path = tmp_path / "frame_fused_candidates.json"
-    manifest_path.write_text(json.dumps({"schema_version": 3, "generation_id": "g1"}))
+    manifest_path.write_text(json.dumps({"schema_version": 4, "generation_id": "g1"}))
     summary_path = tmp_path / "object_summary.json"
     summary_path.write_text(json.dumps({
-        "schema_version": 3,
+        "schema_version": 4,
+        "artifact_type": "object_track_summary",
+        "storage_layout": "compact_v2",
         "generation_id": "g1",
         "source_fused_json": str(manifest_path),
         "frame_decision_inputs": frames,
         "object_tracks": [],
+        "semantic_groups_prior": [],
     }))
     grounder = _MockGrounder()
     monkeypatch.setattr(decision_module, "Qwen3VLRLBenchGrounder", lambda **kwargs: grounder)
@@ -980,10 +1058,7 @@ def test_candidate_contact_sheet_uses_two_distinct_best_camera_views(tmp_path):
     candidate = {
         "object_id": "O2",
         "primary_camera": "front",
-        "role_evidence": {
-            "target": {"probability": 0.75},
-            "reference": {"probability": 0.1},
-        },
+        "semantic_evidence": _semantic("target", 0.75) + _semantic("reference", 0.1),
         "observations": [
             {"camera": "front", "sam_score": 0.6, "masked_crop_path": str(paths[0])},
             {"camera": "front", "sam_score": 0.5, "masked_crop_path": str(paths[1])},
@@ -995,7 +1070,7 @@ def test_candidate_contact_sheet_uses_two_distinct_best_camera_views(tmp_path):
 
     assert [item["camera"] for item in cards] == ["front", "overhead"]
     assert [item["object_id"] for item in cards] == ["O2", "O2"]
-    assert all(item["target_prior"] == 0.75 for item in cards)
+    assert all(item["target_identity_score"] == 0.75 for item in cards)
 
 
 def test_candidate_cap_prioritizes_semantic_target_evidence():
@@ -1005,14 +1080,14 @@ def test_candidate_cap_prioritizes_semantic_target_evidence():
             "camera_count": 4,
             "point_count": 500,
             "sam_score": 0.99,
-            "role_evidence": {"target": {"probability": 0.02}},
+            "semantic_evidence": _semantic("target", 0.02),
         },
         {
             "object_id": "O2",
             "camera_count": 1,
             "point_count": 20,
             "sam_score": 0.5,
-            "role_evidence": {"target": {"probability": 0.9}},
+            "semantic_evidence": _semantic("target", 0.9),
         },
     ]
     args = argparse.Namespace(
@@ -1036,14 +1111,14 @@ def test_candidate_cap_uses_current_gripper_distance_inside_target_gate():
             "camera_count": 2,
             "point_count": 100,
             "sam_score": 0.9,
-            "role_evidence": {"target": {"probability": 0.8}},
+            "semantic_evidence": _semantic("target", 0.8),
         },
         {
             "object_id": "O3",
             "camera_count": 2,
             "point_count": 100,
             "sam_score": 0.9,
-            "role_evidence": {"target": {"probability": 0.7}},
+            "semantic_evidence": _semantic("target", 0.7),
         },
     ]
     context = {
@@ -1065,9 +1140,9 @@ def test_candidate_cap_uses_current_gripper_distance_inside_target_gate():
 
 def test_two_stage_selection_ignores_nearest_instruction_incompatible_object():
     candidates = [
-        {"object_id": "O1", "role_evidence": {"target": {"probability": 0.95}}},
-        {"object_id": "O2", "role_evidence": {"target": {"probability": 0.8}}},
-        {"object_id": "O3", "role_evidence": {"target": {"probability": 0.7}}},
+        {"object_id": "O1", "semantic_evidence": _semantic("target", 0.95)},
+        {"object_id": "O2", "semantic_evidence": _semantic("target", 0.8)},
+        {"object_id": "O3", "semantic_evidence": _semantic("target", 0.7)},
     ]
     context = {
         "O1": {"target_proximity_cues": {"current_distance_m": 0.02}},
@@ -1103,8 +1178,8 @@ def test_two_stage_selection_ignores_nearest_instruction_incompatible_object():
 
 def test_two_stage_selection_uses_approach_trend_when_current_distance_ties():
     candidates = [
-        {"object_id": "O2", "role_evidence": {"target": {"probability": 0.8}}},
-        {"object_id": "O3", "role_evidence": {"target": {"probability": 0.8}}},
+        {"object_id": "O2", "semantic_evidence": _semantic("target", 0.8)},
+        {"object_id": "O3", "semantic_evidence": _semantic("target", 0.8)},
     ]
     context = {
         "O2": {

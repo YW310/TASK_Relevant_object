@@ -3,20 +3,21 @@
   "$id": "object_summary.schema.json",
   "title": "Cross-frame object tracks and role-decision input",
   "type": "object",
-  "required": ["schema_version", "generation_id", "source_fused_json", "object_tracks", "frame_decision_inputs"],
+  "required": ["schema_version", "generation_id", "storage_layout", "source_fused_json", "semantic_groups_prior", "object_tracks", "frame_decision_inputs"],
   "properties": {
-    "schema_version": {"const": 3},
+    "schema_version": {"const": 4},
     "artifact_type": {"const": "object_track_summary"},
-    "storage_layout": {"type": "string", "enum": ["compact_v1"]},
+    "storage_layout": {"const": "compact_v2"},
     "generation_id": {"type": "string", "format": "uuid"},
     "coordinate_frame": {"type": "string"},
     "units": {"type": "object"},
     "summary": {"type": "object"},
     "source_fused_json": {"type": ["string", "null"]},
-    "object_tracks": {"type": "array"},
+    "semantic_groups_prior": {"type": "array"},
+    "object_tracks": {"type": "array", "items": {"type": "object", "required": ["object_id", "semantic_evidence"]}},
     "frame_decision_inputs": {"type": "array", "items": {
       "type": "object", "required": ["frame_id", "frame_ref", "candidate_objects", "pairwise_relations"],
-      "properties": {"frame_ref": {"type": "string"}}
+      "properties": {"frame_ref": {"type": "string"}, "candidate_objects": {"type": "array", "items": {"type": "object", "required": ["object_id", "semantic_evidence"]}}}
     }}
   }
 }

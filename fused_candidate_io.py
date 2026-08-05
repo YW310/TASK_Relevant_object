@@ -1,4 +1,4 @@
-"""Compatibility-safe access to fused candidate manifests and geometry."""
+"""Strict schema-v4 access to fused candidate manifests and geometry."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any, Iterable, Mapping
 import numpy as np
 
 
-SUPPORTED_MANIFEST_SCHEMA_VERSION = 3
+SUPPORTED_MANIFEST_SCHEMA_VERSION = 4
 _SOURCE_PATH = "_fused_source_path"
 
 
@@ -28,35 +28,23 @@ def _read_json(path: Path, *, frame_id: Any = "<unknown>") -> dict[str, Any]:
     return value
 
 
-def _is_legacy(manifest: Mapping[str, Any]) -> bool:
-    if manifest.get("schema_version") == SUPPORTED_MANIFEST_SCHEMA_VERSION:
-        return False
-    frames = manifest.get("frames")
-    return (
-        manifest.get("schema_version") in (None, 1, 2)
-        and isinstance(frames, list)
-        and (not frames or all(isinstance(row, Mapping) and "objects" in row for row in frames))
-    )
-
-
 def load_fused_manifest(path: str | Path) -> dict[str, Any]:
-    """Load and identify either a legacy monolithic JSON or a v3 manifest."""
+    """Load a schema-v4 fused manifest; legacy artifacts are rejected."""
     source = Path(path).expanduser().resolve()
     manifest = _read_json(source)
     if not isinstance(manifest.get("frames"), list):
         raise ValueError(f"Incompatible fused schema: missing frames list ({_context('<unknown>', '<unknown>', source)})")
-    legacy = _is_legacy(manifest)
-    if not legacy:
-        if manifest.get("schema_version") != SUPPORTED_MANIFEST_SCHEMA_VERSION or not isinstance(manifest.get("generation_id"), str):
-            raise ValueError(
-                f"Incompatible fused schema version/generation {manifest.get('schema_version')!r}/"
-                f"{manifest.get('generation_id')!r} ({_context('<unknown>', '<unknown>', source)})"
-            )
-        required = {"frame_id", "fused_objects_json", "status"}
-        for entry in manifest["frames"]:
-            if not isinstance(entry, Mapping) or not required.issubset(entry):
-                frame_id = entry.get("frame_id", "<unknown>") if isinstance(entry, Mapping) else "<unknown>"
-                raise ValueError(f"Incompatible fused frame entry ({_context(frame_id, '<unknown>', source)})")
+    if manifest.get("schema_version") != SUPPORTED_MANIFEST_SCHEMA_VERSION or not isinstance(manifest.get("generation_id"), str):
+        raise ValueError(
+            f"Incompatible fused schema version/generation {manifest.get('schema_version')!r}/"
+            f"{manifest.get('generation_id')!r}; use a new output directory and rerun the pipeline "
+            f"({_context('<unknown>', '<unknown>', source)})"
+        )
+    required = {"frame_id", "fused_objects_json", "status"}
+    for entry in manifest["frames"]:
+        if not isinstance(entry, Mapping) or not required.issubset(entry):
+            frame_id = entry.get("frame_id", "<unknown>") if isinstance(entry, Mapping) else "<unknown>"
+            raise ValueError(f"Incompatible fused frame entry ({_context(frame_id, '<unknown>', source)})")
     manifest[_SOURCE_PATH] = str(source)
     return manifest
 
@@ -74,11 +62,6 @@ def _frames(manifest: Mapping[str, Any]) -> Iterable[dict[str, Any]]:
     if not source_value:
         raise ValueError("Fused manifest was not loaded by load_fused_manifest (frame ID=<unknown>, object ID=<unknown>, path=<unknown>)")
     source = Path(str(source_value))
-    if _is_legacy(manifest):
-        for frame in manifest["frames"]:
-            yield _attach_source(frame, source)
-        return
-
     generation_id = manifest["generation_id"]
     for entry in manifest["frames"]:
         if entry.get("status") != "complete":
@@ -97,11 +80,11 @@ def _frames(manifest: Mapping[str, Any]) -> Iterable[dict[str, Any]]:
                 or str(frame.get("frame_id")) != str(frame_id)
                 or not isinstance(frame.get("objects"), list)):
             raise ValueError(f"Incompatible fused frame schema or manifest identity ({_context(frame_id, '<unknown>', frame_path)})")
-        yield _attach_source(frame, source, ref)
+        yield _attach_source(frame, frame_path, ref)
 
 
 def iter_fused_frames(path: str | Path) -> Iterable[dict[str, Any]]:
-    """Yield frames from a legacy file or lightweight manifest in file order."""
+    """Yield schema-v4 frames from a lightweight manifest in file order."""
     yield from _frames(load_fused_manifest(path))
 
 
