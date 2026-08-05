@@ -9,8 +9,14 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from _legacy_bootstrap import ensure_src_path
 from fusion_types import Observation3D
 from mask_geometry import bbox_max_axis_size_ratio, mask_overlap_metrics
+
+
+ensure_src_path()
+
+from relevant_object.geometry.cloud import sampled_point_to_cloud_fraction
 
 
 def bbox_iou_3d(a: np.ndarray, b: np.ndarray) -> float:
@@ -95,16 +101,11 @@ def _point_to_cloud_fraction(
         return 0.0
     source_sample = source[:: max(1, len(source) // 512)][:512]
     target_sample = target[:: max(1, len(target) // 2048)][:2048]
-    threshold_sq = float(max_distance_m) ** 2
-    close = 0
-    for start in range(0, len(source_sample), 64):
-        chunk = source_sample[start : start + 64]
-        squared = np.sum(
-            (chunk[:, None, :] - target_sample[None, :, :]) ** 2,
-            axis=2,
-        )
-        close += int(np.sum(np.min(squared, axis=1) <= threshold_sq))
-    return float(close / len(source_sample))
+    return sampled_point_to_cloud_fraction(
+        source_sample,
+        target_sample,
+        max_distance_m,
+    )
 
 
 def _fragment_subset_metrics(

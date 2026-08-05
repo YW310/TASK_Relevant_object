@@ -1,0 +1,2003 @@
+[
+  {
+    "name": "PYTHON",
+    "line": 146,
+    "default_expression": "python",
+    "value_kind": "string",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates",
+      "comparison",
+      "decision",
+      "decision_visualization",
+      "fusion",
+      "fusion_visualization"
+    ],
+    "cli_flags": []
+  },
+  {
+    "name": "EPISODE_DIR",
+    "line": 148,
+    "default_expression": "",
+    "value_kind": "path_or_empty",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "candidates",
+      "decision_visualization",
+      "fusion",
+      "fusion_visualization"
+    ],
+    "cli_flags": [
+      "--episode-dir"
+    ]
+  },
+  {
+    "name": "SAM_MODEL_DIR",
+    "line": 149,
+    "default_expression": "",
+    "value_kind": "path_or_empty",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--sam-model-dir"
+    ]
+  },
+  {
+    "name": "OUTPUT_ROOT",
+    "line": 151,
+    "default_expression": "outputs",
+    "value_kind": "string",
+    "empty_semantics": "use declared default",
+    "used_by": [],
+    "cli_flags": []
+  },
+  {
+    "name": "OUTPUT_DIR",
+    "line": 152,
+    "default_expression": "",
+    "value_kind": "path_or_empty",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "candidates",
+      "comparison"
+    ],
+    "cli_flags": [
+      "--output-dir"
+    ]
+  },
+  {
+    "name": "MODEL_PATH",
+    "line": 153,
+    "default_expression": "",
+    "value_kind": "path_or_empty",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--model-path"
+    ]
+  },
+  {
+    "name": "INSTRUCTION",
+    "line": 154,
+    "default_expression": "",
+    "value_kind": "string",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--instruction"
+    ]
+  },
+  {
+    "name": "ROLE_SPEC_JSON",
+    "line": 155,
+    "default_expression": "",
+    "value_kind": "path_or_empty",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--role-spec-json"
+    ]
+  },
+  {
+    "name": "CAMERAS",
+    "line": 156,
+    "default_expression": "",
+    "value_kind": "string",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "candidates",
+      "decision_visualization",
+      "fusion",
+      "fusion_visualization"
+    ],
+    "cli_flags": [
+      "--cameras"
+    ]
+  },
+  {
+    "name": "FRAME_INTERVAL",
+    "line": 157,
+    "default_expression": "1",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--frame-interval"
+    ]
+  },
+  {
+    "name": "MAX_FRAMES",
+    "line": 158,
+    "default_expression": "",
+    "value_kind": "optional_number",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--max-frames"
+    ]
+  },
+  {
+    "name": "DEVICE",
+    "line": 159,
+    "default_expression": "cuda",
+    "value_kind": "string",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--device"
+    ]
+  },
+  {
+    "name": "USE_BF16",
+    "line": 160,
+    "default_expression": "0",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--no-bf16"
+    ]
+  },
+  {
+    "name": "THRESHOLD",
+    "line": 161,
+    "default_expression": "0.25",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--threshold"
+    ]
+  },
+  {
+    "name": "CAMERA_THRESHOLD_OVERRIDES",
+    "line": 162,
+    "default_expression": "",
+    "value_kind": "string",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--camera-threshold-overrides"
+    ]
+  },
+  {
+    "name": "INSTRUCTION_FILE",
+    "line": 163,
+    "default_expression": "",
+    "value_kind": "string",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--instruction-file"
+    ]
+  },
+  {
+    "name": "INSTRUCTION_INDEX",
+    "line": 164,
+    "default_expression": "0",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--instruction-index"
+    ]
+  },
+  {
+    "name": "START_FRAME",
+    "line": 165,
+    "default_expression": "0",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--start"
+    ]
+  },
+  {
+    "name": "END_FRAME",
+    "line": 166,
+    "default_expression": "",
+    "value_kind": "optional_number",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--end"
+    ]
+  },
+  {
+    "name": "ROLE_FRAME",
+    "line": 167,
+    "default_expression": "first",
+    "value_kind": "string",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--role-frame"
+    ]
+  },
+  {
+    "name": "GROUNDING_MIN_SIDE",
+    "line": 168,
+    "default_expression": "512",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--grounding-min-side"
+    ]
+  },
+  {
+    "name": "MAX_RETRIES",
+    "line": 169,
+    "default_expression": "1",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--max-retries"
+    ]
+  },
+  {
+    "name": "SAM_CHECKPOINT",
+    "line": 170,
+    "default_expression": "",
+    "value_kind": "path_or_empty",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--sam-checkpoint"
+    ]
+  },
+  {
+    "name": "COMPILE_MODEL",
+    "line": 171,
+    "default_expression": "0",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--compile"
+    ]
+  },
+  {
+    "name": "TOP_K_PER_ROLE",
+    "line": 172,
+    "default_expression": "8",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--top-k-per-role"
+    ]
+  },
+  {
+    "name": "CANDIDATE_POOL_SIZE",
+    "line": 173,
+    "default_expression": "20",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--candidate-pool-size"
+    ]
+  },
+  {
+    "name": "MIN_MASK_AREA",
+    "line": 174,
+    "default_expression": "4",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--min-mask-area"
+    ]
+  },
+  {
+    "name": "SPLIT_DISCONNECTED_MASKS",
+    "line": 175,
+    "default_expression": "1",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--no-split-disconnected-masks",
+      "--split-disconnected-masks"
+    ]
+  },
+  {
+    "name": "MAX_MASK_COMPONENTS",
+    "line": 176,
+    "default_expression": "4",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--max-mask-components"
+    ]
+  },
+  {
+    "name": "PROMPT_VARIANTS",
+    "line": 177,
+    "default_expression": "5",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--prompt-variants"
+    ]
+  },
+  {
+    "name": "MASK_NMS_IOU",
+    "line": 178,
+    "default_expression": "0.80",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--mask-nms-iou"
+    ]
+  },
+  {
+    "name": "CANONICAL_CONTAINMENT",
+    "line": 179,
+    "default_expression": "0.90",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--canonical-containment"
+    ]
+  },
+  {
+    "name": "CANONICAL_MAX_AREA_RATIO",
+    "line": 180,
+    "default_expression": "3.0",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--canonical-max-area-ratio"
+    ]
+  },
+  {
+    "name": "CANONICAL_BBOX_IOU",
+    "line": 181,
+    "default_expression": "0.0",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--canonical-bbox-iou"
+    ]
+  },
+  {
+    "name": "SUPPRESS_MULTI_INSTANCE_MASKS",
+    "line": 182,
+    "default_expression": "1",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--no-suppress-multi-instance-masks",
+      "--suppress-multi-instance-masks"
+    ]
+  },
+  {
+    "name": "CANDIDATE_MASK_ALPHA",
+    "line": 183,
+    "default_expression": "105",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--mask-alpha"
+    ]
+  },
+  {
+    "name": "SAVE_FRAME_CONTACT_SHEET",
+    "line": 184,
+    "default_expression": "1",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--no-save-frame-contact-sheet",
+      "--save-frame-contact-sheet"
+    ]
+  },
+  {
+    "name": "VISUALIZATION_CELL_WIDTH",
+    "line": 185,
+    "default_expression": "384",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--visualization-cell-width"
+    ]
+  },
+  {
+    "name": "CANDIDATE_RESUME",
+    "line": 186,
+    "default_expression": "1",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--resume"
+    ]
+  },
+  {
+    "name": "CANDIDATE_PROGRESS",
+    "line": 187,
+    "default_expression": "1",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--no-progress",
+      "--progress"
+    ]
+  },
+  {
+    "name": "CANDIDATE_DRY_RUN",
+    "line": 188,
+    "default_expression": "0",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--dry-run"
+    ]
+  },
+  {
+    "name": "CLUSTER_DISTANCE_M",
+    "line": 189,
+    "default_expression": "0.03",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--cluster-distance-m"
+    ]
+  },
+  {
+    "name": "SAME_CAMERA_NMS_MASK_IOU",
+    "line": 190,
+    "default_expression": "0.55",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--same-camera-nms-mask-iou"
+    ]
+  },
+  {
+    "name": "SAME_CAMERA_NMS_CONTAINMENT",
+    "line": 191,
+    "default_expression": "0.85",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--same-camera-nms-containment"
+    ]
+  },
+  {
+    "name": "SAME_CAMERA_NMS_CENTROID_DISTANCE_M",
+    "line": 192,
+    "default_expression": "0.03",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--same-camera-nms-centroid-distance-m"
+    ]
+  },
+  {
+    "name": "SAME_CAMERA_NMS_MAX_SIZE_RATIO",
+    "line": 193,
+    "default_expression": "2.5",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--same-camera-nms-max-size-ratio"
+    ]
+  },
+  {
+    "name": "SAME_CAMERA_NMS_FRAGMENT_MAX_POINT_RATIO",
+    "line": 194,
+    "default_expression": "0.45",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--same-camera-nms-fragment-max-point-ratio"
+    ]
+  },
+  {
+    "name": "SAME_CAMERA_NMS_FRAGMENT_MIN_BBOX_CONTAINMENT",
+    "line": 195,
+    "default_expression": "0.90",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--same-camera-nms-fragment-min-bbox-containment"
+    ]
+  },
+  {
+    "name": "SAME_CAMERA_NMS_FRAGMENT_CLOUD_DISTANCE_M",
+    "line": 196,
+    "default_expression": "0.018",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--same-camera-nms-fragment-cloud-distance-m"
+    ]
+  },
+  {
+    "name": "SAME_CAMERA_NMS_FRAGMENT_MIN_CLOUD_FRACTION",
+    "line": 197,
+    "default_expression": "0.65",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--same-camera-nms-fragment-min-cloud-fraction"
+    ]
+  },
+  {
+    "name": "MIN_FUSED_CAMERA_COUNT",
+    "line": 198,
+    "default_expression": "1",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--min-fused-camera-count"
+    ]
+  },
+  {
+    "name": "PREFERRED_CAMERA",
+    "line": 199,
+    "default_expression": "front",
+    "value_kind": "string",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--preferred-camera"
+    ]
+  },
+  {
+    "name": "PREFERRED_CAMERA_WEIGHT",
+    "line": 200,
+    "default_expression": "1.5",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--preferred-camera-weight"
+    ]
+  },
+  {
+    "name": "CAMERA_VISIBILITY_DEPTH_TOLERANCE_M",
+    "line": 201,
+    "default_expression": "0.03",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--camera-visibility-depth-tolerance-m"
+    ]
+  },
+  {
+    "name": "CAMERA_VISIBILITY_MIN_POINT_FRACTION",
+    "line": 202,
+    "default_expression": "0.05",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--camera-visibility-min-point-fraction"
+    ]
+  },
+  {
+    "name": "SINGLE_CAMERA_KEEP_SCORE",
+    "line": 203,
+    "default_expression": "0.0",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--single-camera-keep-score"
+    ]
+  },
+  {
+    "name": "LEGACY_CANONICAL_IOU",
+    "line": 204,
+    "default_expression": "0.35",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--legacy-canonical-iou"
+    ]
+  },
+  {
+    "name": "LEGACY_CANONICAL_CONTAINMENT",
+    "line": 205,
+    "default_expression": "0.50",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--legacy-canonical-containment"
+    ]
+  },
+  {
+    "name": "RLBENCH_LOW_DIM_OBS",
+    "line": 206,
+    "default_expression": "",
+    "value_kind": "path_or_empty",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "decision_visualization",
+      "fusion",
+      "fusion_visualization"
+    ],
+    "cli_flags": [
+      "--rlbench-low-dim-obs"
+    ]
+  },
+  {
+    "name": "DEPTH_SCALE",
+    "line": 207,
+    "default_expression": "1.0",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--depth-scale"
+    ]
+  },
+  {
+    "name": "DEPTH_MODE",
+    "line": 208,
+    "default_expression": "auto",
+    "value_kind": "string",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--depth-mode"
+    ]
+  },
+  {
+    "name": "MAX_POINTS_PER_CANDIDATE",
+    "line": 209,
+    "default_expression": "4096",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--max-points-per-candidate"
+    ]
+  },
+  {
+    "name": "MIN_CANDIDATE_MASK_AREA_PIXELS",
+    "line": 210,
+    "default_expression": "${MIN_MASK_AREA}",
+    "value_kind": "string",
+    "empty_semantics": "derived from another setting when empty",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--min-candidate-mask-area-pixels"
+    ]
+  },
+  {
+    "name": "BBOX_IOU_THRESHOLD",
+    "line": 211,
+    "default_expression": "0.0",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--bbox-iou-threshold"
+    ]
+  },
+  {
+    "name": "NEAREST_DISTANCE_M",
+    "line": 212,
+    "default_expression": "",
+    "value_kind": "optional_number",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--nearest-distance-m"
+    ]
+  },
+  {
+    "name": "MAX_HYPOTHESIS_DIAMETER_M",
+    "line": 213,
+    "default_expression": "0.50",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--max-hypothesis-diameter-m"
+    ]
+  },
+  {
+    "name": "MAX_SIZE_RATIO",
+    "line": 214,
+    "default_expression": "4.0",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--max-size-ratio"
+    ]
+  },
+  {
+    "name": "LEGACY_UNION_FIND",
+    "line": 215,
+    "default_expression": "0",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--legacy-union-find"
+    ]
+  },
+  {
+    "name": "TRACK_DISTANCE_M",
+    "line": 216,
+    "default_expression": "0.22",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--track-distance-m"
+    ]
+  },
+  {
+    "name": "TRACK_MAX_MISSED_FRAMES",
+    "line": 217,
+    "default_expression": "4",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--track-max-missed-frames"
+    ]
+  },
+  {
+    "name": "TRACK_MAX_SIZE_RATIO",
+    "line": 218,
+    "default_expression": "4.0",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--track-max-size-ratio"
+    ]
+  },
+  {
+    "name": "MIN_FUSED_POINTS",
+    "line": 219,
+    "default_expression": "0",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--min-fused-points"
+    ]
+  },
+  {
+    "name": "MIN_BBOX_DIAGONAL_M",
+    "line": 220,
+    "default_expression": "0.0",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--min-bbox-diagonal-m"
+    ]
+  },
+  {
+    "name": "MAX_CENTROID_TO_CLOUD_DISTANCE_M",
+    "line": 221,
+    "default_expression": "0.02",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--max-centroid-to-cloud-distance-m"
+    ]
+  },
+  {
+    "name": "COMPONENT_VOXEL_SIZE_M",
+    "line": 222,
+    "default_expression": "0.008",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--component-voxel-size-m"
+    ]
+  },
+  {
+    "name": "MIN_LARGEST_COMPONENT_RATIO",
+    "line": 223,
+    "default_expression": "0.75",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--min-largest-component-ratio"
+    ]
+  },
+  {
+    "name": "MAX_SECONDARY_COMPONENT_RATIO",
+    "line": 224,
+    "default_expression": "0.20",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--max-secondary-component-ratio"
+    ]
+  },
+  {
+    "name": "MIN_COMPONENT_CENTROID_GAP_M",
+    "line": 225,
+    "default_expression": "0.02",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--min-component-centroid-gap-m"
+    ]
+  },
+  {
+    "name": "MIN_COMPONENT_POINTS",
+    "line": 226,
+    "default_expression": "20",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": [
+      "--min-component-points"
+    ]
+  },
+  {
+    "name": "SAVE_OBJECT_SUMMARY",
+    "line": 227,
+    "default_expression": "0",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "comparison",
+      "fusion"
+    ],
+    "cli_flags": [
+      "--save-object-summary"
+    ]
+  },
+  {
+    "name": "OBJECT_SUMMARY_JSON",
+    "line": 228,
+    "default_expression": "",
+    "value_kind": "path_or_empty",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "comparison",
+      "decision",
+      "fusion"
+    ],
+    "cli_flags": [
+      "--object-summary-json"
+    ]
+  },
+  {
+    "name": "SKIP_DECISION",
+    "line": 229,
+    "default_expression": "1",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "comparison",
+      "decision",
+      "decision_visualization",
+      "fusion"
+    ],
+    "cli_flags": [
+      "--save-object-summary"
+    ]
+  },
+  {
+    "name": "DECISION_MODEL_PATH",
+    "line": 230,
+    "default_expression": "${MODEL_PATH:-}",
+    "value_kind": "path",
+    "empty_semantics": "derived from another setting when empty",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--model-path"
+    ]
+  },
+  {
+    "name": "DECISION_SCOPE",
+    "line": 231,
+    "default_expression": "all",
+    "value_kind": "string",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--decision-scope"
+    ]
+  },
+  {
+    "name": "DECISION_POLICY",
+    "line": 232,
+    "default_expression": "adaptive",
+    "value_kind": "string",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--decision-policy"
+    ]
+  },
+  {
+    "name": "DECISION_REFRESH_INTERVAL",
+    "line": 233,
+    "default_expression": "5",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--decision-refresh-interval"
+    ]
+  },
+  {
+    "name": "DECISION_MIN_PROPAGATION_CONFIDENCE",
+    "line": 234,
+    "default_expression": "0.70",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--decision-min-propagation-confidence"
+    ]
+  },
+  {
+    "name": "REFERENCE_SWITCH_CONFIRMATION_FRAMES",
+    "line": 235,
+    "default_expression": "2",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--reference-switch-confirmation-frames"
+    ]
+  },
+  {
+    "name": "DECISION_FRAME",
+    "line": 236,
+    "default_expression": "last",
+    "value_kind": "string",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--decision-frame"
+    ]
+  },
+  {
+    "name": "DECISION_FRAME_ID",
+    "line": 237,
+    "default_expression": "",
+    "value_kind": "string",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--decision-frame-id"
+    ]
+  },
+  {
+    "name": "DECISION_WINDOW_FRAMES",
+    "line": 238,
+    "default_expression": "3",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--decision-window-frames"
+    ]
+  },
+  {
+    "name": "USE_DECISION_HISTORY",
+    "line": 239,
+    "default_expression": "0",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--use-decision-history"
+    ]
+  },
+  {
+    "name": "DECISION_MAX_NEW_TOKENS",
+    "line": 240,
+    "default_expression": "384",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--max-new-tokens"
+    ]
+  },
+  {
+    "name": "DECISION_GROUNDING_MIN_SIDE",
+    "line": 241,
+    "default_expression": "512",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--grounding-min-side"
+    ]
+  },
+  {
+    "name": "DECISION_MAX_RETRIES",
+    "line": 242,
+    "default_expression": "0",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--max-retries"
+    ]
+  },
+  {
+    "name": "DECISION_DRY_RUN",
+    "line": 243,
+    "default_expression": "0",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--dry-run"
+    ]
+  },
+  {
+    "name": "DECISION_OUTPUT_JSON",
+    "line": 244,
+    "default_expression": "",
+    "value_kind": "path_or_empty",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "comparison",
+      "decision",
+      "decision_visualization"
+    ],
+    "cli_flags": [
+      "--object-predictions-json",
+      "--output-json"
+    ]
+  },
+  {
+    "name": "DECISION_ARTIFACTS_DIR",
+    "line": 245,
+    "default_expression": "",
+    "value_kind": "path_or_empty",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--decision-artifacts-dir"
+    ]
+  },
+  {
+    "name": "DECISION_VISUAL_MODE",
+    "line": 246,
+    "default_expression": "scene",
+    "value_kind": "string",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--decision-visual-mode"
+    ]
+  },
+  {
+    "name": "DECISION_SCENE_CAMERAS",
+    "line": 247,
+    "default_expression": "front,left_shoulder,right_shoulder",
+    "value_kind": "string",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--decision-scene-cameras"
+    ]
+  },
+  {
+    "name": "DECISION_SCENE_WINDOW_FRAMES",
+    "line": 248,
+    "default_expression": "2",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--decision-scene-window-frames"
+    ]
+  },
+  {
+    "name": "MAX_CANDIDATE_IMAGES",
+    "line": 249,
+    "default_expression": "3",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--max-candidate-images"
+    ]
+  },
+  {
+    "name": "CANDIDATE_VIEWS_PER_OBJECT",
+    "line": 250,
+    "default_expression": "1",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--candidate-views-per-object"
+    ]
+  },
+  {
+    "name": "DECISION_MAX_VISUAL_PIXELS",
+    "line": 251,
+    "default_expression": "393216",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--decision-max-visual-pixels"
+    ]
+  },
+  {
+    "name": "DECISION_ATTENTION_BACKEND",
+    "line": 252,
+    "default_expression": "auto",
+    "value_kind": "string",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--attention-backend"
+    ]
+  },
+  {
+    "name": "MAX_CANDIDATES_FOR_DECISION",
+    "line": 253,
+    "default_expression": "12",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--max-candidates-for-decision"
+    ]
+  },
+  {
+    "name": "MIN_CANDIDATE_POINT_COUNT",
+    "line": 254,
+    "default_expression": "0",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--min-candidate-point-count"
+    ]
+  },
+  {
+    "name": "MIN_CANDIDATE_CAMERA_COUNT",
+    "line": 255,
+    "default_expression": "1",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--min-candidate-camera-count"
+    ]
+  },
+  {
+    "name": "MIN_CANDIDATE_SAM_SCORE",
+    "line": 256,
+    "default_expression": "0.0",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--min-candidate-sam-score"
+    ]
+  },
+  {
+    "name": "MAX_EE_DISTANCE_M",
+    "line": 257,
+    "default_expression": "",
+    "value_kind": "optional_number",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--max-ee-distance-m"
+    ]
+  },
+  {
+    "name": "DYNAMIC_ROLE_REASONING",
+    "line": 258,
+    "default_expression": "1",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--no-dynamic-role-reasoning"
+    ]
+  },
+  {
+    "name": "GRASP_DISTANCE_M",
+    "line": 259,
+    "default_expression": "0.06",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--grasp-distance-m"
+    ]
+  },
+  {
+    "name": "GRIPPER_CLOSED_THRESHOLD",
+    "line": 260,
+    "default_expression": "0.5",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--gripper-closed-threshold"
+    ]
+  },
+  {
+    "name": "OBJECT_MOVING_DISTANCE_M",
+    "line": 261,
+    "default_expression": "0.01",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--object-moving-distance-m"
+    ]
+  },
+  {
+    "name": "OBJECT_STABLE_DISTANCE_M",
+    "line": 262,
+    "default_expression": "0.008",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--object-stable-distance-m"
+    ]
+  },
+  {
+    "name": "PLACEMENT_STABLE_FRAMES",
+    "line": 263,
+    "default_expression": "2",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--placement-stable-frames"
+    ]
+  },
+  {
+    "name": "MIN_SUPPORT_XY_OVERLAP",
+    "line": 264,
+    "default_expression": "0.35",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--min-support-xy-overlap"
+    ]
+  },
+  {
+    "name": "MIN_SUPPORT_VERTICAL_GAP_M",
+    "line": 265,
+    "default_expression": "-0.01",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--min-support-vertical-gap-m"
+    ]
+  },
+  {
+    "name": "MAX_SUPPORT_VERTICAL_GAP_M",
+    "line": 266,
+    "default_expression": "0.025",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--max-support-vertical-gap-m"
+    ]
+  },
+  {
+    "name": "MIN_CONTAINMENT_RATIO",
+    "line": 267,
+    "default_expression": "0.5",
+    "value_kind": "number",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision"
+    ],
+    "cli_flags": [
+      "--min-containment-ratio"
+    ]
+  },
+  {
+    "name": "SKIP_DECISION_VIZ",
+    "line": 268,
+    "default_expression": "0",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "comparison",
+      "decision_visualization"
+    ],
+    "cli_flags": []
+  },
+  {
+    "name": "DECISION_VIZ_OUTPUT_DIR",
+    "line": 269,
+    "default_expression": "",
+    "value_kind": "path_or_empty",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "comparison",
+      "decision_visualization"
+    ],
+    "cli_flags": [
+      "--output-dir"
+    ]
+  },
+  {
+    "name": "SKIP_STAGE_COMPARE",
+    "line": 270,
+    "default_expression": "1",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "comparison"
+    ],
+    "cli_flags": []
+  },
+  {
+    "name": "STAGE_COMPARE_OUTPUT_DIR",
+    "line": 271,
+    "default_expression": "",
+    "value_kind": "path_or_empty",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "comparison"
+    ],
+    "cli_flags": [
+      "--output-dir"
+    ]
+  },
+  {
+    "name": "CAMERA_PARAMS_JSON",
+    "line": 272,
+    "default_expression": "",
+    "value_kind": "path_or_empty",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "decision_visualization",
+      "fusion",
+      "fusion_visualization"
+    ],
+    "cli_flags": [
+      "--camera-params-json"
+    ]
+  },
+  {
+    "name": "INVERT_RLBENCH_EXTRINSICS",
+    "line": 273,
+    "default_expression": "0",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision_visualization",
+      "fusion",
+      "fusion_visualization"
+    ],
+    "cli_flags": [
+      "--invert-rlbench-extrinsics"
+    ]
+  },
+  {
+    "name": "SKIP_CANDIDATES",
+    "line": 274,
+    "default_expression": "0",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": []
+  },
+  {
+    "name": "SKIP_FUSION",
+    "line": 275,
+    "default_expression": "0",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion"
+    ],
+    "cli_flags": []
+  },
+  {
+    "name": "SKIP_VIZ",
+    "line": 276,
+    "default_expression": "0",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion_visualization"
+    ],
+    "cli_flags": []
+  },
+  {
+    "name": "VIZ_FRAME_IDS",
+    "line": 277,
+    "default_expression": "",
+    "value_kind": "string",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "fusion_visualization"
+    ],
+    "cli_flags": [
+      "--frame-ids"
+    ]
+  },
+  {
+    "name": "VIZ_POINT_STRIDE",
+    "line": 278,
+    "default_expression": "4",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion_visualization"
+    ],
+    "cli_flags": [
+      "--point-stride"
+    ]
+  },
+  {
+    "name": "VIZ_POINT_RADIUS",
+    "line": 279,
+    "default_expression": "2",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion_visualization"
+    ],
+    "cli_flags": [
+      "--point-radius"
+    ]
+  },
+  {
+    "name": "VIZ_MASK_ALPHA",
+    "line": 280,
+    "default_expression": "80",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion_visualization"
+    ],
+    "cli_flags": [
+      "--mask-alpha"
+    ]
+  },
+  {
+    "name": "VIZ_MAX_FRAMES",
+    "line": 281,
+    "default_expression": "",
+    "value_kind": "optional_number",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "fusion_visualization"
+    ],
+    "cli_flags": [
+      "--max-frames"
+    ]
+  },
+  {
+    "name": "VIZ_SKIP_POINTCLOUD",
+    "line": 282,
+    "default_expression": "0",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion_visualization"
+    ],
+    "cli_flags": [
+      "--skip-pointcloud"
+    ]
+  },
+  {
+    "name": "VIZ_MONTAGE_COLUMNS",
+    "line": 283,
+    "default_expression": "2",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion_visualization"
+    ],
+    "cli_flags": [
+      "--montage-columns"
+    ]
+  },
+  {
+    "name": "VIZ_MONTAGE_CELL_WIDTH",
+    "line": 284,
+    "default_expression": "512",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion_visualization"
+    ],
+    "cli_flags": [
+      "--montage-cell-width"
+    ]
+  },
+  {
+    "name": "VIZ_HIDE_SUSPECTED_FRAGMENTS",
+    "line": 285,
+    "default_expression": "0",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "fusion_visualization"
+    ],
+    "cli_flags": [
+      "--hide-suspected-fragments"
+    ]
+  },
+  {
+    "name": "DECISION_VIZ_POINT_STRIDE",
+    "line": 286,
+    "default_expression": "4",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision_visualization"
+    ],
+    "cli_flags": [
+      "--point-stride"
+    ]
+  },
+  {
+    "name": "DECISION_VIZ_POINT_RADIUS",
+    "line": 287,
+    "default_expression": "2",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision_visualization"
+    ],
+    "cli_flags": [
+      "--point-radius"
+    ]
+  },
+  {
+    "name": "DECISION_VIZ_MASK_ALPHA",
+    "line": 288,
+    "default_expression": "90",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision_visualization"
+    ],
+    "cli_flags": [
+      "--mask-alpha"
+    ]
+  },
+  {
+    "name": "DECISION_VIZ_BOX_WIDTH",
+    "line": 289,
+    "default_expression": "1",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision_visualization"
+    ],
+    "cli_flags": [
+      "--box-width"
+    ]
+  },
+  {
+    "name": "DECISION_VIZ_ANNOTATION_ALPHA",
+    "line": 290,
+    "default_expression": "150",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision_visualization"
+    ],
+    "cli_flags": [
+      "--annotation-alpha"
+    ]
+  },
+  {
+    "name": "DECISION_VIZ_HIDE_SUSPECTED_FRAGMENTS",
+    "line": 291,
+    "default_expression": "0",
+    "value_kind": "boolean_0_or_1",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "decision_visualization"
+    ],
+    "cli_flags": [
+      "--hide-suspected-fragments"
+    ]
+  },
+  {
+    "name": "STAGE1_CANDIDATES_JSON",
+    "line": 292,
+    "default_expression": "",
+    "value_kind": "path_or_empty",
+    "empty_semantics": "optional value; related CLI flag is omitted when empty",
+    "used_by": [
+      "comparison"
+    ],
+    "cli_flags": [
+      "--stage1-candidates-json"
+    ]
+  },
+  {
+    "name": "STAGE_COMPARE_PANEL_GAP",
+    "line": 293,
+    "default_expression": "8",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "comparison"
+    ],
+    "cli_flags": [
+      "--panel-gap"
+    ]
+  },
+  {
+    "name": "STAGE_COMPARE_LABEL_HEIGHT",
+    "line": 294,
+    "default_expression": "26",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "comparison"
+    ],
+    "cli_flags": [
+      "--label-height"
+    ]
+  },
+  {
+    "name": "STAGE_COMPARE_SUMMARY_WIDTH",
+    "line": 295,
+    "default_expression": "360",
+    "value_kind": "integer",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "comparison"
+    ],
+    "cli_flags": [
+      "--summary-width"
+    ]
+  },
+  {
+    "name": "STAGE_COMPARE_BACKGROUND",
+    "line": 296,
+    "default_expression": "white",
+    "value_kind": "string",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "comparison"
+    ],
+    "cli_flags": [
+      "--background"
+    ]
+  },
+  {
+    "name": "CANDIDATES_JSON",
+    "line": 312,
+    "default_expression": "${OUTPUT_DIR}/episode_candidates.json",
+    "value_kind": "path",
+    "empty_semantics": "derived from another setting when empty",
+    "used_by": [
+      "comparison",
+      "fusion"
+    ],
+    "cli_flags": [
+      "--candidates-json"
+    ]
+  },
+  {
+    "name": "FUSED_JSON",
+    "line": 313,
+    "default_expression": "${OUTPUT_DIR}/frame_fused_candidates.json",
+    "value_kind": "path",
+    "empty_semantics": "derived from another setting when empty",
+    "used_by": [
+      "comparison",
+      "decision_visualization",
+      "fusion",
+      "fusion_visualization"
+    ],
+    "cli_flags": [
+      "--fused-json",
+      "--output-json"
+    ]
+  },
+  {
+    "name": "VIZ_DIR",
+    "line": 314,
+    "default_expression": "${OUTPUT_DIR}/viz",
+    "value_kind": "path",
+    "empty_semantics": "derived from another setting when empty",
+    "used_by": [
+      "comparison",
+      "decision_visualization",
+      "fusion_visualization"
+    ],
+    "cli_flags": [
+      "--output-dir",
+      "--viz-dir"
+    ]
+  }
+]

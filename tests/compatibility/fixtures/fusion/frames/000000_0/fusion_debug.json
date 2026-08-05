@@ -1,0 +1,13 @@
+{
+  "schema_version": 3,
+  "artifact_type": "frame_fusion_debug",
+  "generation_id": "00000000-0000-4000-8000-000000000001",
+  "frame_id": "0",
+  "frame_index": 0,
+  "source_fused_objects_json": "fused_objects.json",
+  "candidate_lifecycle": [],
+  "diagnostics": {
+    "tracking_state": {"next_object_index": 2, "tracks": []}
+  }
+}
+

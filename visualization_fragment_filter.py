@@ -15,7 +15,13 @@ from typing import Any, Callable
 
 import numpy as np
 
+from _legacy_bootstrap import ensure_src_path
 from fused_candidate_io import load_object_points
+
+
+ensure_src_path()
+
+from relevant_object.geometry.cloud import sampled_point_to_cloud_fraction
 
 
 @dataclass(frozen=True)
@@ -119,13 +125,7 @@ def _point_to_cloud_fraction(
     receiver = _sample_points(np.asarray(receiver_points, dtype=np.float64), 2048)
     if donor.ndim != 2 or receiver.ndim != 2 or not len(donor) or not len(receiver):
         return 0.0
-    threshold_sq = float(max_distance_m) ** 2
-    close_count = 0
-    for start in range(0, len(donor), 64):
-        chunk = donor[start : start + 64]
-        squared = np.sum((chunk[:, None, :] - receiver[None, :, :]) ** 2, axis=2)
-        close_count += int(np.sum(np.min(squared, axis=1) <= threshold_sq))
-    return float(close_count / len(donor))
+    return sampled_point_to_cloud_fraction(donor, receiver, max_distance_m)
 
 
 def _frame_fragment_evidence(

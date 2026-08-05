@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "artifact_type": "episode_candidates",
+  "summary": {"frame_count": 1, "candidate_count": 1},
+  "units": {"bbox": "pixels"},
+  "episode_dir": "/fixtures/episode0",
+  "instruction": "pick up the red block",
+  "role_spec": {
+    "target": "red block",
+    "reference": null,
+    "interaction_part": null
+  },
+  "camera_names": ["front"],
+  "frames": [
+    {
+      "frame_id": "0",
+      "frame_index": 0,
+      "camera_names": ["front"],
+      "candidate_count": 1
+    }
+  ]
+}
+

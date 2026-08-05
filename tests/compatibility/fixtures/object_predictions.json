@@ -1,0 +1,26 @@
+{
+  "schema_version": 3,
+  "artifact_type": "object_role_predictions",
+  "storage_layout": "compact_v1",
+  "generation_id": "00000000-0000-4000-8000-000000000001",
+  "summary": {"frame_count": 1, "decision_count": 1},
+  "performance": {},
+  "frame_decisions": [
+    {
+      "frame_id": "0",
+      "decision": {
+        "target_object_id": "O1",
+        "reference_object_id": null,
+        "confidence": 0.9,
+        "uncertain": false
+      }
+    }
+  ],
+  "decision": {
+    "target_object_id": "O1",
+    "reference_object_id": null,
+    "confidence": 0.9,
+    "uncertain": false
+  }
+}
+

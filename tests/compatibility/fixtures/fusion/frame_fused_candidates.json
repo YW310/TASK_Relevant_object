@@ -1,0 +1,25 @@
+{
+  "schema_version": 3,
+  "artifact_type": "fused_episode_manifest",
+  "generation_id": "00000000-0000-4000-8000-000000000001",
+  "coordinate_frame": "world",
+  "units": {"distance": "meters"},
+  "summary": {"frame_count": 1, "object_count": 1},
+  "episode_metadata": {
+    "episode_dir": "/fixtures/episode0",
+    "camera_names": ["front"]
+  },
+  "frames": [
+    {
+      "frame_id": "0",
+      "frame_index": 0,
+      "fused_objects_json": "frames/000000_0/fused_objects.json",
+      "fusion_debug_json": "frames/000000_0/fusion_debug.json",
+      "status": "complete",
+      "object_count": 1,
+      "candidate_count": 1,
+      "dropped_candidate_count": 0
+    }
+  ]
+}
+

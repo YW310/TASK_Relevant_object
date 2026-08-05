@@ -1,23 +1,11 @@
-"""Shared data types for multi-view candidate fusion."""
+"""Compatibility exports for legacy imports; use relevant_object.domain."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Any, Mapping
-
-import numpy as np
+from _legacy_bootstrap import ensure_src_path
 
 
-ROLE_NAMES = ("target", "reference", "interaction_part")
+ensure_src_path()
+
+from relevant_object.domain.models import ROLE_NAMES, Observation3D
 
 
-@dataclass
-class Observation3D:
-    observation_id: str
-    role_evidence: Mapping[str, float]
-    provenance: Mapping[str, Any]
-    camera: str
-    candidate: Mapping[str, Any]
-    points_world: np.ndarray
-    centroid_world: np.ndarray
-    bbox3d_world: np.ndarray
+__all__ = ["ROLE_NAMES", "Observation3D"]

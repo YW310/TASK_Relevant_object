@@ -1,0 +1,44 @@
+{
+  "schema_version": 3,
+  "artifact_type": "frame_fused_objects",
+  "generation_id": "00000000-0000-4000-8000-000000000001",
+  "coordinate_frame": "world",
+  "units": {"distance": "meters"},
+  "frame_id": "0",
+  "frame_index": 0,
+  "summary": {"object_count": 1},
+  "objects": [
+    {
+      "id": "O1",
+      "centroid_world": [0.005, 0.0, 1.0],
+      "bbox3d_world": [[0.0, 0.0, 1.0], [0.01, 0.0, 1.0]],
+      "point_count": 2,
+      "geometry_path": "fused_geometry.npz",
+      "points_key": "O1/points_world",
+      "visible_camera": ["front"],
+      "role_evidence": {
+        "target": 0.9,
+        "reference": 0.0,
+        "interaction_part": 0.0
+      },
+      "observations": [
+        {
+          "observation_id": "0:front:C1",
+          "camera": "front",
+          "candidate_id": "C1",
+          "point_count": 2
+        }
+      ]
+    }
+  ],
+  "candidate_outcomes": [
+    {
+      "camera": "front",
+      "candidate_id": "C1",
+      "status": "fused",
+      "object_id": "O1"
+    }
+  ],
+  "diagnostics_ref": "fusion_debug.json"
+}
+

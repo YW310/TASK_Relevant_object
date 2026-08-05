@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "relevant-object-grounding"
+version = "0.1.0"
+description = "Task-relevant object grounding for robot manipulation episodes"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "Pillow",
+  "torch",
+  "matplotlib",
+  "PyYAML>=6",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+relevant-object = "relevant_object.cli.pipeline:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+
