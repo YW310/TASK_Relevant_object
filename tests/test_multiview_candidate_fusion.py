@@ -18,6 +18,7 @@ from multiview_candidate_fusion import (
     filter_clusters_by_camera_support,
     filter_small_clusters,
     frame_index_from_frame,
+    save_frame_geometry,
     split_fused_frame_artifacts,
     suppress_same_camera_duplicates,
     validate_semantic_candidates,
@@ -27,6 +28,35 @@ from multiview_candidate_fusion import (
 
 
 class CompactFusionArtifactTest(unittest.TestCase):
+    def test_geometry_reference_is_relative_to_frame_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            output_path = Path(temporary_dir) / "frame_fused_candidates.json"
+            frame = {
+                "schema_version": 4,
+                "generation_id": "generation",
+                "frame_id": "0",
+                "frame_index": 0,
+                "objects": [{
+                    "id": "O1",
+                    "_points_world": np.zeros((2, 3), dtype=np.float32),
+                    "observations": [{
+                        "camera": "front",
+                        "candidate_id": "C1",
+                        "_points_world": np.zeros((1, 3), dtype=np.float32),
+                    }],
+                }],
+            }
+            save_frame_geometry(frame, output_path)
+            geometry_path = (
+                output_path.parent / "frames" / "000000_0" / "fused_geometry.npz"
+            )
+            self.assertTrue(geometry_path.is_file())
+            self.assertEqual("fused_geometry.npz", frame["objects"][0]["geometry_path"])
+            self.assertEqual(
+                "fused_geometry.npz",
+                frame["objects"][0]["observations"][0]["geometry_path"],
+            )
+
     def test_verbose_lifecycle_and_tracking_move_to_debug_artifact(self) -> None:
         frame = {
             "schema_version": 4,

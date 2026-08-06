@@ -33,6 +33,40 @@ def test_candidate_fixture_keeps_the_stage_one_schema() -> None:
     assert artifact["artifact_type"] == "episode_candidates"
 
 
+def test_manifest_relative_geometry_from_early_schema_v4_is_still_readable(tmp_path) -> None:
+    frame_dir = tmp_path / "frames" / "000000_0"
+    frame_dir.mkdir(parents=True)
+    generation_id = "generation"
+    np.savez_compressed(
+        frame_dir / "fused_geometry.npz",
+        **{"O1/points_world": np.asarray([[1.0, 2.0, 3.0]], dtype=np.float32)},
+    )
+    (frame_dir / "fused_objects.json").write_text(json.dumps({
+        "schema_version": 4,
+        "generation_id": generation_id,
+        "frame_id": "0",
+        "objects": [{
+            "id": "O1",
+            "geometry_path": "frames/000000_0/fused_geometry.npz",
+            "points_key": "O1/points_world",
+            "point_count": 1,
+        }],
+    }), encoding="utf-8")
+    manifest_path = tmp_path / "frame_fused_candidates.json"
+    manifest_path.write_text(json.dumps({
+        "schema_version": 4,
+        "generation_id": generation_id,
+        "frames": [{
+            "frame_id": "0",
+            "status": "complete",
+            "fused_objects_json": "frames/000000_0/fused_objects.json",
+        }],
+    }), encoding="utf-8")
+
+    frame = load_fused_frame(load_fused_manifest(manifest_path), "0")
+    np.testing.assert_allclose(load_object_points(frame, "O1"), [[1.0, 2.0, 3.0]])
+
+
 @pytest.mark.parametrize("legacy_version", [1, 2, 3])
 def test_legacy_fused_manifests_are_explicitly_rejected(tmp_path, legacy_version) -> None:
     path = tmp_path / "frame_fused_candidates.json"

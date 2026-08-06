@@ -1539,6 +1539,7 @@ def save_frame_geometry(frame: Mapping[str, Any], output_path: Path) -> None:
     """Move transient point arrays from a fused frame into a compressed NPZ."""
     frame_key = _frame_artifact_key(frame.get("frame_id", "frame"), frame.get("frame_index", "unknown"))
     relative_path = Path("frames") / frame_key / "fused_geometry.npz"
+    geometry_ref = Path("fused_geometry.npz")
     archive_path = output_path.parent / relative_path
     # Keep identity metadata inside the archive itself.  This makes the NPZ a
     # self-describing artifact rather than an unversioned bag of arrays, and
@@ -1555,7 +1556,7 @@ def save_frame_geometry(frame: Mapping[str, Any], output_path: Path) -> None:
         points = np.asarray(obj.pop("_points_world"), dtype=np.float32)
         arrays[object_key] = points
         obj.update({
-            "geometry_path": relative_path.as_posix(),
+            "geometry_path": geometry_ref.as_posix(),
             "points_key": object_key,
             "point_count": int(len(points)),
         })
@@ -1574,7 +1575,7 @@ def save_frame_geometry(frame: Mapping[str, Any], output_path: Path) -> None:
             obs_points = np.asarray(obs.pop("_points_world"), dtype=np.float32)
             arrays[points_key] = obs_points
             obs.update({
-                "geometry_path": relative_path.as_posix(),
+                "geometry_path": geometry_ref.as_posix(),
                 "points_key": points_key,
                 "point_count": int(len(obs_points)),
             })

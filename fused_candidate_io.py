@@ -12,6 +12,7 @@ import numpy as np
 
 SUPPORTED_MANIFEST_SCHEMA_VERSION = 4
 _SOURCE_PATH = "_fused_source_path"
+_MANIFEST_ROOT_PATH = "_fused_manifest_root_path"
 
 
 def _context(frame_id: Any, object_id: Any, path: Path) -> str:
@@ -49,9 +50,16 @@ def load_fused_manifest(path: str | Path) -> dict[str, Any]:
     return manifest
 
 
-def _attach_source(frame: Mapping[str, Any], source: Path, frame_ref: str | None = None) -> dict[str, Any]:
+def _attach_source(
+    frame: Mapping[str, Any],
+    source: Path,
+    frame_ref: str | None = None,
+    manifest_root: Path | None = None,
+) -> dict[str, Any]:
     result = dict(frame)
     result[_SOURCE_PATH] = str(source)
+    if manifest_root is not None:
+        result[_MANIFEST_ROOT_PATH] = str(manifest_root)
     if frame_ref is not None:
         result["frame_ref"] = frame_ref
     return result
@@ -80,7 +88,7 @@ def _frames(manifest: Mapping[str, Any]) -> Iterable[dict[str, Any]]:
                 or str(frame.get("frame_id")) != str(frame_id)
                 or not isinstance(frame.get("objects"), list)):
             raise ValueError(f"Incompatible fused frame schema or manifest identity ({_context(frame_id, '<unknown>', frame_path)})")
-        yield _attach_source(frame, frame_path, ref)
+        yield _attach_source(frame, frame_path, ref, source.parent)
 
 
 def iter_fused_frames(path: str | Path) -> Iterable[dict[str, Any]]:
@@ -118,6 +126,17 @@ def load_object_points(frame: Mapping[str, Any], object_id: str | int) -> np.nda
         if not geometry_path.is_absolute():
             geometry_path = source.parent / geometry_path
         geometry_path = geometry_path.resolve()
+        # Early schema-v4 writers stored paths relative to the manifest even
+        # though the documented/read convention is relative to the frame JSON.
+        # Accept those already-generated artifacts while new writers emit the
+        # unambiguous frame-local reference.
+        if not geometry_path.is_file() and frame.get(_MANIFEST_ROOT_PATH):
+            legacy_path = (
+                Path(str(frame[_MANIFEST_ROOT_PATH]))
+                / Path(str(geometry_ref)).expanduser()
+            ).resolve()
+            if legacy_path.is_file():
+                geometry_path = legacy_path
         try:
             with np.load(geometry_path, allow_pickle=False) as archive:
                 if str(points_key) not in archive.files:
