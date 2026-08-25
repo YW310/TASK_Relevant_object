@@ -1,6 +1,6 @@
 # Qwen role spec + SAM3 episode candidates
 
-`qwen_role_sam3_candidate_episode.py` is an episode-level entrypoint for RLBench/RLBench-exported episode folders. It expects the common RLBench saved-image convention (`front_rgb`, `left_shoulder_rgb`, `right_shoulder_rgb`, optionally `wrist_rgb` / `overhead_rgb`) and resolves the task language from standard RLBench variation description files when `--instruction` is not supplied. It first resolves bbox-free semantic roles with Qwen3-VL, then runs SAM3 text prompts on every selected frame and camera to generate segmentation candidates.
+`qwen_role_sam3_candidate_episode.py` is an episode-level entrypoint for RLBench exports and OSC HDF5 trajectories. RLBench uses camera RGB folders; OSC uses `hdf5/*.hdf5` with `observations/<CAMERA>_rgb`. Task language is discovered from episode metadata or the OSC `task_instruction` dataset when `--instruction` is not supplied. The script first resolves bbox-free semantic roles with Qwen3-VL, then runs SAM3 text prompts on every selected frame and camera to generate segmentation candidates.
 
 ## End-to-end pipeline summary (run_full_pipeline.sh)
 
@@ -10,7 +10,7 @@ Use [run_full_pipeline.sh](run_full_pipeline.sh) when you want one command for t
 
 1. Stage 1 (Qwen role spec + SAM3 candidates)
 - Script: [qwen_role_sam3_candidate_episode.py](qwen_role_sam3_candidate_episode.py)
-- Input: RLBench episode directory with RGB folders and task instruction.
+- Input: RLBench RGB folders or an OSC `hdf5/*.hdf5` trajectory with task instruction.
 - Output: role_spec.json, raw_role_spec_output.json, episode_candidates.json, and per-frame/per-camera candidate artifacts.
 
 2. Stage 2 (multi-view 3D fusion)
@@ -47,10 +47,29 @@ Use [run_full_pipeline.sh](run_full_pipeline.sh) when you want one command for t
 ### Default execution behavior
 
 - By default, Stages 1-3 run and Stage 4 is skipped.
+- OSC HDF5 input defaults to Stage 1 only (`OSC_RECOGNITION_ONLY=auto`).
 - If SKIP_DECISION=0, Stage 4 runs and Stage 2 automatically exports object_summary.json.
 - Stage 4 defaults to DECISION_SCOPE=all; use DECISION_SCOPE=single for the legacy one-frame debug behavior.
 
 ### Typical command
+
+OSC HDF5 episodes are also accepted for the Qwen3 + SAM3 recognition stage:
+
+```bash
+EPISODE_DIR=/path/to/disassemble_left_0 \
+SAM_MODEL_DIR=/common-data-32t/.cache/facebook/sam3 \
+MODEL_PATH=/new-common-data/new-common-data/huggingface/Qwen3-VL-8B-Instruct \
+FRAME_INTERVAL=10 \
+./run_full_pipeline.sh
+```
+
+The adapter discovers `hdf5/*.hdf5`, reads `task_instruction`, and selects every
+available `observations/<CAMERA>_rgb` dataset. RGB frames are extracted lazily to
+the system temporary cache, so sampling does not unpack the complete trajectory.
+Set `CAMERAS=GLOBAL_LEFT,GLOBAL_RIGHT,WRIST` to restrict the views. OSC input
+defaults to Stage 1 only because its depth scale and camera-pose convention must
+be calibrated before 3D fusion; set `OSC_RECOGNITION_ONLY=0` only after configuring
+those later stages.
 
 ```bash
 EPISODE_DIR=/path/to/rlbench/.../episode0 \

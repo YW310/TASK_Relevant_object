@@ -32,6 +32,12 @@ import torch
 from PIL import Image, ImageDraw
 
 from common_io import atomic_json_dump, natural_sort_key, parse_csv
+from osc_dataset import (
+    available_osc_cameras,
+    collect_osc_camera_frames,
+    is_osc_episode,
+    osc_instruction,
+)
 from visualization_utils import load_font
 
 try:
@@ -667,6 +673,7 @@ def normalize_instruction_candidates(value: Any) -> list[str]:
 
     if isinstance(value, Mapping):
         preferred_keys = (
+            'task_instruction',
             "instruction",
             "instructions",
             "description",
@@ -782,9 +789,19 @@ def discover_instruction(
         return instructions[index], str(path)
 
     details = "\n".join(errors)
+    if instruction_file is None:
+        osc_text = osc_instruction(episode_dir)
+        if osc_text:
+            if instruction_index not in (0, -1):
+                raise IndexError(
+                    f'--instruction-index={instruction_index} is invalid for the single '
+                    'OSC task_instruction stored in HDF5.'
+                )
+            return osc_text, 'OSC metadata/HDF5 task_instruction'
+
     raise FileNotFoundError(
-        "Could not determine the RLBench instruction. Supply --instruction or "
-        "--instruction-file. Checked common variation_descriptions/instruction files."
+        "Could not determine the episode instruction. Supply --instruction or "
+        "--instruction-file. Checked RLBench description files and OSC metadata/HDF5."
         + (f"\nDetails:\n{details}" if details else "")
     )
 
@@ -792,8 +809,10 @@ def discover_instruction(
 def collect_camera_frames(
     episode_dir: str | Path,
     camera_names: Sequence[str],
-) -> tuple[list[str], dict[str, dict[str, Path]]]:
+) -> tuple[list[str], dict[str, Mapping[str, Path]]]:
     episode_dir = Path(episode_dir)
+    if is_osc_episode(episode_dir):
+        return collect_osc_camera_frames(episode_dir, tuple(camera_names))
     camera_frames: dict[str, dict[str, Path]] = {}
 
     for camera_name in camera_names:
@@ -1808,8 +1827,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cameras",
         type=parse_csv,
-        default=DEFAULT_CAMERAS,
-        help="Comma-separated camera names; directories must be NAME_rgb.",
+        default=None,
+        help="Comma-separated camera names; RLBench uses NAME_rgb directories and OSC uses observations/NAME_rgb datasets.",
     )
     parser.add_argument(
         "--roles",
@@ -1899,6 +1918,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.cameras is None:
+        args.cameras = (
+            available_osc_cameras(args.episode_dir)
+            if is_osc_episode(args.episode_dir)
+            else DEFAULT_CAMERAS
+        )
+        if not args.cameras:
+            raise ValueError(
+                'OSC episode does not contain observations/<CAMERA>_rgb datasets.'
+            )
 
     allowed_roles = {"target", "reference", "interaction_part"}
     invalid_roles = set(args.roles) - allowed_roles

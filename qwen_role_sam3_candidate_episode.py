@@ -24,6 +24,7 @@ import torch
 from PIL import Image, ImageDraw, ImageOps
 
 from common_io import atomic_json_dump, parse_csv
+from osc_dataset import available_osc_cameras, is_osc_episode
 from mask_geometry import (
     bbox_iou_2d,
     mask_bbox,
@@ -77,8 +78,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cameras",
         type=parse_csv,
-        default=DEFAULT_CAMERAS,
-        help="Comma-separated camera names; directories must be NAME_rgb.",
+        default=None,
+        help="Comma-separated camera names; RLBench uses NAME_rgb directories and OSC uses observations/NAME_rgb datasets.",
     )
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--end", type=int, default=None)
@@ -954,6 +955,16 @@ def main() -> None:
     args = build_parser().parse_args()
 
     episode_dir = Path(args.episode_dir).expanduser().resolve()
+    if args.cameras is None:
+        args.cameras = (
+            available_osc_cameras(episode_dir)
+            if is_osc_episode(episode_dir)
+            else DEFAULT_CAMERAS
+        )
+        if not args.cameras:
+            raise ValueError(
+                'OSC episode does not contain observations/<CAMERA>_rgb datasets.'
+            )
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else Path(args.output_root).expanduser().resolve() / episode_dir.name
     instruction, instruction_source = discover_instruction(episode_dir, args.instruction, args.instruction_file, args.instruction_index)
     all_frame_ids, camera_frames = collect_camera_frames(episode_dir, args.cameras)
