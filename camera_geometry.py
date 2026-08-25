@@ -10,6 +10,14 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from PIL import Image
 
+from osc_dataset import (
+    is_osc_episode,
+    load_osc_robot_observations,
+    materialize_osc_depth_frame,
+    materialize_osc_rgb_frame,
+    osc_camera_params_for_frame,
+)
+
 from _legacy_bootstrap import ensure_src_path
 
 
@@ -59,6 +67,8 @@ def read_depth(
         depth = np.load(path)
         if depth.ndim == 3:
             depth = depth[..., 0]
+        if path.name.endswith(".meters.npy"):
+            return depth.astype(np.float64)
         return depth.astype(np.float64) / float(depth_scale)
 
     image_array = np.asarray(Image.open(path))
@@ -122,6 +132,8 @@ def load_rlbench_observations(
     """Load RLBench observations, including its list-like ``Demo`` wrapper."""
     path = resolve_rlbench_low_dim_path(episode_dir, override_path)
     if not path.is_file():
+        if override_path is None and is_osc_episode(episode_dir):
+            return load_osc_robot_observations(episode_dir)
         return []
     with path.open("rb") as handle:
         loaded = pickle.load(handle)
@@ -219,6 +231,8 @@ def resolve_depth_path(episode_dir: Path, camera: str, frame_id: str) -> Path:
         )
     found = find_first(candidates)
     if found is None:
+        if is_osc_episode(episode_dir):
+            return materialize_osc_depth_frame(episode_dir, camera, frame_id)
         raise FileNotFoundError(
             f"Missing depth image for camera={camera} frame_id={frame_id}"
         )
@@ -230,6 +244,11 @@ def find_rgb_path(episode_dir: Path, camera: str, frame_id: str) -> Path | None:
         path = episode_dir / f"{camera}_rgb" / f"{frame_id}{suffix}"
         if path.is_file():
             return path
+    if is_osc_episode(episode_dir):
+        try:
+            return materialize_osc_rgb_frame(episode_dir, camera, frame_id)
+        except (KeyError, IndexError):
+            return None
     return None
 
 
@@ -246,6 +265,15 @@ def resolve_camera_param_for_frame(
     """Resolve per-frame camera geometry from explicit, RLBench, or JSON data."""
     if camera in explicit_camera_params:
         return explicit_camera_params[camera]
+
+    if is_osc_episode(episode_dir):
+        index = frame_index
+        if index is None:
+            try:
+                index = int(frame_id)
+            except ValueError:
+                index = 0
+        return osc_camera_params_for_frame(episode_dir, camera, index)
 
     if rlbench_observations:
         index = frame_index if frame_index is not None else 0

@@ -321,27 +321,6 @@ echo "Episode:    ${EPISODE_DIR}"
 echo "Output dir: ${OUTPUT_DIR}"
 echo "=========================================="
 
-# ---------------------------------------------------------------------------
-# OSC support is intentionally Stage-1-first: RGB and task language are defined,
-# while depth scale and camera pose conventions still need dataset calibration.
-OSC_RECOGNITION_ONLY="${OSC_RECOGNITION_ONLY:-auto}"
-shopt -s nullglob
-OSC_HDF5_FILES=(
-  "${EPISODE_DIR}"/*.hdf5
-  "${EPISODE_DIR}"/*.h5
-  "${EPISODE_DIR}"/hdf5/*.hdf5
-  "${EPISODE_DIR}"/hdf5/*.h5
-)
-shopt -u nullglob
-osc_stage1_only_active=0
-if (( ${#OSC_HDF5_FILES[@]} > 0 )) && [[ "${OSC_RECOGNITION_ONLY}" != "0" ]]; then
-  osc_stage1_only_active=1
-  SKIP_FUSION=1
-  SKIP_VIZ=1
-  SKIP_DECISION=1
-  echo '[mode] OSC HDF5 detected: running Qwen3 + SAM3 recognition only.'
-fi
-
 # Stage 1: Qwen role identification + SAM3 per-view candidate generation
 # ---------------------------------------------------------------------------
 if [[ "${SKIP_CANDIDATES}" == "1" ]]; then
@@ -585,10 +564,8 @@ fi
 echo "=========================================="
 echo "Done. Outputs under: ${OUTPUT_DIR}"
 echo "  Candidates: ${CANDIDATES_JSON}"
-if [[ "${osc_stage1_only_active}" != "1" ]]; then
-  echo "  Fused:      ${FUSED_JSON}"
-  echo "  Viz:        ${VIZ_DIR}"
-fi
+echo "  Fused:      ${FUSED_JSON}"
+echo "  Viz:        ${VIZ_DIR}"
 if [[ "${SAVE_OBJECT_SUMMARY}" == "1" || "${SKIP_DECISION}" == "0" ]]; then
   echo "  ObjSummary: ${OBJECT_SUMMARY_JSON:-${OBJECT_SUMMARY_PATH_DEFAULT}}"
 fi

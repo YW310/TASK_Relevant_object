@@ -496,15 +496,42 @@ MODEL_PATH=/path/to/Qwen3-VL-8B-Instruct \
 ./run_full_pipeline.sh
 ```
 
-To include the object-level decision and its overlay:
+To run all six stages, including object-level decisions, decision overlays, and
+the stage-comparison montage:
 
 ```bash
 EPISODE_DIR=/path/to/episode0 \
 SAM_MODEL_DIR=/path/to/sam3 \
 MODEL_PATH=/path/to/Qwen3-VL-8B-Instruct \
 SKIP_DECISION=0 \
+SKIP_DECISION_VIZ=0 \
+SKIP_STAGE_COMPARE=0 \
 ./run_full_pipeline.sh
 ```
+
+For a complete OSC HDF5 run, use OSC camera names for both the RGB-D pipeline
+and the Stage 4 scene montage:
+
+```bash
+EPISODE_DIR=/path/to/OSC_HDF5/disassemble_left_0 \
+OUTPUT_ROOT=outputs_osc \
+SAM_MODEL_DIR=/common-data-32t/.cache/facebook/sam3 \
+MODEL_PATH=/new-common-data/new-common-data/huggingface/Qwen3-VL-8B-Instruct \
+DECISION_MODEL_PATH=/new-common-data/new-common-data/huggingface/Qwen3-VL-8B-Instruct \
+CAMERAS=GLOBAL_LEFT,GLOBAL_RIGHT,LOCAL_LEFT,LOCAL_RIGHT,WRIST \
+DECISION_SCENE_CAMERAS=GLOBAL_LEFT,GLOBAL_RIGHT,WRIST \
+PREFERRED_CAMERA=WRIST \
+FRAME_INTERVAL=10 \
+SKIP_DECISION=0 \
+SKIP_DECISION_VIZ=0 \
+SKIP_STAGE_COMPARE=0 \
+./run_full_pipeline.sh
+```
+
+OSC depth is converted from millimetres to metres automatically; do not set
+`DEPTH_SCALE=1000` or `INVERT_RLBENCH_EXTRINSICS=1`. The complete tuned RLBench
+and OSC commands are maintained in
+[`README_qwen_role_sam3_candidates.md`](README_qwen_role_sam3_candidates.md#current-commands).
 
 Outputs are written to `outputs/<episode-name>/` unless `OUTPUT_ROOT` or
 `OUTPUT_DIR` is set.

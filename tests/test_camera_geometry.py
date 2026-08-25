@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import h5py
 from PIL import Image
 
 from camera_geometry import (
@@ -10,9 +11,13 @@ from camera_geometry import (
     backproject_mask,
     decode_rlbench_rgb_depth,
     frame_index_from_frame,
+    find_rgb_path,
+    load_rlbench_observations,
     looks_like_rlbench_packed_depth,
     project_points,
     read_depth,
+    resolve_camera_param_for_frame,
+    resolve_depth_path,
     transform_points,
 )
 
@@ -62,6 +67,55 @@ class CameraGeometryTests(unittest.TestCase):
         )
         self.assertEqual(frame_index_from_frame({"frame_index": "3"}), 3)
         self.assertIsNone(frame_index_from_frame({"frame_id": "frame-a"}))
+
+    def test_osc_hdf5_falls_back_to_calibrated_rgbd_and_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            episode = Path(directory) / "episode"
+            hdf5_dir = episode / "hdf5"
+            hdf5_dir.mkdir(parents=True)
+            with h5py.File(hdf5_dir / "trajectory.hdf5", "w") as handle:
+                observations = handle.create_group("observations")
+                observations.create_dataset(
+                    "WRIST_rgb", data=np.zeros((1, 2, 3, 3), dtype=np.uint8)
+                )
+                observations.create_dataset(
+                    "WRIST_depth",
+                    data=np.array([[[1000, 2500, 65535], [500, 750, 1250]]], dtype=np.uint16),
+                )
+                observations.create_dataset("WRIST_intrinsic", data=np.eye(3))
+                observations.create_dataset(
+                    "WRIST_extrinsic", data=np.array([[1, 2, 3, 0, 0, 0, 1]])
+                )
+                observations.create_dataset("ee_pos_world", data=[[4, 5, 6]])
+                observations.create_dataset("ee_quat_world", data=[[0, 0, 0, 1]])
+                handle.create_dataset("actions", data=[[0, 0, 0, 0, 0, 0, 1]])
+
+            rgb_path = find_rgb_path(episode, "WRIST", "0")
+            self.assertIsNotNone(rgb_path)
+            self.assertTrue(rgb_path.is_file())
+            depth_path = resolve_depth_path(episode, "WRIST", "0")
+            depth = read_depth(depth_path, depth_scale=999.0)
+            np.testing.assert_allclose(depth[0, :2], [1.0, 2.5])
+            self.assertTrue(np.isnan(depth[0, 2]))
+
+            params = resolve_camera_param_for_frame(
+                "WRIST", 0, "0", {}, [], episode
+            )
+            self.assertIsNotNone(params)
+            np.testing.assert_allclose(params["intrinsics"], np.eye(3))
+            np.testing.assert_allclose(params["extrinsics"][:3, 3], [1, 2, 3])
+            points_camera = backproject_mask(
+                depth,
+                np.array([[True, False, False], [False, False, False]]),
+                params["intrinsics"],
+                max_points=10,
+            )
+            points_world = transform_points(points_camera, params["extrinsics"])
+            np.testing.assert_allclose(points_world, [[1.0, 2.0, 4.0]])
+
+            robot_observations = load_rlbench_observations(episode)
+            self.assertEqual(robot_observations[0]["gripper_pose"][:3], [4.0, 5.0, 6.0])
+            self.assertEqual(robot_observations[0]["gripper_open"], 1.0)
 
 
 if __name__ == "__main__":

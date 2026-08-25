@@ -7,7 +7,7 @@ from pathlib import Path
 from .capture_pipeline_baseline import PIPELINE_SCRIPT, REPO_ROOT, _find_bash
 
 
-def test_osc_hdf5_episode_defaults_to_stage1_only(tmp_path: Path) -> None:
+def test_osc_hdf5_episode_runs_full_rgbd_pipeline(tmp_path: Path) -> None:
     episode = tmp_path / "episode with spaces"
     hdf5_dir = episode / "hdf5"
     hdf5_dir.mkdir(parents=True)
@@ -37,9 +37,12 @@ def test_osc_hdf5_episode_defaults_to_stage1_only(tmp_path: Path) -> None:
     )
 
     assert completed.returncode == 0, completed.stdout
-    assert '  Fused:' not in completed.stdout
-    assert '  Viz:' not in completed.stdout
-    assert "OSC HDF5 detected: running Qwen3 + SAM3 recognition only" in completed.stdout
+    assert "  Fused:" in completed.stdout
+    assert "  Viz:" in completed.stdout
+    assert "OSC HDF5 detected: running Qwen3 + SAM3 recognition only" not in completed.stdout
     assert "--cameras GLOBAL_LEFT,WRIST" in completed.stdout
-    assert "Skipping multiview fusion (SKIP_FUSION=1)" in completed.stdout
-    assert "Skipping visualization (SKIP_VIZ=1)" in completed.stdout
+    assert "qwen_role_sam3_candidate_episode.py" in completed.stdout
+    assert "multiview_candidate_fusion.py" in completed.stdout
+    assert "visualize_fused_candidates.py" in completed.stdout
+    assert "Skipping multiview fusion" not in completed.stdout
+    assert "Skipping visualization" not in completed.stdout

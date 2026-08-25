@@ -1999,14 +1999,5 @@
       "--output-dir",
       "--viz-dir"
     ]
-  },
-  {
-    "name": "OSC_RECOGNITION_ONLY",
-    "line": 327,
-    "default_expression": "auto",
-    "value_kind": "string",
-    "empty_semantics": "use declared default",
-    "used_by": [],
-    "cli_flags": []
   }
 ]

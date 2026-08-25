@@ -47,38 +47,144 @@ Use [run_full_pipeline.sh](run_full_pipeline.sh) when you want one command for t
 ### Default execution behavior
 
 - By default, Stages 1-3 run and Stage 4 is skipped.
-- OSC HDF5 input defaults to Stage 1 only (`OSC_RECOGNITION_ONLY=auto`).
+- OSC HDF5 input runs the same default Stages 1-3 workflow as RLBench input.
 - If SKIP_DECISION=0, Stage 4 runs and Stage 2 automatically exports object_summary.json.
 - Stage 4 defaults to DECISION_SCOPE=all; use DECISION_SCOPE=single for the legacy one-frame debug behavior.
 
-### Typical command
+### Current commands
 
-OSC HDF5 episodes are also accepted for the Qwen3 + SAM3 recognition stage:
+#### RLBench: manual Stage 1-3 run
 
 ```bash
-EPISODE_DIR=/path/to/disassemble_left_0 \
+python qwen_role_sam3_candidate_episode.py \
+  --episode-dir data/BridgeVLA_RLBench_EVAL_DATA/push_buttons/all_variations/episodes/episode0 \
+  --output-root outputs_push_buttons \
+  --model-path /new-common-data/new-common-data/huggingface/Qwen3-VL-8B-Instruct \
+  --sam-model-dir /common-data-32t/.cache/facebook/sam3 \
+  --sam-checkpoint /common-data-32t/.cache/facebook/sam3/sam3.pt \
+  --device cuda \
+  --cameras front,left_shoulder,right_shoulder \
+  --frame-interval 10 \
+  --top-k-per-semantic-group 8 \
+  --threshold 0.35 \
+  --mask-nms-iou 0.70
+
+python multiview_candidate_fusion.py \
+  --episode-dir data/BridgeVLA_RLBench_EVAL_DATA/push_buttons/all_variations/episodes/episode0 \
+  --candidates-json outputs_push_buttons/episode0/episode_candidates.json \
+  --cameras front,left_shoulder,right_shoulder \
+  --cluster-distance-m 0.05 \
+  --bbox-iou-threshold 0.1
+
+python visualize_fused_candidates.py \
+  --fused-json outputs_push_buttons/episode0/frame_fused_candidates.json \
+  --output-dir outputs_push_buttons/episode0/viz \
+  --cameras front,left_shoulder,right_shoulder
+```
+
+Add `--frame-ids 0,10,20` to the visualization command when only selected
+frames are needed. The current Stage 1 flag is
+`--top-k-per-semantic-group`; the removed `--top-k-per-role` spelling is not
+accepted.
+
+#### RLBench: tuned full Stage 1-6 run
+
+```bash
+EPISODE_DIR=data/BridgeVLA_RLBench_EVAL_DATA/stack_blocks/all_variations/episodes/episode0 \
 SAM_MODEL_DIR=/common-data-32t/.cache/facebook/sam3 \
 MODEL_PATH=/new-common-data/new-common-data/huggingface/Qwen3-VL-8B-Instruct \
+DECISION_MODEL_PATH=/new-common-data/new-common-data/huggingface/Qwen3-VL-8B-Instruct \
+CAMERAS=front,left_shoulder,right_shoulder \
+DECISION_SCENE_CAMERAS=front,left_shoulder,right_shoulder \
+PREFERRED_CAMERA=front \
 FRAME_INTERVAL=10 \
+THRESHOLD=0.2 \
+CAMERA_THRESHOLD_OVERRIDES="left_shoulder=0.2,right_shoulder=0.2" \
+SKIP_DECISION=0 \
+SKIP_DECISION_VIZ=0 \
+SKIP_STAGE_COMPARE=0 \
+SAVE_OBJECT_SUMMARY=1 \
+TRACK_DISTANCE_M=0.22 \
+TRACK_MAX_MISSED_FRAMES=4 \
+TRACK_MAX_SIZE_RATIO=4.0 \
+VIZ_HIDE_SUSPECTED_FRAGMENTS=0 \
+DECISION_VIZ_HIDE_SUSPECTED_FRAGMENTS=0 \
+CLUSTER_DISTANCE_M=0.1 \
+BBOX_IOU_THRESHOLD=0.05 \
+NEAREST_DISTANCE_M=0.2 \
+MAX_SIZE_RATIO=8.0 \
+MAX_HYPOTHESIS_DIAMETER_M=1.0 \
+MIN_CANDIDATE_MASK_AREA_PIXELS=20 \
+SINGLE_CAMERA_KEEP_SCORE=0.5 \
+MIN_MASK_AREA=10 \
+MIN_FUSED_POINTS=30 \
+MIN_BBOX_DIAGONAL_M=0.06 \
+DECISION_REFRESH_INTERVAL=20 \
+DECISION_MIN_PROPAGATION_CONFIDENCE=0.5 \
+DECISION_MAX_VISUAL_PIXELS=196608 \
+DECISION_MAX_NEW_TOKENS=768 \
+DECISION_WINDOW_FRAMES=2 \
 ./run_full_pipeline.sh
 ```
 
-The adapter discovers `hdf5/*.hdf5`, reads `task_instruction`, and selects every
-available `observations/<CAMERA>_rgb` dataset. RGB frames are extracted lazily to
-the system temporary cache, so sampling does not unpack the complete trajectory.
-Set `CAMERAS=GLOBAL_LEFT,GLOBAL_RIGHT,WRIST` to restrict the views. OSC input
-defaults to Stage 1 only because its depth scale and camera-pose convention must
-be calibrated before 3D fusion; set `OSC_RECOGNITION_ONLY=0` only after configuring
-those later stages.
+`SKIP_DECISION=0`, `SKIP_DECISION_VIZ=0`, and `SKIP_STAGE_COMPARE=0`
+explicitly enable Stages 4-6. `SAVE_OBJECT_SUMMARY=1` is retained for clarity,
+although Stage 2 enables it automatically when Stage 4 runs. Define
+`MIN_BBOX_DIAGONAL_M` only once; later shell assignments otherwise override
+earlier ones.
+
+#### OSC HDF5: full Stage 1-6 run
 
 ```bash
-EPISODE_DIR=/path/to/rlbench/.../episode0 \
+EPISODE_DIR=/path/to/OSC_HDF5/disassemble_left_0 \
+OUTPUT_ROOT=outputs_osc \
 SAM_MODEL_DIR=/common-data-32t/.cache/facebook/sam3 \
+SAM_CHECKPOINT=/common-data-32t/.cache/facebook/sam3/sam3.pt \
 MODEL_PATH=/new-common-data/new-common-data/huggingface/Qwen3-VL-8B-Instruct \
+DECISION_MODEL_PATH=/new-common-data/new-common-data/huggingface/Qwen3-VL-8B-Instruct \
+DEVICE=cuda \
+CAMERAS=GLOBAL_LEFT,GLOBAL_RIGHT,LOCAL_LEFT,LOCAL_RIGHT,WRIST \
+DECISION_SCENE_CAMERAS=GLOBAL_LEFT,GLOBAL_RIGHT,WRIST \
+PREFERRED_CAMERA=WRIST \
+FRAME_INTERVAL=10 \
+THRESHOLD=0.2 \
 SKIP_DECISION=0 \
+SKIP_DECISION_VIZ=0 \
+SKIP_STAGE_COMPARE=0 \
 SAVE_OBJECT_SUMMARY=1 \
+MIN_CANDIDATE_MASK_AREA_PIXELS=20 \
+MIN_MASK_AREA=10 \
+MIN_FUSED_POINTS=30 \
+MIN_BBOX_DIAGONAL_M=0.06 \
+TRACK_DISTANCE_M=0.22 \
+TRACK_MAX_MISSED_FRAMES=4 \
+TRACK_MAX_SIZE_RATIO=4.0 \
+CLUSTER_DISTANCE_M=0.05 \
+BBOX_IOU_THRESHOLD=0.05 \
+SINGLE_CAMERA_KEEP_SCORE=0.5 \
+DECISION_REFRESH_INTERVAL=20 \
+DECISION_MIN_PROPAGATION_CONFIDENCE=0.5 \
+DECISION_MAX_VISUAL_PIXELS=196608 \
+DECISION_MAX_NEW_TOKENS=768 \
+DECISION_WINDOW_FRAMES=2 \
+VIZ_HIDE_SUSPECTED_FRAGMENTS=0 \
+DECISION_VIZ_HIDE_SUSPECTED_FRAGMENTS=0 \
 ./run_full_pipeline.sh
 ```
+
+The OSC adapter discovers `hdf5/*.hdf5`, reads `task_instruction`, and selects
+the requested `observations/<CAMERA>_rgb` datasets. RGB and sampled depth frames
+are extracted lazily to the system temporary cache. OSC `uint16` depth is
+converted from millimetres to metres and `65535` becomes invalid (`NaN`).
+Per-frame extrinsics are `[x, y, z, qx, qy, qz, qw]`, interpreted as
+`T_world_camera` with OpenCV camera axes (+Z forward, +X right, +Y down).
+
+Do not set `DEPTH_SCALE=1000`: the sampled OSC depth is already in metres and
+is marked so the shared reader cannot scale it twice. Do not enable
+`INVERT_RLBENCH_EXTRINSICS`; OSC poses are already `T_world_camera`. On WSL the
+documented Windows dataset is typically
+`/mnt/z/data/robot_data/OSC_HDF5/disassemble_left_0`; on another Linux host, use
+that host's actual mount point.
 
 ### Key knobs
 

@@ -2010,7 +2010,11 @@ def main() -> None:
     rlbench_observations = load_rlbench_observations(episode_dir, rlbench_low_dim_override)
     cameras = parse_csv(args.cameras)
     source_frames = list(summary.get("frames", []))
-    fusion_parameters = _fusion_parameters(args, rlbench_low_dim_path, bool(rlbench_observations))
+    fusion_parameters = _fusion_parameters(
+        args,
+        rlbench_low_dim_path,
+        rlbench_low_dim_path.is_file(),
+    )
     old_manifest: Mapping[str, Any] = {}
     try:
         old_manifest = json.loads(output_path.read_text(encoding="utf-8"))

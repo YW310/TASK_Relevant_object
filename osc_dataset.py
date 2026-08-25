@@ -1,4 +1,11 @@
-"""Lazy RGB and language adapter for OSC episodes stored in HDF5."""
+"""Lazy adapter for calibrated OSC trajectories stored in HDF5.
+
+Verified OSC conventions:
+
+* depth is uint16 millimetres; 65535 is invalid;
+* camera pose is ``[x, y, z, qx, qy, qz, qw]``;
+* the pose is ``T_world_camera`` using OpenCV camera axes (+Z forward).
+"""
 
 from __future__ import annotations
 
@@ -20,6 +27,8 @@ OSC_CAMERA_NAMES = (
     "LOCAL_RIGHT",
     "WRIST",
 )
+OSC_DEPTH_METERS_PER_UNIT = 0.001
+OSC_INVALID_DEPTH_VALUE = np.uint16(65535)
 
 
 def _h5py() -> Any:
@@ -152,6 +161,44 @@ def materialize_osc_rgb_frame(
     return output
 
 
+def materialize_osc_depth_frame(
+    episode_dir: str | Path,
+    camera: str,
+    frame_id: str | int,
+) -> Path:
+    """Materialize calibrated depth in metres; invalid samples become NaN."""
+    index = _frame_index(frame_id)
+    output = _cache_dir(episode_dir) / f"{camera}_depth" / f"{index}.meters.npy"
+    if output.is_file():
+        return output
+    path = find_osc_hdf5_path(episode_dir)
+    assert path is not None
+    h5py = _h5py()
+    with h5py.File(path, "r") as handle:
+        key = f"observations/{camera}_depth"
+        if key not in handle:
+            raise KeyError(f"Missing OSC depth dataset {key!r} in {path}")
+        dataset = handle[key]
+        if index >= dataset.shape[0]:
+            raise IndexError(
+                f"OSC frame {index} is outside {key} range 0..{dataset.shape[0] - 1}"
+            )
+        raw = np.asarray(dataset[index])
+    if raw.ndim == 3 and raw.shape[-1] == 1:
+        raw = raw[..., 0]
+    if raw.ndim != 2:
+        raise ValueError(f"Expected HxW OSC depth frame, got shape={raw.shape} ({key})")
+    invalid = raw == OSC_INVALID_DEPTH_VALUE
+    depth_m = raw.astype(np.float32) * OSC_DEPTH_METERS_PER_UNIT
+    depth_m[invalid] = np.nan
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_suffix(".npy.tmp")
+    with temporary.open("wb") as handle:
+        np.save(handle, depth_m, allow_pickle=False)
+    temporary.replace(output)
+    return output
+
+
 class OSCFrameMap(Mapping[str, Path]):
     """Mapping that extracts an RGB frame only when its path is requested."""
 
@@ -184,15 +231,94 @@ def collect_osc_camera_frames(
     }
 
 
+def _quaternion_xyzw_to_rotation(quaternion: np.ndarray) -> np.ndarray:
+    x, y, z, w = np.asarray(quaternion, dtype=np.float64).reshape(4)
+    norm = float(np.linalg.norm([x, y, z, w]))
+    if not np.isfinite(norm) or norm <= 1e-12:
+        raise ValueError(f"Invalid OSC camera quaternion: {quaternion!r}")
+    x, y, z, w = np.asarray([x, y, z, w], dtype=np.float64) / norm
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
+
+
+def osc_pose_xyzw_to_matrix(pose: np.ndarray) -> np.ndarray:
+    values = np.asarray(pose, dtype=np.float64)
+    if values.shape == (4, 4):
+        return values
+    if values.shape == (3, 4):
+        result = np.eye(4, dtype=np.float64)
+        result[:3] = values
+        return result
+    if values.shape != (7,):
+        raise ValueError(
+            "OSC camera extrinsic must be [x,y,z,qx,qy,qz,qw], 3x4, or 4x4; "
+            f"got shape={values.shape}"
+        )
+    result = np.eye(4, dtype=np.float64)
+    result[:3, :3] = _quaternion_xyzw_to_rotation(values[3:])
+    result[:3, 3] = values[:3]
+    return result
+
+
+def osc_camera_params_for_frame(
+    episode_dir: str | Path,
+    camera: str,
+    frame_index: int,
+) -> dict[str, np.ndarray] | None:
+    path = find_osc_hdf5_path(episode_dir)
+    if path is None:
+        return None
+    index = _frame_index(frame_index)
+    h5py = _h5py()
+    with h5py.File(path, "r") as handle:
+        intr_key = f"observations/{camera}_intrinsic"
+        extr_key = f"observations/{camera}_extrinsic"
+        if intr_key not in handle or extr_key not in handle:
+            return None
+        intr_dataset = handle[intr_key]
+        extr_dataset = handle[extr_key]
+        if intr_dataset.shape == (3, 3):
+            intrinsics = np.asarray(intr_dataset[...], dtype=np.float64)
+        elif intr_dataset.ndim == 3 and intr_dataset.shape[1:] == (3, 3):
+            if index >= intr_dataset.shape[0]:
+                raise IndexError(
+                    f"OSC frame {index} is outside {intr_key} range 0..{intr_dataset.shape[0] - 1}"
+                )
+            intrinsics = np.asarray(intr_dataset[index], dtype=np.float64)
+        else:
+            raise ValueError(f"Invalid OSC intrinsics shape: {intr_dataset.shape} ({intr_key})")
+
+        if extr_dataset.shape in {(7,), (3, 4), (4, 4)}:
+            raw_extrinsics = np.asarray(extr_dataset[...], dtype=np.float64)
+        elif extr_dataset.ndim >= 2:
+            if index >= extr_dataset.shape[0]:
+                raise IndexError(
+                    f"OSC frame {index} is outside {extr_key} range 0..{extr_dataset.shape[0] - 1}"
+                )
+            raw_extrinsics = np.asarray(extr_dataset[index], dtype=np.float64)
+        else:
+            raise ValueError(f"Invalid OSC extrinsics shape: {extr_dataset.shape} ({extr_key})")
+    return {
+        "intrinsics": intrinsics,
+        "extrinsics": osc_pose_xyzw_to_matrix(raw_extrinsics),
+    }
+
+
 def osc_instruction(episode_dir: str | Path) -> str | None:
-    metadata_path = Path(episode_dir) / 'metadata.json'
+    metadata_path = Path(episode_dir) / "metadata.json"
     if metadata_path.is_file():
         try:
-            metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             metadata = None
         if isinstance(metadata, Mapping):
-            for key in ('task_instruction', 'instruction'):
+            for key in ("task_instruction", "instruction"):
                 value = metadata.get(key)
                 if isinstance(value, str) and value.strip():
                     return value.strip()
@@ -213,14 +339,59 @@ def osc_instruction(episode_dir: str | Path) -> str | None:
     return text or None
 
 
+def load_osc_robot_observations(episode_dir: str | Path) -> list[dict[str, Any]]:
+    """Expose OSC robot state through the RLBench-like fields Stage 4 consumes."""
+    path = find_osc_hdf5_path(episode_dir)
+    if path is None:
+        return []
+    h5py = _h5py()
+    with h5py.File(path, "r") as handle:
+        observations = handle.get("observations")
+        if observations is None:
+            return []
+        position_key = "ee_pos_world" if "ee_pos_world" in observations else "ee_pos"
+        quaternion_key = "ee_quat_world" if "ee_quat_world" in observations else "ee_quat"
+        if position_key not in observations:
+            return []
+        positions = np.asarray(observations[position_key], dtype=np.float64)
+        quaternions = (
+            np.asarray(observations[quaternion_key], dtype=np.float64)
+            if quaternion_key in observations
+            else None
+        )
+        actions = (
+            np.asarray(handle["actions"], dtype=np.float64)
+            if "actions" in handle
+            else None
+        )
+    result: list[dict[str, Any]] = []
+    for index, position in enumerate(positions):
+        pose = np.asarray(position).reshape(-1).tolist()
+        if quaternions is not None and index < len(quaternions):
+            pose.extend(np.asarray(quaternions[index]).reshape(-1).tolist())
+        observation: dict[str, Any] = {"gripper_pose": pose}
+        if actions is not None and index < len(actions) and actions.shape[-1] >= 7:
+            observation["gripper_open"] = float(
+                np.clip((float(actions[index, 6]) + 1.0) / 2.0, 0.0, 1.0)
+            )
+        result.append(observation)
+    return result
+
+
 __all__ = [
     "OSC_CAMERA_NAMES",
+    "OSC_DEPTH_METERS_PER_UNIT",
+    "OSC_INVALID_DEPTH_VALUE",
     "OSCFrameMap",
     "available_osc_cameras",
     "collect_osc_camera_frames",
     "find_osc_hdf5_path",
     "is_osc_episode",
+    "load_osc_robot_observations",
+    "materialize_osc_depth_frame",
     "materialize_osc_rgb_frame",
+    "osc_camera_params_for_frame",
     "osc_frame_count",
     "osc_instruction",
+    "osc_pose_xyzw_to_matrix",
 ]
