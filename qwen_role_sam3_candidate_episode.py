@@ -53,6 +53,37 @@ from visualization_utils import color_for_index, load_font
 
 ROLE_ORDER = ("target", "reference", "interaction_part")
 STAGE1_SCHEMA_VERSION = 2
+COLOR_ATTRIBUTE_WORDS = frozenset(
+    {
+        "beige",
+        "black",
+        "blue",
+        "bright",
+        "brown",
+        "color",
+        "colored",
+        "colour",
+        "coloured",
+        "cyan",
+        "dark",
+        "gold",
+        "golden",
+        "gray",
+        "green",
+        "grey",
+        "light",
+        "magenta",
+        "metallic",
+        "orange",
+        "pale",
+        "pink",
+        "purple",
+        "red",
+        "silver",
+        "white",
+        "yellow",
+    }
+)
 
 
 def parse_candidate_roles(value: str) -> tuple[str, ...]:
@@ -185,6 +216,30 @@ def build_parser() -> argparse.ArgumentParser:
             "canonicalization (0 disables the area-ratio guard)."
         ),
     )
+    parser.add_argument(
+        "--negative-prompt-filter",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Run SAM3 on role negative_cues and suppress positive candidates mostly "
+            "covered by those exclusion masks."
+        ),
+    )
+    parser.add_argument(
+        "--max-negative-prompts-per-group",
+        type=int,
+        default=3,
+        help="Maximum deduplicated negative_cues executed per semantic group (0 disables).",
+    )
+    parser.add_argument(
+        "--negative-mask-coverage",
+        type=float,
+        default=0.80,
+        help=(
+            "Suppress a positive candidate when this fraction of its pixels is "
+            "covered by a negative-cue SAM3 mask."
+        ),
+    )
     parser.add_argument("--canonical-bbox-iou", type=float, default=0.0,
                         help="Optional bbox IoU support threshold; 0 disables bbox-only support.")
     parser.add_argument(
@@ -286,6 +341,12 @@ def normalize_prompt(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
 
 
+def is_color_attribute_only_prompt(value: Any) -> bool:
+    """Return true for prompts such as 'gray' or 'dark metallic gray'."""
+    words = re.findall(r"[a-z]+", normalize_prompt(value))
+    return bool(words) and all(word in COLOR_ATTRIBUTE_WORDS for word in words)
+
+
 def text_prompts_for_role(role_spec: Mapping[str, Any], role: str, max_variants: int) -> list[str]:
     """Build SAM3-friendly text prompts for a semantic role.
 
@@ -299,7 +360,8 @@ def text_prompts_for_role(role_spec: Mapping[str, Any], role: str, max_variants:
 
     prompts: list[str] = []
     for prompt in _iter_text_list(spec.get("sam_prompts")):
-        _append_unique_text(prompts, prompt)
+        if not is_color_attribute_only_prompt(prompt):
+            _append_unique_text(prompts, prompt)
 
     for key in ("name", "object", "category", "type", "class", "label"):
         _append_unique_text(prompts, spec.get(key))
@@ -307,7 +369,11 @@ def text_prompts_for_role(role_spec: Mapping[str, Any], role: str, max_variants:
     display = role_display_text(role_spec, role)
     cues = role_identity_cues(role_spec, role)
     for cue in cues:
-        _append_unique_text(prompts, cue)
+        if normalize_prompt(display) in normalize_prompt(cue):
+            combined_prompt = cue
+        else:
+            combined_prompt = f"{cue} {display}"
+        _append_unique_text(prompts, combined_prompt)
     if cues:
         _append_unique_text(prompts, f"{display}. Visual cues: {'; '.join(cues)}")
 
@@ -396,6 +462,40 @@ def semantic_prompt_plan(
                     row["compatible_roles"].append(compatible_role)
             row["roles_by_group"][group_id] = roles
             row["group_prompt_indices"][group_id] = prompt_index
+    return ordered
+
+
+def negative_prompt_plan(
+    semantic_groups: Sequence[Mapping[str, Any]],
+    max_prompts_per_group: int,
+) -> list[dict[str, Any]]:
+    """Build deduplicated exclusion-mask prompts from semantic negative cues."""
+    if max_prompts_per_group <= 0:
+        return []
+    by_prompt: dict[str, dict[str, Any]] = {}
+    ordered: list[dict[str, Any]] = []
+    for group in semantic_groups:
+        group_id = str(group["semantic_group_id"])
+        cues = [
+            cue
+            for cue in _iter_text_list(group.get("negative_cues"))
+            if not is_color_attribute_only_prompt(cue)
+        ][:max_prompts_per_group]
+        for cue in cues:
+            key = normalize_prompt(cue)
+            if not key:
+                continue
+            row = by_prompt.get(key)
+            if row is None:
+                row = {
+                    "normalized_prompt": key,
+                    "source_prompt": str(cue),
+                    "semantic_group_ids": [],
+                }
+                by_prompt[key] = row
+                ordered.append(row)
+            if group_id not in row["semantic_group_ids"]:
+                row["semantic_group_ids"].append(group_id)
     return ordered
 
 
@@ -586,13 +686,23 @@ def candidate_generation_parameters(
     return {
         # Bump this whenever canonicalization semantics change so resume mode does
         # not silently reuse masks produced by an older grouping algorithm.
-        "canonicalization_algorithm": "semantic_group_member_iou_v3",
+        "canonicalization_algorithm": "semantic_group_member_iou_v4_negative_masks",
+        "prompt_filter_algorithm": "reject_color_attribute_only_v1",
         "threshold": float(threshold),
         "candidate_pool_size": int(args.candidate_pool_size),
         "min_mask_area": int(args.min_mask_area),
         "split_disconnected_masks": bool(args.split_disconnected_masks),
         "max_mask_components": int(args.max_mask_components),
         "prompt_variants": int(args.prompt_variants),
+        "negative_prompt_filter": bool(
+            getattr(args, "negative_prompt_filter", True)
+        ),
+        "max_negative_prompts_per_group": int(
+            getattr(args, "max_negative_prompts_per_group", 3)
+        ),
+        "negative_mask_coverage": float(
+            getattr(args, "negative_mask_coverage", 0.80)
+        ),
         "mask_nms_iou": float(args.mask_nms_iou),
         "canonical_containment": float(args.canonical_containment),
         "canonical_max_area_ratio": float(args.canonical_max_area_ratio),
@@ -769,6 +879,58 @@ def process_camera(
         print(f"SAM3 progress {progress_label}: start {image_path} (threshold={threshold})", flush=True)
     generated_candidates: list[dict[str, Any]] = []
     prompt_attempts: list[dict[str, Any]] = []
+    negative_prompt_attempts: list[dict[str, Any]] = []
+    negative_masks_by_group: dict[str, list[dict[str, Any]]] = {}
+    if bool(getattr(args, "negative_prompt_filter", True)):
+        exclusion_plan = negative_prompt_plan(
+            semantic_groups,
+            int(getattr(args, "max_negative_prompts_per_group", 3)),
+        )
+        for negative_index, negative_row in enumerate(exclusion_plan):
+            negative_prompt = str(negative_row["source_prompt"])
+            negative_masks, negative_scores, _ = run_text_prompt(
+                processor,
+                image,
+                negative_prompt,
+                args,
+                threshold,
+            )
+            negative_prompt_attempts.append(
+                {
+                    "text_prompt": negative_prompt,
+                    "normalized_prompt": negative_row["normalized_prompt"],
+                    "negative_prompt_index": negative_index,
+                    "semantic_group_ids": list(
+                        negative_row["semantic_group_ids"]
+                    ),
+                    "raw_masks": len(negative_masks),
+                }
+            )
+            for semantic_group_id in negative_row["semantic_group_ids"]:
+                entries = negative_masks_by_group.setdefault(
+                    str(semantic_group_id), []
+                )
+                entries.extend(
+                    {
+                        "mask": np.asarray(mask, dtype=bool),
+                        "score": float(score),
+                        "source_prompt": negative_prompt,
+                    }
+                    for mask, score in zip(negative_masks, negative_scores)
+                    if mask_bbox(mask) is not None
+                )
+            if args.progress and progress_label:
+                print(
+                    f"SAM3 progress {progress_label}: negative_prompt="
+                    f"{negative_index + 1}/{len(exclusion_plan)} "
+                    f"cue={negative_prompt!r} raw_masks={len(negative_masks)}",
+                    flush=True,
+                )
+
+    negative_suppressed: list[dict[str, Any]] = []
+    negative_coverage_threshold = float(
+        getattr(args, "negative_mask_coverage", 0.80)
+    )
     prompt_plan = semantic_prompt_plan(semantic_groups)
     for prompt_index, prompt_row in enumerate(prompt_plan):
         prompt = str(prompt_row["source_prompt"])
@@ -811,15 +973,76 @@ def process_camera(
                 if bbox is None:
                     continue
                 area = int(component.sum())
+                active_group_ids: list[str] = []
+                negative_matches: list[dict[str, Any]] = []
+                for semantic_group_id in prompt_row["semantic_group_ids"]:
+                    best_coverage = 0.0
+                    best_negative: Mapping[str, Any] | None = None
+                    for negative_entry in negative_masks_by_group.get(
+                        str(semantic_group_id), []
+                    ):
+                        intersection = int(
+                            np.logical_and(
+                                component,
+                                negative_entry["mask"],
+                            ).sum()
+                        )
+                        coverage = intersection / area if area > 0 else 0.0
+                        if coverage > best_coverage:
+                            best_coverage = coverage
+                            best_negative = negative_entry
+                    if (
+                        best_negative is not None
+                        and best_coverage >= negative_coverage_threshold
+                    ):
+                        negative_matches.append(
+                            {
+                                "semantic_group_id": str(semantic_group_id),
+                                "negative_prompt": best_negative[
+                                    "source_prompt"
+                                ],
+                                "negative_score": best_negative["score"],
+                                "candidate_coverage": best_coverage,
+                            }
+                        )
+                    else:
+                        active_group_ids.append(str(semantic_group_id))
+                if not active_group_ids:
+                    negative_suppressed.append(
+                        {
+                            "original_candidate_id": (
+                                f"raw_p{prompt_index}_m{output_index}_"
+                                f"c{component_index}"
+                            ),
+                            "reason": "negative_prompt_mask_coverage",
+                            "source_prompt": prompt,
+                            "mask_bbox_xyxy": bbox,
+                            "mask_area_pixels": area,
+                            "negative_matches": negative_matches,
+                        }
+                    )
+                    continue
+                active_roles_by_group = {
+                    group_id: list(prompt_row["roles_by_group"][group_id])
+                    for group_id in active_group_ids
+                }
+                active_roles: list[str] = []
+                for roles in active_roles_by_group.values():
+                    for role in roles:
+                        if role not in active_roles:
+                            active_roles.append(role)
                 item: dict[str, Any] = {
                     "text_prompt": prompt,
                     "source_prompt": prompt,
                     "normalized_prompt": prompt_row["normalized_prompt"],
                     "prompt_index": prompt_index,
-                    "semantic_group_ids": list(prompt_row["semantic_group_ids"]),
-                    "compatible_roles": list(prompt_row["compatible_roles"]),
-                    "group_prompt_indices": dict(prompt_row["group_prompt_indices"]),
-                    "roles_by_group": dict(prompt_row["roles_by_group"]),
+                    "semantic_group_ids": active_group_ids,
+                    "compatible_roles": active_roles,
+                    "group_prompt_indices": {
+                        group_id: prompt_row["group_prompt_indices"][group_id]
+                        for group_id in active_group_ids
+                    },
+                    "roles_by_group": active_roles_by_group,
                     "sam_output_index": output_index,
                     "sam_mask_component_index": component_index,
                     "sam_mask_component_count": len(components),
@@ -844,6 +1067,7 @@ def process_camera(
         args.canonical_bbox_iou, args.canonical_max_area_ratio,
         args.suppress_multi_instance_masks,
     )
+    suppressed = [*negative_suppressed, *suppressed]
     if args.top_k_per_semantic_group > 0:
         allowed = set()
         for semantic_group in semantic_groups:
@@ -898,6 +1122,7 @@ def process_camera(
             "raw_candidate_count": len(generated_candidates),
             "canonical_candidate_count": len(candidates),
             "suppressed_candidate_count": len(suppressed),
+            "negative_filtered_candidate_count": len(negative_suppressed),
         },
         "units": {"image_coordinates": "pixels", "mask_area": "pixels"},
         "image_path": str(image_path),
@@ -909,6 +1134,7 @@ def process_camera(
         "artifact_type": "camera_frame_candidate_debug",
         "source_candidates_json": "candidates.json",
         "prompt_attempts": prompt_attempts,
+        "negative_prompt_attempts": negative_prompt_attempts,
         "generation_parameters": generation_parameters,
         "canonicalization": {
             "aggregation": "noisy_or",

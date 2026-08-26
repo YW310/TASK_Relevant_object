@@ -16,12 +16,14 @@ if "torch" not in sys.modules:
 from qwen_role_sam3_candidate_episode import (
     build_semantic_groups,
     canonicalize_candidates,
+    is_color_attribute_only_prompt,
     mask_bbox,
     normalize_prompt,
     parse_candidate_roles,
     process_camera,
     semantic_prompt_plan,
     split_mask_components,
+    text_prompts_for_role,
 )
 
 
@@ -99,6 +101,91 @@ class SemanticGroupTests(unittest.TestCase):
         self.assertEqual(1, len(groups))
         self.assertEqual(["target"], groups[0]["compatible_roles"])
         self.assertEqual(1, len(plan))
+
+    def test_color_only_cues_are_never_sent_as_standalone_prompts(self) -> None:
+        spec = {
+            "target": {
+                "name": "wheel nut",
+                "sam_prompts": ["gray", "dark metallic gray", "wheel nut"],
+                "identity_cues": ["silver", "hexagonal"],
+            }
+        }
+
+        prompts = text_prompts_for_role(spec, "target", 5)
+
+        self.assertNotIn("gray", prompts)
+        self.assertNotIn("dark metallic gray", prompts)
+        self.assertIn("wheel nut", prompts)
+        self.assertTrue(
+            all(not is_color_attribute_only_prompt(prompt) for prompt in prompts)
+        )
+
+    def test_negative_wall_mask_suppresses_wall_candidate(self) -> None:
+        spec = {
+            "target": {
+                "name": "wheel nut",
+                "sam_prompts": ["wheel nut"],
+                "negative_cues": ["wall"],
+            }
+        }
+        groups = build_semantic_groups(spec, 5, ("target",))
+        args = SimpleNamespace(
+            resume=False,
+            threshold=0.25,
+            candidate_pool_size=20,
+            min_mask_area=1,
+            split_disconnected_masks=False,
+            max_mask_components=4,
+            prompt_variants=5,
+            negative_prompt_filter=True,
+            max_negative_prompts_per_group=3,
+            negative_mask_coverage=0.8,
+            mask_nms_iou=0.8,
+            canonical_containment=0.9,
+            canonical_max_area_ratio=3.0,
+            canonical_bbox_iou=0.0,
+            suppress_multi_instance_masks=False,
+            top_k_per_semantic_group=8,
+            progress=False,
+            mask_alpha=105,
+        )
+        wall = np.zeros((8, 8), dtype=bool)
+        wall[:, :4] = True
+        target = np.zeros_like(wall)
+        target[2:6, 5:7] = True
+
+        def prompt_result(_processor, _image, prompt, _args, _threshold):
+            if prompt == "wall":
+                return np.asarray([wall]), np.asarray([0.95]), None
+            return (
+                np.asarray([wall, target]),
+                np.asarray([0.90, 0.80]),
+                None,
+            )
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            image_path = root / "image.png"
+            Image.new("RGB", (8, 8), "white").save(image_path)
+            with patch(
+                "qwen_role_sam3_candidate_episode.run_text_prompt",
+                side_effect=prompt_result,
+            ) as run_prompt:
+                result = process_camera(
+                    None,
+                    image_path,
+                    groups,
+                    root / "out",
+                    args,
+                )
+
+        self.assertEqual(2, run_prompt.call_count)
+        self.assertEqual(1, len(result["candidates"]))
+        self.assertEqual(
+            1,
+            result["summary"]["negative_filtered_candidate_count"],
+        )
+        self.assertEqual([5, 2, 7, 6], result["candidates"][0]["mask_bbox_xyxy"])
 
     def test_process_camera_executes_each_normalized_prompt_once(self) -> None:
         spec = {

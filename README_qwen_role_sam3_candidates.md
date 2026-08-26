@@ -53,12 +53,13 @@ Use [run_full_pipeline.sh](run_full_pipeline.sh) when you want one command for t
 
 ### Current commands
 
-#### OSC HDF5: target-only Stage 1-3 run
+#### OSC HDF5: target-only Stage 1-5 run
 
-Use both switches below. `CANDIDATE_ROLES=target` removes reference and
-interaction-part SAM3 work; `PROMPT_VARIANTS=1` prevents the remaining target
-role from trying up to five text variants. Qwen still creates the role spec once,
-and Stage 4 stays disabled because it requires target/reference candidates.
+`CANDIDATE_ROLES=target` removes reference and interaction-part SAM3 work but
+retains the default `PROMPT_VARIANTS=5` for target recall. Stage 1 Qwen still
+creates the role spec once. Stage 4 remains enabled because the fused target
+candidates are only proposals: it must select the final `target_object_id`;
+`reference_object_id` may remain null.
 
 ```bash
 EPISODE_DIR=/path/to/OSC_HDF5/disassemble_left_0 \
@@ -69,12 +70,20 @@ MODEL_PATH=/new-common-data/new-common-data/huggingface/Qwen3-VL-8B-Instruct \
 DEVICE=cuda \
 CAMERAS=GLOBAL_LEFT,GLOBAL_RIGHT,LOCAL_LEFT,LOCAL_RIGHT,WRIST \
 CANDIDATE_ROLES=target \
-PROMPT_VARIANTS=1 \
 FRAME_INTERVAL=10 \
 THRESHOLD=0.2 \
-SKIP_DECISION=1 \
+SKIP_DECISION=0 \
+SKIP_DECISION_VIZ=0 \
 ./run_full_pipeline.sh
 ```
+
+Stage 1 no longer sends color-only identity cues such as `gray` to SAM3.
+Colors are used only in an object noun phrase such as `gray wheel nut`.
+`negative_cues` are also active rather than metadata-only: by default up to
+three cues per semantic group are segmented as exclusion masks, and a positive
+candidate is removed when a negative mask covers at least 80% of it. Tune this
+with `NEGATIVE_PROMPT_FILTER`, `MAX_NEGATIVE_PROMPTS_PER_GROUP`, and
+`NEGATIVE_MASK_COVERAGE`.
 
 #### RLBench: manual Stage 1-3 run
 
@@ -386,8 +395,9 @@ python qwen_role_sam3_candidate_episode.py \
   --suppress-multi-instance-masks
 ```
 
-Use `--prompt-variants 1` to only try the shortest role name, or increase it to
-include more Qwen-provided visual cues as fallbacks. `candidates.json` also records
+`--prompt-variants 5` is the recommended/default recall setting. Use `1` only
+for prompt debugging because it can miss small or visually ambiguous targets.
+`candidates.json` also records
 `prompt_attempts`, `mask_area_pixels`, and the exact `text_prompt` that produced
 each candidate, so you can confirm whether SAM3 returned masks and whether tiny
 objects were filtered by area.

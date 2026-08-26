@@ -85,6 +85,9 @@ Candidate generation and runtime arguments:
 | `--top-k-per-semantic-group` | `TOP_K_PER_SEMANTIC_GROUP` | `8` | Maximum candidates retained for each semantic concept group. |
 | `--candidate-roles` | `CANDIDATE_ROLES` | all three roles | Roles sent to SAM3; use `target` for target-only generation. |
 | `--prompt-variants` | `PROMPT_VARIANTS` | `5` | Maximum Qwen/SAM text variants attempted per enabled role. |
+| `--[no-]negative-prompt-filter` | `NEGATIVE_PROMPT_FILTER` | enabled | Segment `negative_cues` such as `wall` and suppress positive masks they cover. |
+| `--max-negative-prompts-per-group` | `MAX_NEGATIVE_PROMPTS_PER_GROUP` | `3` | Cap exclusion-mask SAM3 calls per semantic group. |
+| `--negative-mask-coverage` | `NEGATIVE_MASK_COVERAGE` | `0.80` | Positive-mask pixel coverage required for negative suppression. |
 | `--min-mask-area` | — | `4` px | Remove tiny mask fragments. |
 | `--[no-]split-disconnected-masks` | `SPLIT_DISCONNECTED_MASKS` | enabled | Split disconnected regions from one SAM3 mask before computing candidate bboxes. |
 | `--max-mask-components` | `MAX_MASK_COMPONENTS` | `4` | Maximum significant regions retained from one SAM3 mask (`0` keeps all). |
@@ -499,18 +502,18 @@ MODEL_PATH=/path/to/Qwen3-VL-8B-Instruct \
 ./run_full_pipeline.sh
 ```
 
-For a fast target-only pass, enable only the target semantic group and one text
-variant. This makes Stage 1 call SAM3 once per selected camera/frame (assuming
-the target has at least one valid prompt). Keep the object-level target/reference
-decision disabled because reference candidates are intentionally absent:
+For a target-only pass, enable only the target semantic group while retaining
+the default five prompt variants for recall. Stage 4 remains enabled so Qwen can
+select the final `target_object_id` from the fused target candidates; a separate
+Reference is allowed to remain null:
 
 ```bash
 EPISODE_DIR=/path/to/episode0 \
 SAM_MODEL_DIR=/path/to/sam3 \
 MODEL_PATH=/path/to/Qwen3-VL-8B-Instruct \
 CANDIDATE_ROLES=target \
-PROMPT_VARIANTS=1 \
-SKIP_DECISION=1 \
+SKIP_DECISION=0 \
+SKIP_DECISION_VIZ=0 \
 ./run_full_pipeline.sh
 ```
 
@@ -568,7 +571,10 @@ used options include:
 | --- | --- | --- |
 | `CAMERAS` | script default | Comma-separated cameras such as `front,left_shoulder,right_shoulder` |
 | `CANDIDATE_ROLES` | `target,reference,interaction_part` | Semantic roles sent to per-frame/per-camera SAM3 inference |
-| `PROMPT_VARIANTS` | `5` | Maximum SAM3 text prompts per enabled role; use `1` with target-only mode |
+| `PROMPT_VARIANTS` | `5` | Maximum SAM3 text prompts per enabled role |
+| `NEGATIVE_PROMPT_FILTER` | `1` | Use role `negative_cues` to generate exclusion masks |
+| `MAX_NEGATIVE_PROMPTS_PER_GROUP` | `3` | Maximum exclusion-mask prompts per semantic group |
+| `NEGATIVE_MASK_COVERAGE` | `0.80` | Suppress candidates mostly covered by a negative mask |
 | `FRAME_INTERVAL` | `1` | Process every Nth source frame |
 | `MAX_FRAMES` | unset | Limit the number of processed frames |
 | `DEVICE` | `cuda` | Model device |

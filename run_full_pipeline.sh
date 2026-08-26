@@ -17,7 +17,7 @@
 #   ROLE_SPEC_JSON                          Reuse an existing role_spec.json (skips Qwen stage 1).
 #   CAMERAS                                 Comma-separated camera subset, e.g. "front,left_shoulder".
 #   CANDIDATE_ROLES (default: target,reference,interaction_part)
-#                                           Roles sent to SAM3; set to "target" for target-only mode.
+#                                           SAM3 roles; target-only proposals still use Stage 4 for final selection.
 #   FRAME_INTERVAL (default: 1)             Process one frame every N source frames.
 #   MAX_FRAMES                              Optional cap on number of frames.
 #   DEVICE (default: cuda)                  cuda|cpu for the SAM3/Qwen stage.
@@ -26,6 +26,9 @@
 #   CAMERA_THRESHOLD_OVERRIDES              e.g. "left_shoulder=0.15,right_shoulder=0.15".
 #   SPLIT_DISCONNECTED_MASKS (default: 1)   Split disconnected SAM3 mask regions before bbox generation.
 #   MAX_MASK_COMPONENTS (default: 4)        Max significant regions retained from one SAM3 mask (0=all).
+#   NEGATIVE_PROMPT_FILTER (default: 1)      Use negative_cues as exclusion-mask prompts.
+#   MAX_NEGATIVE_PROMPTS_PER_GROUP (default: 3) Maximum exclusion prompts per semantic group.
+#   NEGATIVE_MASK_COVERAGE (default: 0.80)   Candidate coverage required for negative-mask suppression.
 #   MASK_NMS_IOU (default: 0.80)             Stage-1 same-role NMS and cross-role canonical mask IoU.
 #   CANONICAL_CONTAINMENT (default: 0.90)    Stage-1 smaller-mask coverage for canonical observations.
 #   CANONICAL_MAX_AREA_RATIO (default: 3.0)  Guard containment merging across very different mask sizes.
@@ -110,7 +113,9 @@
 #   Stage 1: INSTRUCTION_FILE, INSTRUCTION_INDEX, START_FRAME, END_FRAME,
 #     ROLE_FRAME, GROUNDING_MIN_SIDE, MAX_RETRIES, SAM_CHECKPOINT,
 #     COMPILE_MODEL, TOP_K_PER_SEMANTIC_GROUP, CANDIDATE_POOL_SIZE, MIN_MASK_AREA,
-#     CANDIDATE_ROLES, PROMPT_VARIANTS, CANDIDATE_MASK_ALPHA, SAVE_FRAME_CONTACT_SHEET,
+#     CANDIDATE_ROLES, PROMPT_VARIANTS, NEGATIVE_PROMPT_FILTER,
+#     MAX_NEGATIVE_PROMPTS_PER_GROUP, NEGATIVE_MASK_COVERAGE,
+#     CANDIDATE_MASK_ALPHA, SAVE_FRAME_CONTACT_SHEET,
 #     VISUALIZATION_CELL_WIDTH, CANDIDATE_RESUME, CANDIDATE_PROGRESS,
 #     CANDIDATE_DRY_RUN.
 #   Stage 2: CANDIDATES_JSON, FUSED_JSON, RLBENCH_LOW_DIM_OBS, DEPTH_SCALE,
@@ -178,6 +183,9 @@ MIN_MASK_AREA="${MIN_MASK_AREA:-4}"
 SPLIT_DISCONNECTED_MASKS="${SPLIT_DISCONNECTED_MASKS:-1}"
 MAX_MASK_COMPONENTS="${MAX_MASK_COMPONENTS:-4}"
 PROMPT_VARIANTS="${PROMPT_VARIANTS:-5}"
+NEGATIVE_PROMPT_FILTER="${NEGATIVE_PROMPT_FILTER:-1}"
+MAX_NEGATIVE_PROMPTS_PER_GROUP="${MAX_NEGATIVE_PROMPTS_PER_GROUP:-3}"
+NEGATIVE_MASK_COVERAGE="${NEGATIVE_MASK_COVERAGE:-0.80}"
 MASK_NMS_IOU="${MASK_NMS_IOU:-0.80}"
 CANONICAL_CONTAINMENT="${CANONICAL_CONTAINMENT:-0.90}"
 CANONICAL_MAX_AREA_RATIO="${CANONICAL_MAX_AREA_RATIO:-3.0}"
@@ -347,6 +355,8 @@ else
     --max-mask-components "${MAX_MASK_COMPONENTS}"
     --candidate-roles "${CANDIDATE_ROLES}"
     --prompt-variants "${PROMPT_VARIANTS}"
+    --max-negative-prompts-per-group "${MAX_NEGATIVE_PROMPTS_PER_GROUP}"
+    --negative-mask-coverage "${NEGATIVE_MASK_COVERAGE}"
     --mask-nms-iou "${MASK_NMS_IOU}"
     --canonical-containment "${CANONICAL_CONTAINMENT}"
     --canonical-max-area-ratio "${CANONICAL_MAX_AREA_RATIO}"
@@ -358,6 +368,7 @@ else
   [[ "${USE_BF16}" != "1" ]] && STAGE1_ARGS+=(--no-bf16)
   [[ "${COMPILE_MODEL}" == "1" ]] && STAGE1_ARGS+=(--compile)
   [[ "${SPLIT_DISCONNECTED_MASKS}" == "1" ]] && STAGE1_ARGS+=(--split-disconnected-masks) || STAGE1_ARGS+=(--no-split-disconnected-masks)
+  [[ "${NEGATIVE_PROMPT_FILTER}" == "1" ]] && STAGE1_ARGS+=(--negative-prompt-filter) || STAGE1_ARGS+=(--no-negative-prompt-filter)
   [[ "${SUPPRESS_MULTI_INSTANCE_MASKS}" == "1" ]] && STAGE1_ARGS+=(--suppress-multi-instance-masks) || STAGE1_ARGS+=(--no-suppress-multi-instance-masks)
   [[ "${SAVE_FRAME_CONTACT_SHEET}" == "1" ]] && STAGE1_ARGS+=(--save-frame-contact-sheet) || STAGE1_ARGS+=(--no-save-frame-contact-sheet)
   [[ "${CANDIDATE_RESUME}" == "1" ]] && STAGE1_ARGS+=(--resume)

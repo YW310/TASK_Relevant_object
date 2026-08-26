@@ -170,6 +170,37 @@ def test_role_compatibility_gate_rejects_interaction_part_only_candidate():
     assert selected["target_object_id"] == "O1"
 
 
+def test_target_only_candidates_still_select_final_target_without_reference():
+    candidates = [
+        {"object_id": "O1", "semantic_evidence": _semantic("target", 0.9)},
+        {"object_id": "O2", "semantic_evidence": _semantic("target", 0.8)},
+    ]
+    selected = _apply_two_stage_target_selection(
+        {
+            "instruction_compatible_object_ids": ["O1", "O2"],
+            "target_object_id": "O1",
+            "reference_object_id": None,
+            "confidence": 0.9,
+        },
+        candidates,
+        {
+            "O1": {"target_proximity_cues": {"current_distance_m": 0.20}},
+            "O2": {"target_proximity_cues": {"current_distance_m": 0.05}},
+        },
+    )
+    selected = _apply_reference_semantic_selection(
+        selected,
+        candidates,
+        {"reference_required": False},
+    )
+
+    assert selected["target_object_id"] == "O2"
+    assert selected["target_selection"]["strategy"] == (
+        "instruction_gate_then_current_gripper_proximity"
+    )
+    assert selected["reference_object_id"] is None
+
+
 def test_reference_switch_requires_two_consecutive_proposals():
     state = {}
     schema = {"reference_required": True}

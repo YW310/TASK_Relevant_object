@@ -23,6 +23,7 @@ def test_osc_hdf5_episode_runs_full_rgbd_pipeline(tmp_path: Path) -> None:
             "CAMERAS": "GLOBAL_LEFT,WRIST",
             "CANDIDATE_ROLES": "target",
             "PROMPT_VARIANTS": "1",
+            "SKIP_DECISION": "0",
             "CANDIDATE_DRY_RUN": "1",
         }
     )
@@ -48,5 +49,8 @@ def test_osc_hdf5_episode_runs_full_rgbd_pipeline(tmp_path: Path) -> None:
     assert "qwen_role_sam3_candidate_episode.py" in completed.stdout
     assert "multiview_candidate_fusion.py" in completed.stdout
     assert "visualize_fused_candidates.py" in completed.stdout
+    assert "qwen3vl_object_role_decision.py" in completed.stdout
+    assert "--save-object-summary" in completed.stdout
     assert "Skipping multiview fusion" not in completed.stdout
     assert "Skipping visualization" not in completed.stdout
+    assert "Skipping object-level decision" not in completed.stdout
