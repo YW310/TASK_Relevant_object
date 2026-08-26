@@ -533,6 +533,11 @@ OSC depth is converted from millimetres to metres automatically; do not set
 and OSC commands are maintained in
 [`README_qwen_role_sam3_candidates.md`](README_qwen_role_sam3_candidates.md#current-commands).
 
+OSC camera poses are decoded separately from robot/object poses: Isaac camera
+extrinsics use scalar-first `wxyz` quaternions and USD axes (-Z forward), then
+the adapter converts them to OpenCV optical axes (+Z forward) for RGB-D
+backprojection. Robot/object quaternions retain the dataset `xyzw` ordering.
+
 Outputs are written to `outputs/<episode-name>/` unless `OUTPUT_ROOT` or
 `OUTPUT_DIR` is set.
 

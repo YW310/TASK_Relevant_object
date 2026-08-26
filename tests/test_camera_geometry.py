@@ -2,16 +2,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import numpy as np
 import h5py
+import numpy as np
 from PIL import Image
 
 from camera_geometry import (
     RLBENCH_DEPTH_SCALE_FACTOR,
     backproject_mask,
     decode_rlbench_rgb_depth,
-    frame_index_from_frame,
     find_rgb_path,
+    frame_index_from_frame,
     load_rlbench_observations,
     looks_like_rlbench_packed_depth,
     project_points,
@@ -84,7 +84,7 @@ class CameraGeometryTests(unittest.TestCase):
                 )
                 observations.create_dataset("WRIST_intrinsic", data=np.eye(3))
                 observations.create_dataset(
-                    "WRIST_extrinsic", data=np.array([[1, 2, 3, 0, 0, 0, 1]])
+                    "WRIST_extrinsic", data=np.array([[1, 2, 3, 1, 0, 0, 0]])
                 )
                 observations.create_dataset("ee_pos_world", data=[[4, 5, 6]])
                 observations.create_dataset("ee_quat_world", data=[[0, 0, 0, 1]])
@@ -111,7 +111,7 @@ class CameraGeometryTests(unittest.TestCase):
                 max_points=10,
             )
             points_world = transform_points(points_camera, params["extrinsics"])
-            np.testing.assert_allclose(points_world, [[1.0, 2.0, 4.0]])
+            np.testing.assert_allclose(points_world, [[1.0, 2.0, 2.0]])
 
             robot_observations = load_rlbench_observations(episode)
             self.assertEqual(robot_observations[0]["gripper_pose"][:3], [4.0, 5.0, 6.0])

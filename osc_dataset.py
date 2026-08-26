@@ -1,10 +1,15 @@
 """Lazy adapter for calibrated OSC trajectories stored in HDF5.
 
-Verified OSC conventions:
+OSC camera poses come from Isaac/USD and require a separate convention from
+robot/object state:
 
 * depth is uint16 millimetres; 65535 is invalid;
-* camera pose is ``[x, y, z, qx, qy, qz, qw]``;
-* the pose is ``T_world_camera`` using OpenCV camera axes (+Z forward).
+* camera pose is ``[x, y, z, qw, qx, qy, qz]`` (Isaac scalar-first);
+* the stored camera axes are USD (+Y up, -Z forward);
+* RGB-D geometry uses OpenCV optical axes (+X right, +Y down, +Z forward).
+
+Robot/object quaternions are not converted here and retain their dataset
+``xyzw`` ordering.
 """
 
 from __future__ import annotations
@@ -19,7 +24,6 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-
 OSC_CAMERA_NAMES = (
     "GLOBAL_LEFT",
     "GLOBAL_RIGHT",
@@ -29,6 +33,12 @@ OSC_CAMERA_NAMES = (
 )
 OSC_DEPTH_METERS_PER_UNIT = 0.001
 OSC_INVALID_DEPTH_VALUE = np.uint16(65535)
+OSC_CAMERA_QUATERNION_ORDER = "wxyz"
+OSC_CAMERA_AXES = "usd"
+
+# Express OpenCV optical coordinates in a USD camera frame. Both conventions
+# use +X right; OpenCV +Y/+Z are the opposites of USD +Y/+Z.
+OSC_T_USD_CAMERA_FROM_OPENCV_CAMERA = np.diag([1.0, -1.0, -1.0, 1.0])
 
 
 def _h5py() -> Any:
@@ -75,7 +85,7 @@ def available_osc_cameras(episode_dir: str | Path) -> tuple[str, ...]:
             return ()
         found = {
             name[: -len("_rgb")]
-            for name in observations.keys()
+            for name in observations
             if name.endswith("_rgb")
         }
     ordered = [name for name in OSC_CAMERA_NAMES if name in found]
@@ -150,9 +160,12 @@ def materialize_osc_rgb_frame(
             )
         rgb = np.asarray(dataset[index])
     if rgb.dtype != np.uint8:
-        if np.issubdtype(rgb.dtype, np.floating) and rgb.size:
-            if float(np.nanmax(rgb)) <= 1.0:
-                rgb = rgb * 255.0
+        if (
+            np.issubdtype(rgb.dtype, np.floating)
+            and rgb.size
+            and float(np.nanmax(rgb)) <= 1.0
+        ):
+            rgb = rgb * 255.0
         rgb = np.clip(rgb, 0, 255).astype(np.uint8)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(".png.tmp")
@@ -231,8 +244,8 @@ def collect_osc_camera_frames(
     }
 
 
-def _quaternion_xyzw_to_rotation(quaternion: np.ndarray) -> np.ndarray:
-    x, y, z, w = np.asarray(quaternion, dtype=np.float64).reshape(4)
+def _quaternion_wxyz_to_rotation(quaternion: np.ndarray) -> np.ndarray:
+    w, x, y, z = np.asarray(quaternion, dtype=np.float64).reshape(4)
     norm = float(np.linalg.norm([x, y, z, w]))
     if not np.isfinite(norm) or norm <= 1e-12:
         raise ValueError(f"Invalid OSC camera quaternion: {quaternion!r}")
@@ -247,23 +260,24 @@ def _quaternion_xyzw_to_rotation(quaternion: np.ndarray) -> np.ndarray:
     )
 
 
-def osc_pose_xyzw_to_matrix(pose: np.ndarray) -> np.ndarray:
+def osc_camera_pose_to_matrix(pose: np.ndarray) -> np.ndarray:
+    """Convert an Isaac/USD camera pose into OpenCV ``T_world_camera``."""
     values = np.asarray(pose, dtype=np.float64)
     if values.shape == (4, 4):
-        return values
-    if values.shape == (3, 4):
-        result = np.eye(4, dtype=np.float64)
-        result[:3] = values
-        return result
-    if values.shape != (7,):
+        world_from_usd_camera = values
+    elif values.shape == (3, 4):
+        world_from_usd_camera = np.eye(4, dtype=np.float64)
+        world_from_usd_camera[:3] = values
+    elif values.shape == (7,):
+        world_from_usd_camera = np.eye(4, dtype=np.float64)
+        world_from_usd_camera[:3, :3] = _quaternion_wxyz_to_rotation(values[3:])
+        world_from_usd_camera[:3, 3] = values[:3]
+    else:
         raise ValueError(
-            "OSC camera extrinsic must be [x,y,z,qx,qy,qz,qw], 3x4, or 4x4; "
+            "OSC camera extrinsic must be [x,y,z,qw,qx,qy,qz], 3x4, or 4x4; "
             f"got shape={values.shape}"
         )
-    result = np.eye(4, dtype=np.float64)
-    result[:3, :3] = _quaternion_xyzw_to_rotation(values[3:])
-    result[:3, 3] = values[:3]
-    return result
+    return world_from_usd_camera @ OSC_T_USD_CAMERA_FROM_OPENCV_CAMERA
 
 
 def osc_camera_params_for_frame(
@@ -306,7 +320,7 @@ def osc_camera_params_for_frame(
             raise ValueError(f"Invalid OSC extrinsics shape: {extr_dataset.shape} ({extr_key})")
     return {
         "intrinsics": intrinsics,
-        "extrinsics": osc_pose_xyzw_to_matrix(raw_extrinsics),
+        "extrinsics": osc_camera_pose_to_matrix(raw_extrinsics),
     }
 
 
@@ -379,9 +393,12 @@ def load_osc_robot_observations(episode_dir: str | Path) -> list[dict[str, Any]]
 
 
 __all__ = [
+    "OSC_CAMERA_AXES",
     "OSC_CAMERA_NAMES",
+    "OSC_CAMERA_QUATERNION_ORDER",
     "OSC_DEPTH_METERS_PER_UNIT",
     "OSC_INVALID_DEPTH_VALUE",
+    "OSC_T_USD_CAMERA_FROM_OPENCV_CAMERA",
     "OSCFrameMap",
     "available_osc_cameras",
     "collect_osc_camera_frames",
@@ -391,7 +408,7 @@ __all__ = [
     "materialize_osc_depth_frame",
     "materialize_osc_rgb_frame",
     "osc_camera_params_for_frame",
+    "osc_camera_pose_to_matrix",
     "osc_frame_count",
     "osc_instruction",
-    "osc_pose_xyzw_to_matrix",
 ]

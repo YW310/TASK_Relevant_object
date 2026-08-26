@@ -1,19 +1,23 @@
 import json
 import tempfile
 import unittest
-from unittest.mock import patch
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
 from multiview_candidate_fusion import (
     Observation3D,
+    _fusion_parameters,
+    _load_completed_frame,
+    _restore_track_state,
     assign_object_ids,
     build_candidate_lifecycle,
     build_object_summary,
-    compact_candidate_outcomes,
+    build_parser,
     cluster_observations,
+    compact_candidate_outcomes,
     filter_candidates_by_mask_area,
     filter_clusters_by_camera_support,
     filter_small_clusters,
@@ -22,12 +26,42 @@ from multiview_candidate_fusion import (
     split_fused_frame_artifacts,
     suppress_same_camera_duplicates,
     validate_semantic_candidates,
-    _load_completed_frame,
-    _restore_track_state,
 )
 
 
 class CompactFusionArtifactTest(unittest.TestCase):
+    def test_osc_camera_geometry_is_part_of_resume_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            episode_dir = Path(temporary_dir) / "episode"
+            hdf5_dir = episode_dir / "hdf5"
+            hdf5_dir.mkdir(parents=True)
+            (hdf5_dir / "trajectory.hdf5").touch()
+            args = build_parser().parse_args(
+                [
+                    "--episode-dir",
+                    str(episode_dir),
+                    "--candidates-json",
+                    str(episode_dir / "episode_candidates.json"),
+                ]
+            )
+
+            parameters = _fusion_parameters(
+                args,
+                episode_dir / "low_dim_obs.pkl",
+                False,
+                episode_dir,
+            )
+
+        self.assertEqual(
+            {
+                "version": 1,
+                "quaternion_order": "wxyz",
+                "stored_camera_axes": "usd",
+                "fusion_camera_axes": "opencv",
+            },
+            parameters["osc_camera_geometry"],
+        )
+
     def test_geometry_reference_is_relative_to_frame_json(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             output_path = Path(temporary_dir) / "frame_fused_candidates.json"

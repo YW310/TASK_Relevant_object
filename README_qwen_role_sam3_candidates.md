@@ -176,12 +176,16 @@ The OSC adapter discovers `hdf5/*.hdf5`, reads `task_instruction`, and selects
 the requested `observations/<CAMERA>_rgb` datasets. RGB and sampled depth frames
 are extracted lazily to the system temporary cache. OSC `uint16` depth is
 converted from millimetres to metres and `65535` becomes invalid (`NaN`).
-Per-frame extrinsics are `[x, y, z, qx, qy, qz, qw]`, interpreted as
-`T_world_camera` with OpenCV camera axes (+Z forward, +X right, +Y down).
+Per-frame camera extrinsics are stored by Isaac as
+`[x, y, z, qw, qx, qy, qz]` in USD camera axes (+Y up, -Z forward). The OSC
+adapter converts them to OpenCV `T_world_camera` (+Z forward, +X right, +Y
+down) before backprojection. Robot/object state keeps its separate dataset
+`xyzw` ordering.
 
 Do not set `DEPTH_SCALE=1000`: the sampled OSC depth is already in metres and
 is marked so the shared reader cannot scale it twice. Do not enable
-`INVERT_RLBENCH_EXTRINSICS`; OSC poses are already `T_world_camera`. On WSL the
+`INVERT_RLBENCH_EXTRINSICS`; the OSC adapter already produces
+`T_world_camera`. On WSL the
 documented Windows dataset is typically
 `/mnt/z/data/robot_data/OSC_HDF5/disassemble_left_0`; on another Linux host, use
 that host's actual mount point.

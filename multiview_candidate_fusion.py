@@ -59,6 +59,11 @@ from fusion_matching import (
     weighted_cluster_centroid,
 )
 from fusion_types import Observation3D
+from osc_dataset import (
+    OSC_CAMERA_AXES,
+    OSC_CAMERA_QUATERNION_ORDER,
+    is_osc_episode,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1825,9 +1830,14 @@ def _write_fusion_manifest(manifest: dict[str, Any], output_path: Path) -> None:
     atomic_json_dump(manifest, output_path)
 
 
-def _fusion_parameters(args: argparse.Namespace, rlbench_low_dim_path: Path, has_rlbench_observations: bool) -> dict[str, Any]:
+def _fusion_parameters(
+    args: argparse.Namespace,
+    rlbench_low_dim_path: Path,
+    has_rlbench_observations: bool,
+    episode_dir: Path,
+) -> dict[str, Any]:
     """Return the parameters that determine the per-frame fusion artifacts."""
-    return {
+    parameters = {
         "cluster_distance_m": args.cluster_distance_m,
         "bbox_iou_threshold": args.bbox_iou_threshold,
         "nearest_distance_m": args.nearest_distance_m,
@@ -1869,6 +1879,14 @@ def _fusion_parameters(args: argparse.Namespace, rlbench_low_dim_path: Path, has
         "rlbench_low_dim_obs": str(rlbench_low_dim_path) if has_rlbench_observations else None,
         "invert_rlbench_extrinsics": bool(args.invert_rlbench_extrinsics),
     }
+    if is_osc_episode(episode_dir):
+        parameters["osc_camera_geometry"] = {
+            "version": 1,
+            "quaternion_order": OSC_CAMERA_QUATERNION_ORDER,
+            "stored_camera_axes": OSC_CAMERA_AXES,
+            "fusion_camera_axes": "opencv",
+        }
+    return parameters
 
 
 def _restore_track_state(frame: Mapping[str, Any], track_state: dict[str, Any]) -> None:
@@ -2014,6 +2032,7 @@ def main() -> None:
         args,
         rlbench_low_dim_path,
         rlbench_low_dim_path.is_file(),
+        episode_dir,
     )
     old_manifest: Mapping[str, Any] = {}
     try:

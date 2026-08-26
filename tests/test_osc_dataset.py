@@ -17,8 +17,8 @@ from osc_dataset import (
     load_osc_robot_observations,
     materialize_osc_depth_frame,
     osc_camera_params_for_frame,
+    osc_camera_pose_to_matrix,
     osc_instruction,
-    osc_pose_xyzw_to_matrix,
 )
 
 
@@ -45,8 +45,8 @@ def _write_episode(root: Path) -> Path:
                 ),
             )
             extrinsics = np.zeros((3, 7), dtype=np.float32)
-            extrinsics[:, 6] = 1.0
-            extrinsics[1] = [1.0, 2.0, 3.0, 0.0, 0.0, np.sqrt(0.5), np.sqrt(0.5)]
+            extrinsics[:, 3] = 1.0
+            extrinsics[1] = [1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0]
             observations.create_dataset(f"{camera}_extrinsic", data=extrinsics)
         observations.create_dataset(
             "ee_pos_world",
@@ -118,7 +118,7 @@ def test_depth_camera_pose_and_robot_state_use_verified_conventions(
     np.testing.assert_allclose(params["extrinsics"][:3, 3], [1.0, 2.0, 3.0])
     np.testing.assert_allclose(
         params["extrinsics"][:3, :3],
-        [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
         atol=1e-6,
     )
 
@@ -127,16 +127,50 @@ def test_depth_camera_pose_and_robot_state_use_verified_conventions(
     assert [item["gripper_open"] for item in observations] == [0.0, 1.0, 0.5]
 
 
-def test_xyzw_pose_conversion_keeps_opencv_camera_to_world_direction() -> None:
-    matrix = osc_pose_xyzw_to_matrix(
-        np.array([1.0, 2.0, 3.0, 0.0, 0.0, np.sqrt(0.5), np.sqrt(0.5)])
+def test_wxyz_usd_camera_pose_converts_to_opencv_optical_axes() -> None:
+    matrix = osc_camera_pose_to_matrix(
+        np.array([1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0])
     )
     np.testing.assert_allclose(matrix[:3, 3], [1.0, 2.0, 3.0])
     np.testing.assert_allclose(
         matrix[:3, :3],
-        [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
         atol=1e-12,
     )
+
+
+def test_reported_osc_camera_poses_face_their_work_areas_after_conversion() -> None:
+    left_wheel = np.array([-0.6780, 0.2260, 1.3625])
+    right_wheel = np.array([-0.6779, -0.1390, 1.3625])
+    poses_and_targets = {
+        "GLOBAL_LEFT": (
+            [-1.9012605, 0.5651362, 1.7400469, -0.44614732, -0.18106404, 0.434604, 0.76110953],
+            left_wheel,
+        ),
+        "GLOBAL_RIGHT": (
+            [-1.944286, -0.3868556, 1.7633, 0.6472904, 0.2846316, -0.28463158, -0.6472904],
+            right_wheel,
+        ),
+        "LOCAL_LEFT": (
+            [-0.6571691, 0.1196582, 1.5177046, 0.96592581, 0.25881905, 0.0, 0.0],
+            left_wheel,
+        ),
+        "LOCAL_RIGHT": (
+            [-0.6571691, -0.0345857, 1.5177046, 0.0, 0.0, 0.25881904, 0.96592581],
+            right_wheel,
+        ),
+        "WRIST": (
+            [-1.0383601, 0.34647477, 1.4581852, 0.79558516, 0.21701482, -0.564716, 0.03232206],
+            left_wheel,
+        ),
+    }
+
+    for camera, (pose, target) in poses_and_targets.items():
+        matrix = osc_camera_pose_to_matrix(np.asarray(pose))
+        direction = target - matrix[:3, 3]
+        direction /= np.linalg.norm(direction)
+        optical_axis_alignment = float(direction @ matrix[:3, 2])
+        assert optical_axis_alignment > 0.7, (camera, optical_axis_alignment)
 
 
 def test_metadata_task_instruction_overrides_hdf5_instruction(tmp_path: Path) -> None:
