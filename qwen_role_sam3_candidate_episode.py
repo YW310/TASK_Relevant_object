@@ -85,6 +85,19 @@ COLOR_ATTRIBUTE_WORDS = frozenset(
     }
 )
 
+POSITIVE_PROMPT_EXCLUSION_WORDS = frozenset(
+    {
+        "avoid",
+        "except",
+        "exclude",
+        "excluding",
+        "ignore",
+        "instead",
+        "not",
+        "without",
+    }
+)
+
 
 def parse_candidate_roles(value: str) -> tuple[str, ...]:
     """Parse and validate the semantic roles enabled for SAM3 generation."""
@@ -347,6 +360,60 @@ def is_color_attribute_only_prompt(value: Any) -> bool:
     return bool(words) and all(word in COLOR_ATTRIBUTE_WORDS for word in words)
 
 
+def prompt_contains_exclusion_language(value: Any) -> bool:
+    """Reject negative instructions accidentally emitted as SAM3 positives."""
+    words = set(re.findall(r"[a-z]+", normalize_prompt(value)))
+    return bool(words & POSITIVE_PROMPT_EXCLUSION_WORDS)
+
+
+def is_underspecified_sam_prompt(
+    value: Any,
+    identity_cues: Sequence[str],
+) -> bool:
+    """Reject broad shortcuts when Qwen supplied richer identity cues.
+
+    The conditional gate preserves old/simple role specs where a short prompt
+    such as 'red block' is the only useful cue.
+    """
+    words = re.findall(r"[a-z]+", normalize_prompt(value))
+    rich_cues = [
+        cue
+        for cue in identity_cues
+        if len(re.findall(r"[a-z]+", normalize_prompt(cue))) >= 2
+        and not is_color_attribute_only_prompt(cue)
+    ]
+    return bool(words) and len(words) <= 2 and len(rich_cues) >= 2
+
+
+def is_usable_positive_sam_prompt(
+    value: Any,
+    identity_cues: Sequence[str],
+) -> bool:
+    return not (
+        is_color_attribute_only_prompt(value)
+        or prompt_contains_exclusion_language(value)
+        or is_underspecified_sam_prompt(value, identity_cues)
+    )
+
+
+def identity_cue_prompt(display: str, cue: str) -> str:
+    """Keep the requested whole-object noun ahead of a local visual cue."""
+    display_key = normalize_prompt(display)
+    cue_key = normalize_prompt(cue)
+    if display_key in cue_key:
+        return cue
+
+    display_words = re.findall(r"[a-z]+", display_key)
+    cue_words = set(re.findall(r"[a-z]+", cue_key))
+    if display_words and display_words[-1] in cue_words:
+        return cue
+    if cue_key.startswith(
+        ("at ", "in ", "inside ", "near ", "on ", "within ", "attached ", "mounted ")
+    ):
+        return f"{display} {cue}"
+    return f"{display} with {cue}"
+
+
 def text_prompts_for_role(role_spec: Mapping[str, Any], role: str, max_variants: int) -> list[str]:
     """Build SAM3-friendly text prompts for a semantic role.
 
@@ -358,24 +425,30 @@ def text_prompts_for_role(role_spec: Mapping[str, Any], role: str, max_variants:
     if not isinstance(spec, Mapping):
         return []
 
+    cues = role_identity_cues(role_spec, role)
     prompts: list[str] = []
     for prompt in _iter_text_list(spec.get("sam_prompts")):
-        if not is_color_attribute_only_prompt(prompt):
+        if is_usable_positive_sam_prompt(prompt, cues):
             _append_unique_text(prompts, prompt)
 
+    name = ""
     for key in ("name", "object", "category", "type", "class", "label"):
-        _append_unique_text(prompts, spec.get(key))
+        candidate_name = str(spec.get(key) or "").strip()
+        if candidate_name:
+            name = candidate_name
+            break
+    if name and is_usable_positive_sam_prompt(name, cues):
+        _append_unique_text(prompts, name)
 
-    display = role_display_text(role_spec, role)
-    cues = role_identity_cues(role_spec, role)
-    for cue in cues:
-        if normalize_prompt(display) in normalize_prompt(cue):
-            combined_prompt = cue
-        else:
-            combined_prompt = f"{cue} {display}"
-        _append_unique_text(prompts, combined_prompt)
+    display = name or role_display_text(role_spec, role)
     if cues:
-        _append_unique_text(prompts, f"{display}. Visual cues: {'; '.join(cues)}")
+        combined_cues = f"{display}. Visual cues: {'; '.join(cues)}"
+        if is_usable_positive_sam_prompt(combined_cues, cues):
+            _append_unique_text(prompts, combined_cues)
+    for cue in cues:
+        combined_prompt = identity_cue_prompt(display, cue)
+        if is_usable_positive_sam_prompt(combined_prompt, cues):
+            _append_unique_text(prompts, combined_prompt)
 
     cap = min(max_variants, 5) if max_variants > 0 else 5
     return prompts[:cap]
@@ -687,7 +760,7 @@ def candidate_generation_parameters(
         # Bump this whenever canonicalization semantics change so resume mode does
         # not silently reuse masks produced by an older grouping algorithm.
         "canonicalization_algorithm": "semantic_group_member_iou_v4_negative_masks",
-        "prompt_filter_algorithm": "reject_color_attribute_only_v1",
+        "prompt_filter_algorithm": "reject_weak_or_exclusion_positive_v2",
         "threshold": float(threshold),
         "candidate_pool_size": int(args.candidate_pool_size),
         "min_mask_area": int(args.min_mask_area),

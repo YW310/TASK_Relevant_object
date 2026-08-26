@@ -71,7 +71,8 @@ ROLE_VISUAL_STYLE: dict[str, dict[str, Any]] = {
 LABEL_BACKGROUND_RGBA = (0, 0, 0, 90)  # 90 / 255 ~= 0.35 opacity.
 
 
-ROLE_PROMPT = """You are resolving semantic object roles for an RLBench robot task.
+ROLE_PROMPT = """You are resolving semantic object roles for a robot manipulation task
+(RLBench or OSC).
 
 Instruction:
 {instruction}
@@ -84,16 +85,45 @@ Definitions:
 - interaction_part: a local part directly contacted by the robot, such as a handle, button, lid edge, or opening. It may be null.
 
 Rules:
-1. Select specific instances, not only categories.
-2. Use color, size, relative position, and instruction relations to distinguish identical categories.
-3. Do not select the robot arm or gripper.
-4. Do not invent unsupported view-specific statements such as "on the floor",
+1. Select the specific physical instance required by the instruction, not only
+   its broad category.
+2. First decide whether the role is a whole object or a local interaction part.
+   Keep that physical extent consistent in every generated prompt.
+3. Compare whole-object structure, visible-part layout, size,
+   attachment/ownership, scene relation, and color pattern across the
+   synchronized views. Color alone is never sufficient.
+4. Robot hardware is context, not a task role, unless the instruction explicitly
+   asks to manipulate it. Do not select an arm, wrist, gripper, robot joint cover,
+   cable, or decorative ring as the target.
+5. Do not invent unsupported view-specific statements such as "on the floor",
    "behind the robot", or "under another object".
-5. Describe only stable identity cues needed to find the same instance in another view.
-6. For every non-null role, include sam_prompts: 3 to 5 short text prompts that SAM3 can use to segment exactly one object instance or local part. Every prompt must contain the object or part noun; never output a color or visual attribute alone. Prefer singular concise noun phrases with discriminative color/shape cues. Never use a collection, object group, whole panel, supporting surface, or surrounding assembly unless that entire entity is explicitly the requested role; do not include long instructions.
-7. For every non-null role, include negative_cues: short, visually segmentable object/region noun phrases that must not be selected, such as wall, floor, support panel, or robot gripper.
-8. Do not output bounding boxes in this stage.
-9. Return one valid JSON object only.
+6. identity_cues must contain 3 to 5 concise positive cues. Prefer persistent
+   whole-object appearance and part-layout cues that remain valid when the object
+   moves. A verified initial location or attachment may be an additional cue, but
+   must not replace persistent appearance cues.
+7. For every non-null role, include sam_prompts: 3 to 5 concise positive noun
+   phrases for SAM3. Every prompt must describe the same requested extent, contain
+   the object/part noun, and retain enough structure, relation, or appearance to
+   reject visible lookalikes. Do not use not, ignore, exclude, or without, and do
+   not name a distractor in a positive prompt.
+8. When a same-color or same-shape distractor exists, never emit a bare noun or
+   color-plus-noun shortcut. For the illustrative case of a white-hub, blue-rim
+   wheel in a rack near a blue robot-wrist ring, good prompts are "complete wheel
+   with white hub and blue outer rim" and "left rack wheel with white hub and blue
+   rim"; bad prompts are "wheel", "blue wheel", "blue ring", and "circular blue
+   object". Use only attributes supported by the supplied images and instruction.
+9. At least one sam_prompt must use persistent whole-object appearance without a
+   transient location. At most one may depend mainly on initial location. If the
+   role is a whole object, mention rim, hub, edge, or cap only inside a phrase that
+   still names the whole object.
+10. For every non-null role, include negative_cues: short, visually segmentable
+    distractor noun phrases with ownership when useful, such as "blue joint ring
+    attached to robot wrist", "robot gripper", "wall", or "support panel". Never
+    copy a negative cue into sam_prompts.
+11. Never use a collection, object group, supporting surface, or surrounding
+    assembly unless that entire entity is explicitly the requested role.
+12. Do not output bounding boxes in this stage.
+13. Return one valid JSON object only.
 
 Schema:
 {{

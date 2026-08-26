@@ -17,9 +17,11 @@ from qwen_role_sam3_candidate_episode import (
     build_semantic_groups,
     canonicalize_candidates,
     is_color_attribute_only_prompt,
+    is_underspecified_sam_prompt,
     mask_bbox,
     normalize_prompt,
     parse_candidate_roles,
+    prompt_contains_exclusion_language,
     process_camera,
     semantic_prompt_plan,
     split_mask_components,
@@ -118,6 +120,43 @@ class SemanticGroupTests(unittest.TestCase):
         self.assertIn("wheel nut", prompts)
         self.assertTrue(
             all(not is_color_attribute_only_prompt(prompt) for prompt in prompts)
+        )
+
+    def test_osc_wheel_prompts_drop_color_noun_and_exclusion_text(self) -> None:
+        cues = [
+            "white central hub",
+            "blue outer rim",
+            "complete wheel inside the rack",
+        ]
+        spec = {
+            "target": {
+                "name": "left wheel",
+                "sam_prompts": [
+                    "blue wheel",
+                    "complete wheel with white central hub and blue outer rim",
+                    "left rack wheel with white hub and blue rim",
+                    "wheel, not the blue robot wrist ring",
+                ],
+                "identity_cues": cues,
+                "negative_cues": ["blue joint ring attached to robot wrist"],
+            }
+        }
+
+        prompts = text_prompts_for_role(spec, "target", 5)
+
+        self.assertNotIn("blue wheel", prompts)
+        self.assertNotIn("left wheel", prompts)
+        self.assertFalse(
+            any(prompt_contains_exclusion_language(prompt) for prompt in prompts)
+        )
+        self.assertIn(
+            "complete wheel with white central hub and blue outer rim",
+            prompts,
+        )
+        self.assertIn("left wheel with white central hub", prompts)
+        self.assertTrue(is_underspecified_sam_prompt("blue wheel", cues))
+        self.assertTrue(
+            all("wheel" in normalize_prompt(prompt) for prompt in prompts)
         )
 
     def test_negative_wall_mask_suppresses_wall_candidate(self) -> None:
