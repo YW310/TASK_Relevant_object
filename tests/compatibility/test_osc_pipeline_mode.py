@@ -21,6 +21,8 @@ def test_osc_hdf5_episode_runs_full_rgbd_pipeline(tmp_path: Path) -> None:
             "SAM_MODEL_DIR": "/tmp/sam",
             "MODEL_PATH": "/tmp/qwen",
             "CAMERAS": "GLOBAL_LEFT,WRIST",
+            "CANDIDATE_ROLES": "target",
+            "PROMPT_VARIANTS": "1",
             "CANDIDATE_DRY_RUN": "1",
         }
     )
@@ -41,6 +43,8 @@ def test_osc_hdf5_episode_runs_full_rgbd_pipeline(tmp_path: Path) -> None:
     assert "  Viz:" in completed.stdout
     assert "OSC HDF5 detected: running Qwen3 + SAM3 recognition only" not in completed.stdout
     assert "--cameras GLOBAL_LEFT,WRIST" in completed.stdout
+    assert "--candidate-roles target" in completed.stdout
+    assert "--prompt-variants 1" in completed.stdout
     assert "qwen_role_sam3_candidate_episode.py" in completed.stdout
     assert "multiview_candidate_fusion.py" in completed.stdout
     assert "visualize_fused_candidates.py" in completed.stdout

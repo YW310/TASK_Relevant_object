@@ -55,6 +55,18 @@ ROLE_ORDER = ("target", "reference", "interaction_part")
 STAGE1_SCHEMA_VERSION = 2
 
 
+def parse_candidate_roles(value: str) -> tuple[str, ...]:
+    """Parse and validate the semantic roles enabled for SAM3 generation."""
+    roles = tuple(dict.fromkeys(parse_csv(value)))
+    unknown = [role for role in roles if role not in ROLE_ORDER]
+    if unknown:
+        allowed = ", ".join(ROLE_ORDER)
+        raise argparse.ArgumentTypeError(
+            f"Unknown candidate role(s): {', '.join(unknown)}. Expected: {allowed}."
+        )
+    return roles
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -134,6 +146,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Maximum connected regions retained from one SAM3 mask after filtering "
             "by --min-mask-area (0 keeps all)."
+        ),
+    )
+    parser.add_argument(
+        "--candidate-roles",
+        "--roles",
+        dest="candidate_roles",
+        type=parse_candidate_roles,
+        default=ROLE_ORDER,
+        help=(
+            "Comma-separated roles sent to SAM3: target, reference, interaction_part. "
+            "Use 'target' for target-only candidate generation."
         ),
     )
     parser.add_argument(
@@ -293,12 +316,14 @@ def text_prompts_for_role(role_spec: Mapping[str, Any], role: str, max_variants:
 
 
 def build_semantic_groups(
-    role_spec: Mapping[str, Any], max_variants: int
+    role_spec: Mapping[str, Any],
+    max_variants: int,
+    roles: Sequence[str] = ROLE_ORDER,
 ) -> list[dict[str, Any]]:
     """Group roles only when their complete visual specifications match."""
     grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
     ordered: list[dict[str, Any]] = []
-    for role in ROLE_ORDER:
+    for role in roles:
         spec = role_spec.get(role)
         if not isinstance(spec, Mapping):
             continue
@@ -977,6 +1002,7 @@ def main() -> None:
     print(f"Instruction ({instruction_source}): {instruction}")
     print(f"Frames: {len(selected_frame_ids)} selected from {len(all_frame_ids)}")
     print(f"Cameras: {', '.join(args.cameras)}")
+    print(f"Candidate roles: {', '.join(args.candidate_roles)}")
 
     if args.dry_run:
         role_doc = None
@@ -984,7 +1010,9 @@ def main() -> None:
             loaded = json.loads(Path(args.role_spec_json).read_text(encoding="utf-8"))
             role_doc = role_spec_document(instruction, loaded.get("role_spec", loaded))
         semantic_groups = (
-            build_semantic_groups(role_doc, args.prompt_variants)
+            build_semantic_groups(
+                role_doc, args.prompt_variants, args.candidate_roles
+            )
             if role_doc is not None
             else None
         )
@@ -994,6 +1022,7 @@ def main() -> None:
             "output_dir": str(output_dir),
             "instruction": instruction,
             "camera_names": list(args.cameras),
+            "candidate_roles": list(args.candidate_roles),
             "selected_frame_ids": list(selected_frame_ids),
             "role_frame_id": role_frame_id,
             "role_spec": role_doc,
@@ -1008,7 +1037,9 @@ def main() -> None:
         raise RuntimeError("CUDA requested but torch.cuda.is_available() is False.")
 
     role_doc = load_or_identify_role_spec(args, instruction, role_views, output_dir)
-    semantic_groups = build_semantic_groups(role_doc, args.prompt_variants)
+    semantic_groups = build_semantic_groups(
+        role_doc, args.prompt_variants, args.candidate_roles
+    )
 
     Sam3Processor, build_sam3_image_model = load_sam3_components()
     model_dir = Path(args.sam_model_dir).expanduser().resolve()

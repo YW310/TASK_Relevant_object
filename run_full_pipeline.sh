@@ -16,6 +16,8 @@
 #   INSTRUCTION                             Explicit instruction override.
 #   ROLE_SPEC_JSON                          Reuse an existing role_spec.json (skips Qwen stage 1).
 #   CAMERAS                                 Comma-separated camera subset, e.g. "front,left_shoulder".
+#   CANDIDATE_ROLES (default: target,reference,interaction_part)
+#                                           Roles sent to SAM3; set to "target" for target-only mode.
 #   FRAME_INTERVAL (default: 1)             Process one frame every N source frames.
 #   MAX_FRAMES                              Optional cap on number of frames.
 #   DEVICE (default: cuda)                  cuda|cpu for the SAM3/Qwen stage.
@@ -108,7 +110,7 @@
 #   Stage 1: INSTRUCTION_FILE, INSTRUCTION_INDEX, START_FRAME, END_FRAME,
 #     ROLE_FRAME, GROUNDING_MIN_SIDE, MAX_RETRIES, SAM_CHECKPOINT,
 #     COMPILE_MODEL, TOP_K_PER_SEMANTIC_GROUP, CANDIDATE_POOL_SIZE, MIN_MASK_AREA,
-#     PROMPT_VARIANTS, CANDIDATE_MASK_ALPHA, SAVE_FRAME_CONTACT_SHEET,
+#     CANDIDATE_ROLES, PROMPT_VARIANTS, CANDIDATE_MASK_ALPHA, SAVE_FRAME_CONTACT_SHEET,
 #     VISUALIZATION_CELL_WIDTH, CANDIDATE_RESUME, CANDIDATE_PROGRESS,
 #     CANDIDATE_DRY_RUN.
 #   Stage 2: CANDIDATES_JSON, FUSED_JSON, RLBENCH_LOW_DIM_OBS, DEPTH_SCALE,
@@ -154,6 +156,7 @@ MODEL_PATH="${MODEL_PATH:-}"
 INSTRUCTION="${INSTRUCTION:-}"
 ROLE_SPEC_JSON="${ROLE_SPEC_JSON:-}"
 CAMERAS="${CAMERAS:-}"
+CANDIDATE_ROLES="${CANDIDATE_ROLES:-target,reference,interaction_part}"
 FRAME_INTERVAL="${FRAME_INTERVAL:-1}"
 MAX_FRAMES="${MAX_FRAMES:-}"
 DEVICE="${DEVICE:-cuda}"
@@ -342,6 +345,7 @@ else
     --candidate-pool-size "${CANDIDATE_POOL_SIZE}"
     --min-mask-area "${MIN_MASK_AREA}"
     --max-mask-components "${MAX_MASK_COMPONENTS}"
+    --candidate-roles "${CANDIDATE_ROLES}"
     --prompt-variants "${PROMPT_VARIANTS}"
     --mask-nms-iou "${MASK_NMS_IOU}"
     --canonical-containment "${CANONICAL_CONTAINMENT}"

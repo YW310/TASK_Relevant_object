@@ -18,6 +18,7 @@ from qwen_role_sam3_candidate_episode import (
     canonicalize_candidates,
     mask_bbox,
     normalize_prompt,
+    parse_candidate_roles,
     process_camera,
     semantic_prompt_plan,
     split_mask_components,
@@ -79,6 +80,25 @@ class SemanticGroupTests(unittest.TestCase):
         self.assertEqual(3, len(groups))
         self.assertTrue(all(group["role_discriminative"] for group in groups))
         self.assertEqual("strasse cup", normalize_prompt("  STRASSE\t cup "))
+
+    def test_target_only_uses_one_role_and_one_prompt_variant(self) -> None:
+        spec = {
+            "target": {
+                "name": "wheel nut",
+                "sam_prompts": ["wheel nut", "metal wheel nut", "hex nut"],
+            },
+            "reference": {"name": "wheel", "sam_prompts": ["wheel"]},
+            "interaction_part": {"name": "nut face", "sam_prompts": ["nut face"]},
+        }
+
+        roles = parse_candidate_roles("target,target")
+        groups = build_semantic_groups(spec, 1, roles)
+        plan = semantic_prompt_plan(groups)
+
+        self.assertEqual(("target",), roles)
+        self.assertEqual(1, len(groups))
+        self.assertEqual(["target"], groups[0]["compatible_roles"])
+        self.assertEqual(1, len(plan))
 
     def test_process_camera_executes_each_normalized_prompt_once(self) -> None:
         spec = {

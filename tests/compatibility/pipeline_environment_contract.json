@@ -1,7 +1,7 @@
 [
   {
     "name": "PYTHON",
-    "line": 146,
+    "line": 148,
     "default_expression": "python",
     "value_kind": "string",
     "empty_semantics": "use declared default",
@@ -17,7 +17,7 @@
   },
   {
     "name": "EPISODE_DIR",
-    "line": 148,
+    "line": 150,
     "default_expression": "",
     "value_kind": "path_or_empty",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -33,7 +33,7 @@
   },
   {
     "name": "SAM_MODEL_DIR",
-    "line": 149,
+    "line": 151,
     "default_expression": "",
     "value_kind": "path_or_empty",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -46,7 +46,7 @@
   },
   {
     "name": "OUTPUT_ROOT",
-    "line": 151,
+    "line": 153,
     "default_expression": "outputs",
     "value_kind": "string",
     "empty_semantics": "use declared default",
@@ -55,7 +55,7 @@
   },
   {
     "name": "OUTPUT_DIR",
-    "line": 152,
+    "line": 154,
     "default_expression": "",
     "value_kind": "path_or_empty",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -69,7 +69,7 @@
   },
   {
     "name": "MODEL_PATH",
-    "line": 153,
+    "line": 155,
     "default_expression": "",
     "value_kind": "path_or_empty",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -82,7 +82,7 @@
   },
   {
     "name": "INSTRUCTION",
-    "line": 154,
+    "line": 156,
     "default_expression": "",
     "value_kind": "string",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -95,7 +95,7 @@
   },
   {
     "name": "ROLE_SPEC_JSON",
-    "line": 155,
+    "line": 157,
     "default_expression": "",
     "value_kind": "path_or_empty",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -108,7 +108,7 @@
   },
   {
     "name": "CAMERAS",
-    "line": 156,
+    "line": 158,
     "default_expression": "",
     "value_kind": "string",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -123,8 +123,21 @@
     ]
   },
   {
+    "name": "CANDIDATE_ROLES",
+    "line": 159,
+    "default_expression": "target,reference,interaction_part",
+    "value_kind": "string",
+    "empty_semantics": "use declared default",
+    "used_by": [
+      "candidates"
+    ],
+    "cli_flags": [
+      "--candidate-roles"
+    ]
+  },
+  {
     "name": "FRAME_INTERVAL",
-    "line": 157,
+    "line": 160,
     "default_expression": "1",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -137,7 +150,7 @@
   },
   {
     "name": "MAX_FRAMES",
-    "line": 158,
+    "line": 161,
     "default_expression": "",
     "value_kind": "optional_number",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -150,7 +163,7 @@
   },
   {
     "name": "DEVICE",
-    "line": 159,
+    "line": 162,
     "default_expression": "cuda",
     "value_kind": "string",
     "empty_semantics": "use declared default",
@@ -163,7 +176,7 @@
   },
   {
     "name": "USE_BF16",
-    "line": 160,
+    "line": 163,
     "default_expression": "0",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -176,7 +189,7 @@
   },
   {
     "name": "THRESHOLD",
-    "line": 161,
+    "line": 164,
     "default_expression": "0.25",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -189,7 +202,7 @@
   },
   {
     "name": "CAMERA_THRESHOLD_OVERRIDES",
-    "line": 162,
+    "line": 165,
     "default_expression": "",
     "value_kind": "string",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -202,7 +215,7 @@
   },
   {
     "name": "INSTRUCTION_FILE",
-    "line": 163,
+    "line": 166,
     "default_expression": "",
     "value_kind": "string",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -215,7 +228,7 @@
   },
   {
     "name": "INSTRUCTION_INDEX",
-    "line": 164,
+    "line": 167,
     "default_expression": "0",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -228,7 +241,7 @@
   },
   {
     "name": "START_FRAME",
-    "line": 165,
+    "line": 168,
     "default_expression": "0",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -241,7 +254,7 @@
   },
   {
     "name": "END_FRAME",
-    "line": 166,
+    "line": 169,
     "default_expression": "",
     "value_kind": "optional_number",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -254,7 +267,7 @@
   },
   {
     "name": "ROLE_FRAME",
-    "line": 167,
+    "line": 170,
     "default_expression": "first",
     "value_kind": "string",
     "empty_semantics": "use declared default",
@@ -267,7 +280,7 @@
   },
   {
     "name": "GROUNDING_MIN_SIDE",
-    "line": 168,
+    "line": 171,
     "default_expression": "512",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -280,7 +293,7 @@
   },
   {
     "name": "MAX_RETRIES",
-    "line": 169,
+    "line": 172,
     "default_expression": "1",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -293,7 +306,7 @@
   },
   {
     "name": "SAM_CHECKPOINT",
-    "line": 170,
+    "line": 173,
     "default_expression": "",
     "value_kind": "path_or_empty",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -306,7 +319,7 @@
   },
   {
     "name": "COMPILE_MODEL",
-    "line": 171,
+    "line": 174,
     "default_expression": "0",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -319,7 +332,7 @@
   },
   {
     "name": "TOP_K_PER_SEMANTIC_GROUP",
-    "line": 172,
+    "line": 175,
     "default_expression": "8",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -332,7 +345,7 @@
   },
   {
     "name": "CANDIDATE_POOL_SIZE",
-    "line": 173,
+    "line": 176,
     "default_expression": "20",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -345,7 +358,7 @@
   },
   {
     "name": "MIN_MASK_AREA",
-    "line": 174,
+    "line": 177,
     "default_expression": "4",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -358,7 +371,7 @@
   },
   {
     "name": "SPLIT_DISCONNECTED_MASKS",
-    "line": 175,
+    "line": 178,
     "default_expression": "1",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -372,7 +385,7 @@
   },
   {
     "name": "MAX_MASK_COMPONENTS",
-    "line": 176,
+    "line": 179,
     "default_expression": "4",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -385,7 +398,7 @@
   },
   {
     "name": "PROMPT_VARIANTS",
-    "line": 177,
+    "line": 180,
     "default_expression": "5",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -398,7 +411,7 @@
   },
   {
     "name": "MASK_NMS_IOU",
-    "line": 178,
+    "line": 181,
     "default_expression": "0.80",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -411,7 +424,7 @@
   },
   {
     "name": "CANONICAL_CONTAINMENT",
-    "line": 179,
+    "line": 182,
     "default_expression": "0.90",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -424,7 +437,7 @@
   },
   {
     "name": "CANONICAL_MAX_AREA_RATIO",
-    "line": 180,
+    "line": 183,
     "default_expression": "3.0",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -437,7 +450,7 @@
   },
   {
     "name": "CANONICAL_BBOX_IOU",
-    "line": 181,
+    "line": 184,
     "default_expression": "0.0",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -450,7 +463,7 @@
   },
   {
     "name": "SUPPRESS_MULTI_INSTANCE_MASKS",
-    "line": 182,
+    "line": 185,
     "default_expression": "1",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -464,7 +477,7 @@
   },
   {
     "name": "CANDIDATE_MASK_ALPHA",
-    "line": 183,
+    "line": 186,
     "default_expression": "105",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -477,7 +490,7 @@
   },
   {
     "name": "SAVE_FRAME_CONTACT_SHEET",
-    "line": 184,
+    "line": 187,
     "default_expression": "1",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -491,7 +504,7 @@
   },
   {
     "name": "VISUALIZATION_CELL_WIDTH",
-    "line": 185,
+    "line": 188,
     "default_expression": "384",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -504,7 +517,7 @@
   },
   {
     "name": "CANDIDATE_RESUME",
-    "line": 186,
+    "line": 189,
     "default_expression": "1",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -517,7 +530,7 @@
   },
   {
     "name": "CANDIDATE_PROGRESS",
-    "line": 187,
+    "line": 190,
     "default_expression": "1",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -531,7 +544,7 @@
   },
   {
     "name": "CANDIDATE_DRY_RUN",
-    "line": 188,
+    "line": 191,
     "default_expression": "0",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -544,7 +557,7 @@
   },
   {
     "name": "CLUSTER_DISTANCE_M",
-    "line": 189,
+    "line": 192,
     "default_expression": "0.03",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -557,7 +570,7 @@
   },
   {
     "name": "SAME_CAMERA_NMS_MASK_IOU",
-    "line": 190,
+    "line": 193,
     "default_expression": "0.55",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -570,7 +583,7 @@
   },
   {
     "name": "SAME_CAMERA_NMS_CONTAINMENT",
-    "line": 191,
+    "line": 194,
     "default_expression": "0.85",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -583,7 +596,7 @@
   },
   {
     "name": "SAME_CAMERA_NMS_CENTROID_DISTANCE_M",
-    "line": 192,
+    "line": 195,
     "default_expression": "0.03",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -596,7 +609,7 @@
   },
   {
     "name": "SAME_CAMERA_NMS_MAX_SIZE_RATIO",
-    "line": 193,
+    "line": 196,
     "default_expression": "2.5",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -609,7 +622,7 @@
   },
   {
     "name": "SAME_CAMERA_NMS_FRAGMENT_MAX_POINT_RATIO",
-    "line": 194,
+    "line": 197,
     "default_expression": "0.45",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -622,7 +635,7 @@
   },
   {
     "name": "SAME_CAMERA_NMS_FRAGMENT_MIN_BBOX_CONTAINMENT",
-    "line": 195,
+    "line": 198,
     "default_expression": "0.90",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -635,7 +648,7 @@
   },
   {
     "name": "SAME_CAMERA_NMS_FRAGMENT_CLOUD_DISTANCE_M",
-    "line": 196,
+    "line": 199,
     "default_expression": "0.018",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -648,7 +661,7 @@
   },
   {
     "name": "SAME_CAMERA_NMS_FRAGMENT_MIN_CLOUD_FRACTION",
-    "line": 197,
+    "line": 200,
     "default_expression": "0.65",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -661,7 +674,7 @@
   },
   {
     "name": "MIN_FUSED_CAMERA_COUNT",
-    "line": 198,
+    "line": 201,
     "default_expression": "1",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -674,7 +687,7 @@
   },
   {
     "name": "PREFERRED_CAMERA",
-    "line": 199,
+    "line": 202,
     "default_expression": "front",
     "value_kind": "string",
     "empty_semantics": "use declared default",
@@ -687,7 +700,7 @@
   },
   {
     "name": "PREFERRED_CAMERA_WEIGHT",
-    "line": 200,
+    "line": 203,
     "default_expression": "1.5",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -700,7 +713,7 @@
   },
   {
     "name": "CAMERA_VISIBILITY_DEPTH_TOLERANCE_M",
-    "line": 201,
+    "line": 204,
     "default_expression": "0.03",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -713,7 +726,7 @@
   },
   {
     "name": "CAMERA_VISIBILITY_MIN_POINT_FRACTION",
-    "line": 202,
+    "line": 205,
     "default_expression": "0.05",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -726,7 +739,7 @@
   },
   {
     "name": "SINGLE_CAMERA_KEEP_SCORE",
-    "line": 203,
+    "line": 206,
     "default_expression": "0.0",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -739,7 +752,7 @@
   },
   {
     "name": "LEGACY_CANONICAL_IOU",
-    "line": 204,
+    "line": 207,
     "default_expression": "0.35",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -752,7 +765,7 @@
   },
   {
     "name": "LEGACY_CANONICAL_CONTAINMENT",
-    "line": 205,
+    "line": 208,
     "default_expression": "0.50",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -765,7 +778,7 @@
   },
   {
     "name": "RLBENCH_LOW_DIM_OBS",
-    "line": 206,
+    "line": 209,
     "default_expression": "",
     "value_kind": "path_or_empty",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -780,7 +793,7 @@
   },
   {
     "name": "DEPTH_SCALE",
-    "line": 207,
+    "line": 210,
     "default_expression": "1.0",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -793,7 +806,7 @@
   },
   {
     "name": "DEPTH_MODE",
-    "line": 208,
+    "line": 211,
     "default_expression": "auto",
     "value_kind": "string",
     "empty_semantics": "use declared default",
@@ -806,7 +819,7 @@
   },
   {
     "name": "MAX_POINTS_PER_CANDIDATE",
-    "line": 209,
+    "line": 212,
     "default_expression": "4096",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -819,7 +832,7 @@
   },
   {
     "name": "MIN_CANDIDATE_MASK_AREA_PIXELS",
-    "line": 210,
+    "line": 213,
     "default_expression": "${MIN_MASK_AREA}",
     "value_kind": "string",
     "empty_semantics": "derived from another setting when empty",
@@ -832,7 +845,7 @@
   },
   {
     "name": "BBOX_IOU_THRESHOLD",
-    "line": 211,
+    "line": 214,
     "default_expression": "0.0",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -845,7 +858,7 @@
   },
   {
     "name": "NEAREST_DISTANCE_M",
-    "line": 212,
+    "line": 215,
     "default_expression": "",
     "value_kind": "optional_number",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -858,7 +871,7 @@
   },
   {
     "name": "MAX_HYPOTHESIS_DIAMETER_M",
-    "line": 213,
+    "line": 216,
     "default_expression": "0.50",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -871,7 +884,7 @@
   },
   {
     "name": "MAX_SIZE_RATIO",
-    "line": 214,
+    "line": 217,
     "default_expression": "4.0",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -884,7 +897,7 @@
   },
   {
     "name": "LEGACY_UNION_FIND",
-    "line": 215,
+    "line": 218,
     "default_expression": "0",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -897,7 +910,7 @@
   },
   {
     "name": "TRACK_DISTANCE_M",
-    "line": 216,
+    "line": 219,
     "default_expression": "0.22",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -910,7 +923,7 @@
   },
   {
     "name": "TRACK_MAX_MISSED_FRAMES",
-    "line": 217,
+    "line": 220,
     "default_expression": "4",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -923,7 +936,7 @@
   },
   {
     "name": "TRACK_MAX_SIZE_RATIO",
-    "line": 218,
+    "line": 221,
     "default_expression": "4.0",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -936,7 +949,7 @@
   },
   {
     "name": "MIN_FUSED_POINTS",
-    "line": 219,
+    "line": 222,
     "default_expression": "0",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -949,7 +962,7 @@
   },
   {
     "name": "MIN_BBOX_DIAGONAL_M",
-    "line": 220,
+    "line": 223,
     "default_expression": "0.0",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -962,7 +975,7 @@
   },
   {
     "name": "MAX_CENTROID_TO_CLOUD_DISTANCE_M",
-    "line": 221,
+    "line": 224,
     "default_expression": "0.02",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -975,7 +988,7 @@
   },
   {
     "name": "COMPONENT_VOXEL_SIZE_M",
-    "line": 222,
+    "line": 225,
     "default_expression": "0.008",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -988,7 +1001,7 @@
   },
   {
     "name": "MIN_LARGEST_COMPONENT_RATIO",
-    "line": 223,
+    "line": 226,
     "default_expression": "0.75",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -1001,7 +1014,7 @@
   },
   {
     "name": "MAX_SECONDARY_COMPONENT_RATIO",
-    "line": 224,
+    "line": 227,
     "default_expression": "0.20",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -1014,7 +1027,7 @@
   },
   {
     "name": "MIN_COMPONENT_CENTROID_GAP_M",
-    "line": 225,
+    "line": 228,
     "default_expression": "0.02",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -1027,7 +1040,7 @@
   },
   {
     "name": "MIN_COMPONENT_POINTS",
-    "line": 226,
+    "line": 229,
     "default_expression": "20",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1040,7 +1053,7 @@
   },
   {
     "name": "SAVE_OBJECT_SUMMARY",
-    "line": 227,
+    "line": 230,
     "default_expression": "0",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -1054,7 +1067,7 @@
   },
   {
     "name": "OBJECT_SUMMARY_JSON",
-    "line": 228,
+    "line": 231,
     "default_expression": "",
     "value_kind": "path_or_empty",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -1069,7 +1082,7 @@
   },
   {
     "name": "SKIP_DECISION",
-    "line": 229,
+    "line": 232,
     "default_expression": "1",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -1085,7 +1098,7 @@
   },
   {
     "name": "DECISION_MODEL_PATH",
-    "line": 230,
+    "line": 233,
     "default_expression": "${MODEL_PATH:-}",
     "value_kind": "path",
     "empty_semantics": "derived from another setting when empty",
@@ -1098,7 +1111,7 @@
   },
   {
     "name": "DECISION_SCOPE",
-    "line": 231,
+    "line": 234,
     "default_expression": "all",
     "value_kind": "string",
     "empty_semantics": "use declared default",
@@ -1111,7 +1124,7 @@
   },
   {
     "name": "DECISION_POLICY",
-    "line": 232,
+    "line": 235,
     "default_expression": "adaptive",
     "value_kind": "string",
     "empty_semantics": "use declared default",
@@ -1124,7 +1137,7 @@
   },
   {
     "name": "DECISION_REFRESH_INTERVAL",
-    "line": 233,
+    "line": 236,
     "default_expression": "5",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1137,7 +1150,7 @@
   },
   {
     "name": "DECISION_MIN_PROPAGATION_CONFIDENCE",
-    "line": 234,
+    "line": 237,
     "default_expression": "0.70",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -1150,7 +1163,7 @@
   },
   {
     "name": "REFERENCE_SWITCH_CONFIRMATION_FRAMES",
-    "line": 235,
+    "line": 238,
     "default_expression": "2",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1163,7 +1176,7 @@
   },
   {
     "name": "DECISION_FRAME",
-    "line": 236,
+    "line": 239,
     "default_expression": "last",
     "value_kind": "string",
     "empty_semantics": "use declared default",
@@ -1176,7 +1189,7 @@
   },
   {
     "name": "DECISION_FRAME_ID",
-    "line": 237,
+    "line": 240,
     "default_expression": "",
     "value_kind": "string",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -1189,7 +1202,7 @@
   },
   {
     "name": "DECISION_WINDOW_FRAMES",
-    "line": 238,
+    "line": 241,
     "default_expression": "3",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1202,7 +1215,7 @@
   },
   {
     "name": "USE_DECISION_HISTORY",
-    "line": 239,
+    "line": 242,
     "default_expression": "0",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -1215,7 +1228,7 @@
   },
   {
     "name": "DECISION_MAX_NEW_TOKENS",
-    "line": 240,
+    "line": 243,
     "default_expression": "384",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1228,7 +1241,7 @@
   },
   {
     "name": "DECISION_GROUNDING_MIN_SIDE",
-    "line": 241,
+    "line": 244,
     "default_expression": "512",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1241,7 +1254,7 @@
   },
   {
     "name": "DECISION_MAX_RETRIES",
-    "line": 242,
+    "line": 245,
     "default_expression": "0",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1254,7 +1267,7 @@
   },
   {
     "name": "DECISION_DRY_RUN",
-    "line": 243,
+    "line": 246,
     "default_expression": "0",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -1267,7 +1280,7 @@
   },
   {
     "name": "DECISION_OUTPUT_JSON",
-    "line": 244,
+    "line": 247,
     "default_expression": "",
     "value_kind": "path_or_empty",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -1283,7 +1296,7 @@
   },
   {
     "name": "DECISION_ARTIFACTS_DIR",
-    "line": 245,
+    "line": 248,
     "default_expression": "",
     "value_kind": "path_or_empty",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -1296,7 +1309,7 @@
   },
   {
     "name": "DECISION_VISUAL_MODE",
-    "line": 246,
+    "line": 249,
     "default_expression": "scene",
     "value_kind": "string",
     "empty_semantics": "use declared default",
@@ -1309,7 +1322,7 @@
   },
   {
     "name": "DECISION_SCENE_CAMERAS",
-    "line": 247,
+    "line": 250,
     "default_expression": "front,left_shoulder,right_shoulder",
     "value_kind": "string",
     "empty_semantics": "use declared default",
@@ -1322,7 +1335,7 @@
   },
   {
     "name": "DECISION_SCENE_WINDOW_FRAMES",
-    "line": 248,
+    "line": 251,
     "default_expression": "2",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1335,7 +1348,7 @@
   },
   {
     "name": "MAX_CANDIDATE_IMAGES",
-    "line": 249,
+    "line": 252,
     "default_expression": "3",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1348,7 +1361,7 @@
   },
   {
     "name": "CANDIDATE_VIEWS_PER_OBJECT",
-    "line": 250,
+    "line": 253,
     "default_expression": "1",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1361,7 +1374,7 @@
   },
   {
     "name": "DECISION_MAX_VISUAL_PIXELS",
-    "line": 251,
+    "line": 254,
     "default_expression": "393216",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1374,7 +1387,7 @@
   },
   {
     "name": "DECISION_ATTENTION_BACKEND",
-    "line": 252,
+    "line": 255,
     "default_expression": "auto",
     "value_kind": "string",
     "empty_semantics": "use declared default",
@@ -1387,7 +1400,7 @@
   },
   {
     "name": "MAX_CANDIDATES_FOR_DECISION",
-    "line": 253,
+    "line": 256,
     "default_expression": "12",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1400,7 +1413,7 @@
   },
   {
     "name": "MIN_CANDIDATE_POINT_COUNT",
-    "line": 254,
+    "line": 257,
     "default_expression": "0",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1413,7 +1426,7 @@
   },
   {
     "name": "MIN_CANDIDATE_CAMERA_COUNT",
-    "line": 255,
+    "line": 258,
     "default_expression": "1",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1426,7 +1439,7 @@
   },
   {
     "name": "MIN_CANDIDATE_SAM_SCORE",
-    "line": 256,
+    "line": 259,
     "default_expression": "0.0",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -1439,7 +1452,7 @@
   },
   {
     "name": "MAX_EE_DISTANCE_M",
-    "line": 257,
+    "line": 260,
     "default_expression": "",
     "value_kind": "optional_number",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -1452,7 +1465,7 @@
   },
   {
     "name": "DYNAMIC_ROLE_REASONING",
-    "line": 258,
+    "line": 261,
     "default_expression": "1",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -1465,7 +1478,7 @@
   },
   {
     "name": "GRASP_DISTANCE_M",
-    "line": 259,
+    "line": 262,
     "default_expression": "0.06",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -1478,7 +1491,7 @@
   },
   {
     "name": "GRIPPER_CLOSED_THRESHOLD",
-    "line": 260,
+    "line": 263,
     "default_expression": "0.5",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -1491,7 +1504,7 @@
   },
   {
     "name": "OBJECT_MOVING_DISTANCE_M",
-    "line": 261,
+    "line": 264,
     "default_expression": "0.01",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -1504,7 +1517,7 @@
   },
   {
     "name": "OBJECT_STABLE_DISTANCE_M",
-    "line": 262,
+    "line": 265,
     "default_expression": "0.008",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -1517,7 +1530,7 @@
   },
   {
     "name": "PLACEMENT_STABLE_FRAMES",
-    "line": 263,
+    "line": 266,
     "default_expression": "2",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1530,7 +1543,7 @@
   },
   {
     "name": "MIN_SUPPORT_XY_OVERLAP",
-    "line": 264,
+    "line": 267,
     "default_expression": "0.35",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -1543,7 +1556,7 @@
   },
   {
     "name": "MIN_SUPPORT_VERTICAL_GAP_M",
-    "line": 265,
+    "line": 268,
     "default_expression": "-0.01",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -1556,7 +1569,7 @@
   },
   {
     "name": "MAX_SUPPORT_VERTICAL_GAP_M",
-    "line": 266,
+    "line": 269,
     "default_expression": "0.025",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -1569,7 +1582,7 @@
   },
   {
     "name": "MIN_CONTAINMENT_RATIO",
-    "line": 267,
+    "line": 270,
     "default_expression": "0.5",
     "value_kind": "number",
     "empty_semantics": "use declared default",
@@ -1582,7 +1595,7 @@
   },
   {
     "name": "SKIP_DECISION_VIZ",
-    "line": 268,
+    "line": 271,
     "default_expression": "0",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -1594,7 +1607,7 @@
   },
   {
     "name": "DECISION_VIZ_OUTPUT_DIR",
-    "line": 269,
+    "line": 272,
     "default_expression": "",
     "value_kind": "path_or_empty",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -1608,7 +1621,7 @@
   },
   {
     "name": "SKIP_STAGE_COMPARE",
-    "line": 270,
+    "line": 273,
     "default_expression": "1",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -1619,7 +1632,7 @@
   },
   {
     "name": "STAGE_COMPARE_OUTPUT_DIR",
-    "line": 271,
+    "line": 274,
     "default_expression": "",
     "value_kind": "path_or_empty",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -1632,7 +1645,7 @@
   },
   {
     "name": "CAMERA_PARAMS_JSON",
-    "line": 272,
+    "line": 275,
     "default_expression": "",
     "value_kind": "path_or_empty",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -1647,7 +1660,7 @@
   },
   {
     "name": "INVERT_RLBENCH_EXTRINSICS",
-    "line": 273,
+    "line": 276,
     "default_expression": "0",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -1662,7 +1675,7 @@
   },
   {
     "name": "SKIP_CANDIDATES",
-    "line": 274,
+    "line": 277,
     "default_expression": "0",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -1673,7 +1686,7 @@
   },
   {
     "name": "SKIP_FUSION",
-    "line": 275,
+    "line": 278,
     "default_expression": "0",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -1684,7 +1697,7 @@
   },
   {
     "name": "SKIP_VIZ",
-    "line": 276,
+    "line": 279,
     "default_expression": "0",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -1695,7 +1708,7 @@
   },
   {
     "name": "VIZ_FRAME_IDS",
-    "line": 277,
+    "line": 280,
     "default_expression": "",
     "value_kind": "string",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -1708,7 +1721,7 @@
   },
   {
     "name": "VIZ_POINT_STRIDE",
-    "line": 278,
+    "line": 281,
     "default_expression": "4",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1721,7 +1734,7 @@
   },
   {
     "name": "VIZ_POINT_RADIUS",
-    "line": 279,
+    "line": 282,
     "default_expression": "2",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1734,7 +1747,7 @@
   },
   {
     "name": "VIZ_MASK_ALPHA",
-    "line": 280,
+    "line": 283,
     "default_expression": "80",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1747,7 +1760,7 @@
   },
   {
     "name": "VIZ_MAX_FRAMES",
-    "line": 281,
+    "line": 284,
     "default_expression": "",
     "value_kind": "optional_number",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -1760,7 +1773,7 @@
   },
   {
     "name": "VIZ_SKIP_POINTCLOUD",
-    "line": 282,
+    "line": 285,
     "default_expression": "0",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -1773,7 +1786,7 @@
   },
   {
     "name": "VIZ_MONTAGE_COLUMNS",
-    "line": 283,
+    "line": 286,
     "default_expression": "2",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1786,7 +1799,7 @@
   },
   {
     "name": "VIZ_MONTAGE_CELL_WIDTH",
-    "line": 284,
+    "line": 287,
     "default_expression": "512",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1799,7 +1812,7 @@
   },
   {
     "name": "VIZ_HIDE_SUSPECTED_FRAGMENTS",
-    "line": 285,
+    "line": 288,
     "default_expression": "0",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -1812,7 +1825,7 @@
   },
   {
     "name": "DECISION_VIZ_POINT_STRIDE",
-    "line": 286,
+    "line": 289,
     "default_expression": "4",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1825,7 +1838,7 @@
   },
   {
     "name": "DECISION_VIZ_POINT_RADIUS",
-    "line": 287,
+    "line": 290,
     "default_expression": "2",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1838,7 +1851,7 @@
   },
   {
     "name": "DECISION_VIZ_MASK_ALPHA",
-    "line": 288,
+    "line": 291,
     "default_expression": "90",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1851,7 +1864,7 @@
   },
   {
     "name": "DECISION_VIZ_BOX_WIDTH",
-    "line": 289,
+    "line": 292,
     "default_expression": "1",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1864,7 +1877,7 @@
   },
   {
     "name": "DECISION_VIZ_ANNOTATION_ALPHA",
-    "line": 290,
+    "line": 293,
     "default_expression": "150",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1877,7 +1890,7 @@
   },
   {
     "name": "DECISION_VIZ_HIDE_SUSPECTED_FRAGMENTS",
-    "line": 291,
+    "line": 294,
     "default_expression": "0",
     "value_kind": "boolean_0_or_1",
     "empty_semantics": "use declared default",
@@ -1890,7 +1903,7 @@
   },
   {
     "name": "STAGE1_CANDIDATES_JSON",
-    "line": 292,
+    "line": 295,
     "default_expression": "",
     "value_kind": "path_or_empty",
     "empty_semantics": "optional value; related CLI flag is omitted when empty",
@@ -1903,7 +1916,7 @@
   },
   {
     "name": "STAGE_COMPARE_PANEL_GAP",
-    "line": 293,
+    "line": 296,
     "default_expression": "8",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1916,7 +1929,7 @@
   },
   {
     "name": "STAGE_COMPARE_LABEL_HEIGHT",
-    "line": 294,
+    "line": 297,
     "default_expression": "26",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1929,7 +1942,7 @@
   },
   {
     "name": "STAGE_COMPARE_SUMMARY_WIDTH",
-    "line": 295,
+    "line": 298,
     "default_expression": "360",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
@@ -1942,7 +1955,7 @@
   },
   {
     "name": "STAGE_COMPARE_BACKGROUND",
-    "line": 296,
+    "line": 299,
     "default_expression": "white",
     "value_kind": "string",
     "empty_semantics": "use declared default",
@@ -1955,7 +1968,7 @@
   },
   {
     "name": "CANDIDATES_JSON",
-    "line": 312,
+    "line": 315,
     "default_expression": "${OUTPUT_DIR}/episode_candidates.json",
     "value_kind": "path",
     "empty_semantics": "derived from another setting when empty",
@@ -1969,7 +1982,7 @@
   },
   {
     "name": "FUSED_JSON",
-    "line": 313,
+    "line": 316,
     "default_expression": "${OUTPUT_DIR}/frame_fused_candidates.json",
     "value_kind": "path",
     "empty_semantics": "derived from another setting when empty",
@@ -1986,7 +1999,7 @@
   },
   {
     "name": "VIZ_DIR",
-    "line": 314,
+    "line": 317,
     "default_expression": "${OUTPUT_DIR}/viz",
     "value_kind": "path",
     "empty_semantics": "derived from another setting when empty",

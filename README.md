@@ -54,7 +54,9 @@ instruction into a bbox-free role specification (`target`, `reference`,
 `interaction_part`, and `relation`). It then prompts SAM3 for each role in each
 selected camera/frame, filters and deduplicates the masks, and saves stable
 role-prefixed IDs (`T*`, `R*`, and `P*`). Qwen runs once for the role frame;
-SAM3 runs across the selected episode frames.
+SAM3 runs once per unique normalized text prompt across the selected episode
+frames. The default permits up to five prompt variants per role, so one role can
+cause up to five SAM3 executions per camera/frame.
 
 Important input and sampling arguments:
 
@@ -81,7 +83,8 @@ Candidate generation and runtime arguments:
 | `--camera-threshold-overrides` | `CAMERA_THRESHOLD_OVERRIDES` | unset | Per-camera cutoffs such as `left_shoulder=0.15`. |
 | `--candidate-pool-size` | — | `20` | Raw masks inspected per prompt before final selection. |
 | `--top-k-per-semantic-group` | `TOP_K_PER_SEMANTIC_GROUP` | `8` | Maximum candidates retained for each semantic concept group. |
-| `--prompt-variants` | — | `5` | Maximum Qwen/SAM text variants attempted per role. |
+| `--candidate-roles` | `CANDIDATE_ROLES` | all three roles | Roles sent to SAM3; use `target` for target-only generation. |
+| `--prompt-variants` | `PROMPT_VARIANTS` | `5` | Maximum Qwen/SAM text variants attempted per enabled role. |
 | `--min-mask-area` | — | `4` px | Remove tiny mask fragments. |
 | `--[no-]split-disconnected-masks` | `SPLIT_DISCONNECTED_MASKS` | enabled | Split disconnected regions from one SAM3 mask before computing candidate bboxes. |
 | `--max-mask-components` | `MAX_MASK_COMPONENTS` | `4` | Maximum significant regions retained from one SAM3 mask (`0` keeps all). |
@@ -496,6 +499,21 @@ MODEL_PATH=/path/to/Qwen3-VL-8B-Instruct \
 ./run_full_pipeline.sh
 ```
 
+For a fast target-only pass, enable only the target semantic group and one text
+variant. This makes Stage 1 call SAM3 once per selected camera/frame (assuming
+the target has at least one valid prompt). Keep the object-level target/reference
+decision disabled because reference candidates are intentionally absent:
+
+```bash
+EPISODE_DIR=/path/to/episode0 \
+SAM_MODEL_DIR=/path/to/sam3 \
+MODEL_PATH=/path/to/Qwen3-VL-8B-Instruct \
+CANDIDATE_ROLES=target \
+PROMPT_VARIANTS=1 \
+SKIP_DECISION=1 \
+./run_full_pipeline.sh
+```
+
 To run all six stages, including object-level decisions, decision overlays, and
 the stage-comparison montage:
 
@@ -549,6 +567,8 @@ used options include:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `CAMERAS` | script default | Comma-separated cameras such as `front,left_shoulder,right_shoulder` |
+| `CANDIDATE_ROLES` | `target,reference,interaction_part` | Semantic roles sent to per-frame/per-camera SAM3 inference |
+| `PROMPT_VARIANTS` | `5` | Maximum SAM3 text prompts per enabled role; use `1` with target-only mode |
 | `FRAME_INTERVAL` | `1` | Process every Nth source frame |
 | `MAX_FRAMES` | unset | Limit the number of processed frames |
 | `DEVICE` | `cuda` | Model device |

@@ -53,6 +53,29 @@ Use [run_full_pipeline.sh](run_full_pipeline.sh) when you want one command for t
 
 ### Current commands
 
+#### OSC HDF5: target-only Stage 1-3 run
+
+Use both switches below. `CANDIDATE_ROLES=target` removes reference and
+interaction-part SAM3 work; `PROMPT_VARIANTS=1` prevents the remaining target
+role from trying up to five text variants. Qwen still creates the role spec once,
+and Stage 4 stays disabled because it requires target/reference candidates.
+
+```bash
+EPISODE_DIR=/path/to/OSC_HDF5/disassemble_left_0 \
+OUTPUT_ROOT=outputs_osc_target \
+SAM_MODEL_DIR=/common-data-32t/.cache/facebook/sam3 \
+SAM_CHECKPOINT=/common-data-32t/.cache/facebook/sam3/sam3.pt \
+MODEL_PATH=/new-common-data/new-common-data/huggingface/Qwen3-VL-8B-Instruct \
+DEVICE=cuda \
+CAMERAS=GLOBAL_LEFT,GLOBAL_RIGHT,LOCAL_LEFT,LOCAL_RIGHT,WRIST \
+CANDIDATE_ROLES=target \
+PROMPT_VARIANTS=1 \
+FRAME_INTERVAL=10 \
+THRESHOLD=0.2 \
+SKIP_DECISION=1 \
+./run_full_pipeline.sh
+```
+
 #### RLBench: manual Stage 1-3 run
 
 ```bash
@@ -192,7 +215,7 @@ that host's actual mount point.
 
 ### Key knobs
 
-- Sampling and coverage: FRAME_INTERVAL, MAX_FRAMES, CAMERAS
+- Sampling and coverage: FRAME_INTERVAL, MAX_FRAMES, CAMERAS, CANDIDATE_ROLES, PROMPT_VARIANTS
 - SAM3 recall/precision: THRESHOLD, CAMERA_THRESHOLD_OVERRIDES
 - Per-view canonicalization: MASK_NMS_IOU, CANONICAL_CONTAINMENT, CANONICAL_BBOX_IOU
 - Legacy canonicalization during fusion: LEGACY_CANONICAL_IOU, LEGACY_CANONICAL_CONTAINMENT
