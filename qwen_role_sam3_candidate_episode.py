@@ -385,6 +385,21 @@ def is_underspecified_sam_prompt(
     return bool(words) and len(words) <= 2 and len(rich_cues) >= 2
 
 
+def is_color_noun_shortcut(
+    value: Any,
+    identity_cues: Sequence[str],
+) -> bool:
+    """Reject color+noun shortcuts only when richer identity evidence exists."""
+    words = re.findall(r"[a-z]+", normalize_prompt(value))
+    color_words = [word for word in words if word in COLOR_ATTRIBUTE_WORDS]
+    non_color_words = [word for word in words if word not in COLOR_ATTRIBUTE_WORDS]
+    return (
+        bool(color_words)
+        and len(non_color_words) == 1
+        and is_underspecified_sam_prompt(value, identity_cues)
+    )
+
+
 def is_usable_positive_sam_prompt(
     value: Any,
     identity_cues: Sequence[str],
@@ -392,7 +407,7 @@ def is_usable_positive_sam_prompt(
     return not (
         is_color_attribute_only_prompt(value)
         or prompt_contains_exclusion_language(value)
-        or is_underspecified_sam_prompt(value, identity_cues)
+        or is_color_noun_shortcut(value, identity_cues)
     )
 
 
@@ -448,10 +463,10 @@ def text_prompts_for_role(role_spec: Mapping[str, Any], role: str, max_variants:
         return []
 
     cues = role_identity_cues(role_spec, role)
-    prompts: list[str] = []
+    qwen_prompts: list[str] = []
     for prompt in _iter_text_list(spec.get("sam_prompts")):
         if is_usable_positive_sam_prompt(prompt, cues):
-            _append_unique_text(prompts, prompt)
+            _append_unique_text(qwen_prompts, prompt)
 
     name = ""
     for key in ("name", "object", "category", "type", "class", "label"):
@@ -459,28 +474,28 @@ def text_prompts_for_role(role_spec: Mapping[str, Any], role: str, max_variants:
         if candidate_name:
             name = candidate_name
             break
+
+    display = name or role_display_text(role_spec, role)
+    prompts: list[str] = []
     if name and is_usable_positive_sam_prompt(name, cues):
         _append_unique_text(prompts, name)
 
-    display = name or role_display_text(role_spec, role)
     action_prompt = target_action_state_prompt(role_spec, role, display)
-    if (
-        action_prompt
-        and is_usable_positive_sam_prompt(action_prompt, cues)
-        and normalize_prompt(action_prompt)
-        not in {normalize_prompt(prompt) for prompt in prompts}
-    ):
-        # Reserve one of the five executions for the grasped/moved state even
-        # when Qwen already returned five initial-state appearance prompts.
-        prompts.insert(min(2, len(prompts)), action_prompt)
+    if action_prompt and is_usable_positive_sam_prompt(action_prompt, cues):
+        _append_unique_text(prompts, action_prompt)
+
+    # Medium-specificity prompts keep only one cue apiece so occlusion of one
+    # part does not invalidate every candidate query.
+    for cue in cues[:2]:
+        combined_prompt = identity_cue_prompt(display, cue)
+        if is_usable_positive_sam_prompt(combined_prompt, cues):
+            _append_unique_text(prompts, combined_prompt)
+    for qwen_prompt in qwen_prompts:
+        _append_unique_text(prompts, qwen_prompt)
     if cues:
         combined_cues = f"{display}. Visual cues: {'; '.join(cues)}"
         if is_usable_positive_sam_prompt(combined_cues, cues):
             _append_unique_text(prompts, combined_cues)
-    for cue in cues:
-        combined_prompt = identity_cue_prompt(display, cue)
-        if is_usable_positive_sam_prompt(combined_prompt, cues):
-            _append_unique_text(prompts, combined_prompt)
 
     cap = min(max_variants, 5) if max_variants > 0 else 5
     return prompts[:cap]
@@ -792,7 +807,7 @@ def candidate_generation_parameters(
         # Bump this whenever canonicalization semantics change so resume mode does
         # not silently reuse masks produced by an older grouping algorithm.
         "canonicalization_algorithm": "semantic_group_member_iou_v4_negative_masks",
-        "prompt_filter_algorithm": "reject_weak_exclusion_add_action_state_v3",
+        "prompt_filter_algorithm": "tiered_recall_ensemble_v4",
         "threshold": float(threshold),
         "candidate_pool_size": int(args.candidate_pool_size),
         "min_mask_area": int(args.min_mask_area),

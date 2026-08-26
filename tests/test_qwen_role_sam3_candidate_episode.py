@@ -146,16 +146,19 @@ class SemanticGroupTests(unittest.TestCase):
         prompts = text_prompts_for_role(spec, "target", 5)
 
         self.assertNotIn("blue wheel", prompts)
-        self.assertNotIn("left wheel", prompts)
         self.assertFalse(
             any(prompt_contains_exclusion_language(prompt) for prompt in prompts)
         )
-        self.assertIn(
-            "complete wheel with white central hub and blue outer rim",
+        self.assertEqual(
+            [
+                "left wheel",
+                "detached left wheel being carried",
+                "left wheel with white central hub",
+                "left wheel with blue outer rim",
+                "complete wheel with white central hub and blue outer rim",
+            ],
             prompts,
         )
-        self.assertEqual("detached left wheel being carried", prompts[2])
-        self.assertIn("left wheel with white central hub", prompts)
         self.assertTrue(is_underspecified_sam_prompt("blue wheel", cues))
         self.assertTrue(
             all("wheel" in normalize_prompt(prompt) for prompt in prompts)

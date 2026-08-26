@@ -94,16 +94,30 @@ fails open and restores the positive candidates instead of returning an empty
 result. Tune the experiment with `MAX_NEGATIVE_PROMPTS_PER_GROUP` and
 `NEGATIVE_MASK_COVERAGE`.
 
-For tasks that detach, pick up, or move the target, Stage 1 reserves one of the
-five SAM3 executions for a post-contact state prompt. For this OSC instruction
-the deterministic fallback is `detached left wheel being carried`; it does not
-name the gripper, so SAM3 is still asked for the wheel rather than the combined
-wheel-gripper assembly. The lower `WRIST` threshold and larger candidate pool in
-the OSC commands are intentional because grasp occlusion usually lowers the mask
-score. If diagnostics show `raw_masks > 0` but only disconnected wheel arcs are
-discarded, retry with `SPLIT_DISCONNECTED_MASKS=0`; do not disable splitting
-before confirming that condition, because a multi-instance mask could otherwise
-be kept as one candidate.
+Stage 1 uses a tiered high-recall ensemble rather than requiring every prompt to
+contain every visual cue: one broad category prompt, one post-contact prompt,
+two single-cue prompts, and one detailed prompt. For tasks that detach, pick up,
+or move the target, the post-contact slot is reserved automatically. With the
+OSC wheel role spec, the five effective prompts are:
+
+```text
+left wheel
+detached left wheel being carried
+left wheel with white central hub
+left wheel with blue outer rim
+complete wheel with white central hub and blue outer rim
+```
+
+`left wheel` deliberately remains as the broad recall prompt. `blue wheel` is
+rejected because blue is shared by the robot-arm ring and is not a useful broad
+category. False-positive arm-ring candidates are allowed at Stage 1 and are
+resolved by the later Qwen decision stage. The post-contact prompt does not name
+the gripper, so SAM3 is asked for the wheel rather than a wheel-gripper assembly.
+The lower `WRIST` threshold and larger candidate pool compensate for grasp
+occlusion and lower held-object scores. If diagnostics show `raw_masks > 0` but
+only disconnected wheel arcs are discarded, retry with
+`SPLIT_DISCONNECTED_MASKS=0`; do not disable splitting before confirming this,
+because a multi-instance mask could otherwise be kept as one candidate.
 
 #### RLBench: manual Stage 1-3 run
 

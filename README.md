@@ -557,6 +557,24 @@ SKIP_STAGE_COMPARE=0 \
 ./run_full_pipeline.sh
 ```
 
+Stage 1 treats SAM3 as a high-recall candidate generator. Its five prompts are
+intentionally tiered instead of requiring every visual cue at once: a broad
+object name, a post-contact/motion state, two single-cue descriptions, and one
+detailed whole-object description. For the OSC wheel role spec this produces:
+
+```text
+left wheel
+detached left wheel being carried
+left wheel with white central hub
+left wheel with blue outer rim
+complete wheel with white central hub and blue outer rim
+```
+
+The broad `left wheel` prompt is retained so grasp occlusion or a changed pose
+does not remove the target. The color shortcut `blue wheel` is still rejected
+because the same color appears on the robot arm. Extra robot-ring candidates are
+acceptable here; the later Qwen decision stage selects the actual target.
+
 OSC depth is converted from millimetres to metres automatically; do not set
 `DEPTH_SCALE=1000` or `INVERT_RLBENCH_EXTRINSICS=1`. The complete tuned RLBench
 and OSC commands are maintained in

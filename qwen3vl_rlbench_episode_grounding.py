@@ -101,26 +101,24 @@ Rules:
    whole-object appearance and part-layout cues that remain valid when the object
    moves. A verified initial location or attachment may be an additional cue, but
    must not replace persistent appearance cues.
-7. For every non-null role, include sam_prompts: 3 to 5 concise positive noun
-   phrases for SAM3. Every prompt must describe the same requested extent, contain
-   the object/part noun, and retain enough structure, relation, or appearance to
-   reject visible lookalikes. Do not use not, ignore, exclude, or without, and do
-   not name a distractor in a positive prompt.
-8. When a same-color or same-shape distractor exists, never emit a bare noun or
-   color-plus-noun shortcut. For the illustrative case of a white-hub, blue-rim
-   wheel in a rack near a blue robot-wrist ring, good prompts are "complete wheel
-   with white hub and blue outer rim" and "left rack wheel with white hub and blue
-   rim"; bad prompts are "wheel", "blue wheel", "blue ring", and "circular blue
-   object". Use only attributes supported by the supplied images and instruction.
-9. At least one sam_prompt must use persistent whole-object appearance without a
-   transient location. At most one may depend mainly on initial location. If the
-   role is a whole object, mention rim, hub, edge, or cap only inside a phrase that
-   still names the whole object.
-10. If the instruction removes, picks up, or moves the target, reserve one
-    sam_prompt for its expected post-contact state, for example "detached wheel
-    being carried" or "partially visible wheel being moved". Keep the target noun
-    and do not name the arm or gripper in this positive prompt. Do not require all
-    fine appearance cues simultaneously because the grasp can occlude them.
+7. sam_prompts are a high-recall candidate ensemble, not five paraphrases of one
+   strict attribute conjunction. False-positive candidates are acceptable because
+   later stages compare instances; a missed target cannot be recovered.
+8. For every non-null role, produce complementary positive noun phrases: one
+   broad category prompt with no color requirement, one or two medium prompts
+   that each use only one persistent cue, one detailed whole-object prompt, and,
+   when applicable, one initial-relation or post-contact state prompt. Every
+   prompt must keep the requested object/part noun and physical extent. Put the
+   concise broad category/instance noun in name; keep visual attributes in
+   identity_cues and the medium/detailed sam_prompts.
+9. Do not use not, ignore, exclude, or without, and do not name a distractor in a
+   positive prompt. A color-plus-noun shortcut such as "blue wheel" is not a good
+   broad prompt when color is shared; prefer "wheel" or "left wheel". For a whole
+   object write "wheel with blue outer rim", not the local-part prompt "blue rim".
+10. If the instruction removes, picks up, or moves the target, reserve one prompt
+    for its expected post-contact state, such as "detached wheel being carried".
+    Do not name the arm or gripper. Do not require all fine appearance cues in
+    this prompt because grasping can occlude them.
 11. For every non-null role, include negative_cues: short, visually segmentable
     distractor noun phrases with ownership when useful, such as "blue joint ring
     attached to robot wrist", "robot gripper", "wall", or "support panel". Never
