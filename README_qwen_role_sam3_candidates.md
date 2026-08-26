@@ -68,10 +68,17 @@ SAM_MODEL_DIR=/common-data-32t/.cache/facebook/sam3 \
 SAM_CHECKPOINT=/common-data-32t/.cache/facebook/sam3/sam3.pt \
 MODEL_PATH=/new-common-data/new-common-data/huggingface/Qwen3-VL-8B-Instruct \
 DEVICE=cuda \
+INSTRUCTION="Disassemble the complete left wheel located on the left axle inside the rack." \
 CAMERAS=GLOBAL_LEFT,GLOBAL_RIGHT,LOCAL_LEFT,LOCAL_RIGHT,WRIST \
 CANDIDATE_ROLES=target \
+PROMPT_VARIANTS=5 \
+NEGATIVE_PROMPT_FILTER=0 \
 FRAME_INTERVAL=10 \
 THRESHOLD=0.2 \
+CAMERA_THRESHOLD_OVERRIDES="WRIST=0.12,LOCAL_LEFT=0.16,LOCAL_RIGHT=0.16" \
+TOP_K_PER_SEMANTIC_GROUP=12 \
+CANDIDATE_POOL_SIZE=40 \
+MIN_MASK_AREA=10 \
 SKIP_DECISION=0 \
 SKIP_DECISION_VIZ=0 \
 ./run_full_pipeline.sh
@@ -86,6 +93,17 @@ comparison. If every positive candidate matches a negative mask, Stage 1 now
 fails open and restores the positive candidates instead of returning an empty
 result. Tune the experiment with `MAX_NEGATIVE_PROMPTS_PER_GROUP` and
 `NEGATIVE_MASK_COVERAGE`.
+
+For tasks that detach, pick up, or move the target, Stage 1 reserves one of the
+five SAM3 executions for a post-contact state prompt. For this OSC instruction
+the deterministic fallback is `detached left wheel being carried`; it does not
+name the gripper, so SAM3 is still asked for the wheel rather than the combined
+wheel-gripper assembly. The lower `WRIST` threshold and larger candidate pool in
+the OSC commands are intentional because grasp occlusion usually lowers the mask
+score. If diagnostics show `raw_masks > 0` but only disconnected wheel arcs are
+discarded, retry with `SPLIT_DISCONNECTED_MASKS=0`; do not disable splitting
+before confirming that condition, because a multi-instance mask could otherwise
+be kept as one candidate.
 
 #### RLBench: manual Stage 1-3 run
 
@@ -177,16 +195,23 @@ SAM_CHECKPOINT=/common-data-32t/.cache/facebook/sam3/sam3.pt \
 MODEL_PATH=/new-common-data/new-common-data/huggingface/Qwen3-VL-8B-Instruct \
 DECISION_MODEL_PATH=/new-common-data/new-common-data/huggingface/Qwen3-VL-8B-Instruct \
 DEVICE=cuda \
+INSTRUCTION="Disassemble the complete left wheel located on the left axle inside the rack." \
 CAMERAS=GLOBAL_LEFT,GLOBAL_RIGHT,LOCAL_LEFT,LOCAL_RIGHT,WRIST \
+CAMERA_THRESHOLD_OVERRIDES="WRIST=0.12,LOCAL_LEFT=0.16,LOCAL_RIGHT=0.16" \
 DECISION_SCENE_CAMERAS=GLOBAL_LEFT,GLOBAL_RIGHT,WRIST \
 PREFERRED_CAMERA=WRIST \
+CANDIDATE_ROLES=target \
+PROMPT_VARIANTS=5 \
+NEGATIVE_PROMPT_FILTER=0 \
+TOP_K_PER_SEMANTIC_GROUP=12 \
+CANDIDATE_POOL_SIZE=40 \
 FRAME_INTERVAL=10 \
 THRESHOLD=0.2 \
 SKIP_DECISION=0 \
 SKIP_DECISION_VIZ=0 \
 SKIP_STAGE_COMPARE=0 \
 SAVE_OBJECT_SUMMARY=1 \
-MIN_CANDIDATE_MASK_AREA_PIXELS=20 \
+MIN_CANDIDATE_MASK_AREA_PIXELS=10 \
 MIN_MASK_AREA=10 \
 MIN_FUSED_POINTS=30 \
 MIN_BBOX_DIAGONAL_M=0.06 \

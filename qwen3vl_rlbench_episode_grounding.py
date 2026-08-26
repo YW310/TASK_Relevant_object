@@ -116,14 +116,19 @@ Rules:
    transient location. At most one may depend mainly on initial location. If the
    role is a whole object, mention rim, hub, edge, or cap only inside a phrase that
    still names the whole object.
-10. For every non-null role, include negative_cues: short, visually segmentable
+10. If the instruction removes, picks up, or moves the target, reserve one
+    sam_prompt for its expected post-contact state, for example "detached wheel
+    being carried" or "partially visible wheel being moved". Keep the target noun
+    and do not name the arm or gripper in this positive prompt. Do not require all
+    fine appearance cues simultaneously because the grasp can occlude them.
+11. For every non-null role, include negative_cues: short, visually segmentable
     distractor noun phrases with ownership when useful, such as "blue joint ring
     attached to robot wrist", "robot gripper", "wall", or "support panel". Never
     copy a negative cue into sam_prompts.
-11. Never use a collection, object group, supporting surface, or surrounding
+12. Never use a collection, object group, supporting surface, or surrounding
     assembly unless that entire entity is explicitly the requested role.
-12. Do not output bounding boxes in this stage.
-13. Return one valid JSON object only.
+13. Do not output bounding boxes in this stage.
+14. Return one valid JSON object only.
 
 Schema:
 {{

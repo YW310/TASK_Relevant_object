@@ -87,6 +87,7 @@ class SemanticGroupTests(unittest.TestCase):
 
     def test_target_only_uses_one_role_and_one_prompt_variant(self) -> None:
         spec = {
+            "instruction": "Disassemble the left wheel from inside the rack.",
             "target": {
                 "name": "wheel nut",
                 "sam_prompts": ["wheel nut", "metal wheel nut", "hex nut"],
@@ -153,6 +154,7 @@ class SemanticGroupTests(unittest.TestCase):
             "complete wheel with white central hub and blue outer rim",
             prompts,
         )
+        self.assertEqual("detached left wheel being carried", prompts[2])
         self.assertIn("left wheel with white central hub", prompts)
         self.assertTrue(is_underspecified_sam_prompt("blue wheel", cues))
         self.assertTrue(

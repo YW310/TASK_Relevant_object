@@ -414,6 +414,28 @@ def identity_cue_prompt(display: str, cue: str) -> str:
     return f"{display} with {cue}"
 
 
+def target_action_state_prompt(
+    role_spec: Mapping[str, Any],
+    role: str,
+    display: str,
+) -> str:
+    """Add one target-only prompt for the post-contact manipulation state."""
+    if role != "target":
+        return ""
+    instruction = normalize_prompt(role_spec.get("instruction"))
+    if re.search(
+        r"\b(disassembl\w*|detach\w*|remov\w*|take\s+off|unmount\w*)\b",
+        instruction,
+    ):
+        return f"detached {display} being carried"
+    if re.search(
+        r"\b(carry\w*|lift\w*|mov\w*|pick\w*|plac\w*|put\w*)\b",
+        instruction,
+    ):
+        return f"{display} being carried"
+    return ""
+
+
 def text_prompts_for_role(role_spec: Mapping[str, Any], role: str, max_variants: int) -> list[str]:
     """Build SAM3-friendly text prompts for a semantic role.
 
@@ -441,6 +463,16 @@ def text_prompts_for_role(role_spec: Mapping[str, Any], role: str, max_variants:
         _append_unique_text(prompts, name)
 
     display = name or role_display_text(role_spec, role)
+    action_prompt = target_action_state_prompt(role_spec, role, display)
+    if (
+        action_prompt
+        and is_usable_positive_sam_prompt(action_prompt, cues)
+        and normalize_prompt(action_prompt)
+        not in {normalize_prompt(prompt) for prompt in prompts}
+    ):
+        # Reserve one of the five executions for the grasped/moved state even
+        # when Qwen already returned five initial-state appearance prompts.
+        prompts.insert(min(2, len(prompts)), action_prompt)
     if cues:
         combined_cues = f"{display}. Visual cues: {'; '.join(cues)}"
         if is_usable_positive_sam_prompt(combined_cues, cues):
@@ -760,7 +792,7 @@ def candidate_generation_parameters(
         # Bump this whenever canonicalization semantics change so resume mode does
         # not silently reuse masks produced by an older grouping algorithm.
         "canonicalization_algorithm": "semantic_group_member_iou_v4_negative_masks",
-        "prompt_filter_algorithm": "reject_weak_or_exclusion_positive_v2",
+        "prompt_filter_algorithm": "reject_weak_exclusion_add_action_state_v3",
         "threshold": float(threshold),
         "candidate_pool_size": int(args.candidate_pool_size),
         "min_mask_area": int(args.min_mask_area),
