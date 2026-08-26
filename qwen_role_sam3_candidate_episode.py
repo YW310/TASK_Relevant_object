@@ -219,10 +219,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--negative-prompt-filter",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help=(
-            "Run SAM3 on role negative_cues and suppress positive candidates mostly "
-            "covered by those exclusion masks."
+            "Experimental: run SAM3 on role negative_cues and suppress positive "
+            "candidates mostly covered by those exclusion masks. Disabled by default."
         ),
     )
     parser.add_argument(
@@ -695,7 +695,7 @@ def candidate_generation_parameters(
         "max_mask_components": int(args.max_mask_components),
         "prompt_variants": int(args.prompt_variants),
         "negative_prompt_filter": bool(
-            getattr(args, "negative_prompt_filter", True)
+            getattr(args, "negative_prompt_filter", False)
         ),
         "max_negative_prompts_per_group": int(
             getattr(args, "max_negative_prompts_per_group", 3)
@@ -881,7 +881,10 @@ def process_camera(
     prompt_attempts: list[dict[str, Any]] = []
     negative_prompt_attempts: list[dict[str, Any]] = []
     negative_masks_by_group: dict[str, list[dict[str, Any]]] = {}
-    if bool(getattr(args, "negative_prompt_filter", True)):
+    negative_filter_enabled = bool(
+        getattr(args, "negative_prompt_filter", False)
+    )
+    if negative_filter_enabled:
         exclusion_plan = negative_prompt_plan(
             semantic_groups,
             int(getattr(args, "max_negative_prompts_per_group", 3)),
@@ -928,6 +931,8 @@ def process_camera(
                 )
 
     negative_suppressed: list[dict[str, Any]] = []
+    negative_rejected_candidates: list[dict[str, Any]] = []
+    negative_filter_fail_open = False
     negative_coverage_threshold = float(
         getattr(args, "negative_mask_coverage", 0.80)
     )
@@ -1007,7 +1012,8 @@ def process_camera(
                         )
                     else:
                         active_group_ids.append(str(semantic_group_id))
-                if not active_group_ids:
+                fully_negative_matched = not active_group_ids
+                if fully_negative_matched:
                     negative_suppressed.append(
                         {
                             "original_candidate_id": (
@@ -1021,7 +1027,10 @@ def process_camera(
                             "negative_matches": negative_matches,
                         }
                     )
-                    continue
+                    active_group_ids = [
+                        str(group_id)
+                        for group_id in prompt_row["semantic_group_ids"]
+                    ]
                 active_roles_by_group = {
                     group_id: list(prompt_row["roles_by_group"][group_id])
                     for group_id in active_group_ids
@@ -1057,7 +1066,21 @@ def process_camera(
                 }
                 if boxes is not None and output_index < len(boxes):
                     item["sam_box_xyxy"] = [float(v) for v in boxes[output_index]]
-                generated_candidates.append(item)
+                if fully_negative_matched:
+                    negative_rejected_candidates.append(item)
+                else:
+                    generated_candidates.append(item)
+
+    if not generated_candidates and negative_rejected_candidates:
+        generated_candidates.extend(negative_rejected_candidates)
+        negative_suppressed.clear()
+        negative_filter_fail_open = True
+        if args.progress and progress_label:
+            print(
+                f"SAM3 progress {progress_label}: negative filter matched every "
+                "positive candidate; restoring all candidates (fail-open)",
+                flush=True,
+            )
 
     for saved_index, item in enumerate(generated_candidates, start=1):
         item["id"] = f"S{saved_index}"
@@ -1123,6 +1146,7 @@ def process_camera(
             "canonical_candidate_count": len(candidates),
             "suppressed_candidate_count": len(suppressed),
             "negative_filtered_candidate_count": len(negative_suppressed),
+            "negative_filter_fail_open": negative_filter_fail_open,
         },
         "units": {"image_coordinates": "pixels", "mask_area": "pixels"},
         "image_path": str(image_path),
@@ -1135,6 +1159,10 @@ def process_camera(
         "source_candidates_json": "candidates.json",
         "prompt_attempts": prompt_attempts,
         "negative_prompt_attempts": negative_prompt_attempts,
+        "negative_filter": {
+            "enabled": negative_filter_enabled,
+            "fail_open_all_candidates_matched": negative_filter_fail_open,
+        },
         "generation_parameters": generation_parameters,
         "canonicalization": {
             "aggregation": "noisy_or",

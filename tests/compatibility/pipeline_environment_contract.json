@@ -412,7 +412,7 @@
   {
     "name": "NEGATIVE_PROMPT_FILTER",
     "line": 186,
-    "default_expression": "1",
+    "default_expression": "0",
     "value_kind": "integer",
     "empty_semantics": "use declared default",
     "used_by": [

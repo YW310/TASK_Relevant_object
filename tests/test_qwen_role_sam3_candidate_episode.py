@@ -187,6 +187,35 @@ class SemanticGroupTests(unittest.TestCase):
         )
         self.assertEqual([5, 2, 7, 6], result["candidates"][0]["mask_bbox_xyxy"])
 
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            image_path = root / "image.png"
+            Image.new("RGB", (8, 8), "white").save(image_path)
+            with patch(
+                "qwen_role_sam3_candidate_episode.run_text_prompt",
+                return_value=(
+                    np.asarray([wall]),
+                    np.asarray([0.95]),
+                    None,
+                ),
+            ):
+                fail_open_result = process_camera(
+                    None,
+                    image_path,
+                    groups,
+                    root / "out",
+                    args,
+                )
+
+        self.assertEqual(1, len(fail_open_result["candidates"]))
+        self.assertTrue(
+            fail_open_result["summary"]["negative_filter_fail_open"]
+        )
+        self.assertEqual(
+            0,
+            fail_open_result["summary"]["negative_filtered_candidate_count"],
+        )
+
     def test_process_camera_executes_each_normalized_prompt_once(self) -> None:
         spec = {
             "target": {"name": "rose block", "sam_prompts": ["rose block"]},

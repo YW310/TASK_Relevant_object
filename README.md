@@ -85,7 +85,7 @@ Candidate generation and runtime arguments:
 | `--top-k-per-semantic-group` | `TOP_K_PER_SEMANTIC_GROUP` | `8` | Maximum candidates retained for each semantic concept group. |
 | `--candidate-roles` | `CANDIDATE_ROLES` | all three roles | Roles sent to SAM3; use `target` for target-only generation. |
 | `--prompt-variants` | `PROMPT_VARIANTS` | `5` | Maximum Qwen/SAM text variants attempted per enabled role. |
-| `--[no-]negative-prompt-filter` | `NEGATIVE_PROMPT_FILTER` | enabled | Segment `negative_cues` such as `wall` and suppress positive masks they cover. |
+| `--[no-]negative-prompt-filter` | `NEGATIVE_PROMPT_FILTER` | disabled | Experimentally segment `negative_cues` such as `wall` and suppress positive masks they cover. |
 | `--max-negative-prompts-per-group` | `MAX_NEGATIVE_PROMPTS_PER_GROUP` | `3` | Cap exclusion-mask SAM3 calls per semantic group. |
 | `--negative-mask-coverage` | `NEGATIVE_MASK_COVERAGE` | `0.80` | Positive-mask pixel coverage required for negative suppression. |
 | `--min-mask-area` | — | `4` px | Remove tiny mask fragments. |
@@ -572,7 +572,7 @@ used options include:
 | `CAMERAS` | script default | Comma-separated cameras such as `front,left_shoulder,right_shoulder` |
 | `CANDIDATE_ROLES` | `target,reference,interaction_part` | Semantic roles sent to per-frame/per-camera SAM3 inference |
 | `PROMPT_VARIANTS` | `5` | Maximum SAM3 text prompts per enabled role |
-| `NEGATIVE_PROMPT_FILTER` | `1` | Use role `negative_cues` to generate exclusion masks |
+| `NEGATIVE_PROMPT_FILTER` | `0` | Experimental role-`negative_cues` exclusion masks; fail-open prevents an empty result |
 | `MAX_NEGATIVE_PROMPTS_PER_GROUP` | `3` | Maximum exclusion-mask prompts per semantic group |
 | `NEGATIVE_MASK_COVERAGE` | `0.80` | Suppress candidates mostly covered by a negative mask |
 | `FRAME_INTERVAL` | `1` | Process every Nth source frame |

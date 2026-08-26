@@ -26,7 +26,7 @@
 #   CAMERA_THRESHOLD_OVERRIDES              e.g. "left_shoulder=0.15,right_shoulder=0.15".
 #   SPLIT_DISCONNECTED_MASKS (default: 1)   Split disconnected SAM3 mask regions before bbox generation.
 #   MAX_MASK_COMPONENTS (default: 4)        Max significant regions retained from one SAM3 mask (0=all).
-#   NEGATIVE_PROMPT_FILTER (default: 1)      Use negative_cues as exclusion-mask prompts.
+#   NEGATIVE_PROMPT_FILTER (default: 0)      Experimental negative_cue exclusion masks.
 #   MAX_NEGATIVE_PROMPTS_PER_GROUP (default: 3) Maximum exclusion prompts per semantic group.
 #   NEGATIVE_MASK_COVERAGE (default: 0.80)   Candidate coverage required for negative-mask suppression.
 #   MASK_NMS_IOU (default: 0.80)             Stage-1 same-role NMS and cross-role canonical mask IoU.
@@ -183,7 +183,7 @@ MIN_MASK_AREA="${MIN_MASK_AREA:-4}"
 SPLIT_DISCONNECTED_MASKS="${SPLIT_DISCONNECTED_MASKS:-1}"
 MAX_MASK_COMPONENTS="${MAX_MASK_COMPONENTS:-4}"
 PROMPT_VARIANTS="${PROMPT_VARIANTS:-5}"
-NEGATIVE_PROMPT_FILTER="${NEGATIVE_PROMPT_FILTER:-1}"
+NEGATIVE_PROMPT_FILTER="${NEGATIVE_PROMPT_FILTER:-0}"
 MAX_NEGATIVE_PROMPTS_PER_GROUP="${MAX_NEGATIVE_PROMPTS_PER_GROUP:-3}"
 NEGATIVE_MASK_COVERAGE="${NEGATIVE_MASK_COVERAGE:-0.80}"
 MASK_NMS_IOU="${MASK_NMS_IOU:-0.80}"

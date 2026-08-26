@@ -79,10 +79,12 @@ SKIP_DECISION_VIZ=0 \
 
 Stage 1 no longer sends color-only identity cues such as `gray` to SAM3.
 Colors are used only in an object noun phrase such as `gray wheel nut`.
-`negative_cues` are also active rather than metadata-only: by default up to
-three cues per semantic group are segmented as exclusion masks, and a positive
-candidate is removed when a negative mask covers at least 80% of it. Tune this
-with `NEGATIVE_PROMPT_FILTER`, `MAX_NEGATIVE_PROMPTS_PER_GROUP`, and
+`negative_cues` can optionally be converted into exclusion masks, but this is
+disabled by default because broad concepts such as `wall` may also cover an
+attached target. Enable it with `NEGATIVE_PROMPT_FILTER=1` only for controlled
+comparison. If every positive candidate matches a negative mask, Stage 1 now
+fails open and restores the positive candidates instead of returning an empty
+result. Tune the experiment with `MAX_NEGATIVE_PROMPTS_PER_GROUP` and
 `NEGATIVE_MASK_COVERAGE`.
 
 #### RLBench: manual Stage 1-3 run
