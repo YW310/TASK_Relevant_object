@@ -40,6 +40,7 @@ from PIL import Image, ImageDraw, ImageOps
 
 from camera_geometry import (
     find_rgb_path,
+    frame_index_from_frame,
     load_camera_params,
     load_rlbench_observations,
     project_points,
@@ -536,6 +537,7 @@ def main() -> None:
     for frame in frames:
         frame_id = str(frame["frame_id"])
         frame_index = frame.get("frame_index")
+        source_frame_index = frame_index_from_frame(frame)
         source_objects = list(frame.get("objects", []))
         frame_aliases = visible_suspect_aliases(source_objects, suspect_aliases)
         objects = [
@@ -565,7 +567,7 @@ def main() -> None:
                 continue
             params = resolve_camera_param_for_frame(
                 camera,
-                frame_index,
+                source_frame_index,
                 frame_id,
                 camera_params,
                 rlbench_observations,

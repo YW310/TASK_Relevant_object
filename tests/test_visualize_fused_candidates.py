@@ -87,10 +87,13 @@ def test_main_writes_one_montage_without_separate_panels(tmp_path, monkeypatch):
     fused_path.write_text("{}")
     output_dir = tmp_path / "viz"
     frame = {
-        "frame_id": "0",
-        "frame_index": 0,
+        # frame_index is the sampled-frame ordinal; frame_id is the source
+        # episode/HDF5 index and must drive moving-camera calibration lookup.
+        "frame_id": "20",
+        "frame_index": 2,
         "objects": [{"id": "O1", "visible_camera": ["front", "left"]}],
     }
+    resolved_frame_indices = []
     monkeypatch.setattr(
         viz_module,
         "load_fused_manifest",
@@ -100,10 +103,15 @@ def test_main_writes_one_montage_without_separate_panels(tmp_path, monkeypatch):
     monkeypatch.setattr(viz_module, "load_camera_params", lambda path: {})
     monkeypatch.setattr(viz_module, "load_rlbench_observations", lambda *args: [])
     monkeypatch.setattr(viz_module, "find_rgb_path", lambda *args: tmp_path / "raw.png")
+
+    def fake_resolve_camera_param_for_frame(*args, **kwargs):
+        resolved_frame_indices.append(args[1])
+        return {"intrinsics": None, "extrinsics": None}
+
     monkeypatch.setattr(
         viz_module,
         "resolve_camera_param_for_frame",
-        lambda *args, **kwargs: {"intrinsics": None, "extrinsics": None},
+        fake_resolve_camera_param_for_frame,
     )
     monkeypatch.setattr(
         viz_module,
@@ -134,7 +142,8 @@ def test_main_writes_one_montage_without_separate_panels(tmp_path, monkeypatch):
 
     viz_module.main()
 
-    assert (output_dir / "0_montage.png").is_file()
+    assert (output_dir / "20_montage.png").is_file()
+    assert resolved_frame_indices == [20, 20, 20]
     assert list(output_dir.glob("*_reproj.png")) == []
     assert list(output_dir.glob("*_pointcloud.png")) == []
     report = json.loads((output_dir / "sanity_report.json").read_text())
@@ -151,6 +160,6 @@ def test_main_writes_one_montage_without_separate_panels(tmp_path, monkeypatch):
     assert "objects" not in report["frames"][0]
     debug_report = json.loads((output_dir / "sanity_debug.json").read_text())
     assert debug_report["frames"][0]["objects"] == [{"id": "O1"}]
-    with Image.open(output_dir / "0_montage.png") as montage:
+    with Image.open(output_dir / "20_montage.png") as montage:
         assert montage.width == 1048
         assert montage.height == 1136
