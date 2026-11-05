@@ -272,6 +272,11 @@ def load_inference_artifact(path: str | Path, *, expected_cache_key: str | None 
         used = set()
         for result in value["cameras"].values():
             for row in result["roles"].values():
+                selected = row.get("selected_index")
+                candidates = row["candidates"]
+                if selected is not None and (type(selected) is not int or not 0 <= selected < len(candidates)
+                                              or candidates[selected].get("accepted") is not True):
+                    raise ValueError("cached selection must name an accepted candidate")
                 for candidate in row["candidates"]:
                     key = candidate["mask_key"]
                     mask = archive[key]
@@ -288,7 +293,10 @@ def run_offline_frame(snapshot_path: str | Path, guidance_path: str | Path, back
                       output_dir: str | Path, *, mode: str = "point+box", adapter_config: Any = None,
                       selection_config: Any = None, use_cache: bool = True) -> dict[str, Any]:
     """A single source observation only; backend may be per-camera mapping."""
-    from slot_guided_sam3 import run_camera
+    from slot_guided_sam3 import SelectionConfig, run_camera
+    from slot_prompt_adapter import AdapterConfig
+    adapter_config = adapter_config if adapter_config is not None else AdapterConfig()
+    selection_config = selection_config if selection_config is not None else SelectionConfig()
     snapshot = load_frame_snapshot(snapshot_path)
     guidance = load_guidance(guidance_path, expected_source_frame_index=snapshot.metadata["source_frame_index"])
     for key in ("episode_id", "frame_id", "observed_at"):
@@ -328,6 +336,7 @@ def run_offline_frame(snapshot_path: str | Path, guidance_path: str | Path, back
               "calibration_sha256": calibration_digest(snapshot),
               "snapshot_input_sha256": snapshot_input_digest(snapshot),
               "guidance_input_sha256": guidance_input_digest(guidance)}
+    report["effective_config"] = {"adapter": asdict(adapter_config), "selection": asdict(selection_config)}
     save_inference_artifact(output, report, snapshot)
     report.update(cache_hit=False, artifact_path=str(output))
     return report

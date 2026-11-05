@@ -1,5 +1,15 @@
 # Relevant Object Grounding for RLBench
 
+## Slot-guided SAM3 offline path
+
+Start with the [Windows/portable quickstart](docs/slot_guided_quickstart.md) for
+an executable model-free demo, configuration, cache replay and tests. This
+separate path uses coarse role guidance, original-camera prompts and RGB-D
+object geometry. See the [coordinate/interface audit](docs/slot_guidance_interface_audit.md),
+[offline SAM3 contract](docs/slot_guided_offline.md) and [A/B/C experiment guide](docs/slot_geometry_experiments.md).
+Real model and robot performance remain unmeasured; BridgeVLA action integration
+is a default-disabled draft requiring separate real acceptance.
+
 This repository provides an episode-level pipeline for finding task-relevant
 objects in RLBench demonstrations. It combines Qwen3-VL semantic role parsing,
 SAM3 instance proposals, multi-view 3D fusion, and optional object-level role

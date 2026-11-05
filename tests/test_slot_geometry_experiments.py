@@ -8,9 +8,13 @@ import unittest
 
 import numpy as np
 
-from slot_experiment_metrics import paired_success, translation_error
+from slot_experiment_metrics import METRIC_NAMES, METRIC_UNITS, evaluate_frame, load_baseline_report, load_current_labels, metric, paired_success, translation_error
 from slot_guided_synthetic_demo import create_demo
 from run_slot_geometry_experiments import run_experiments
+from run_slot_guided_sam3 import mock_backends
+from slot_guidance import load_guidance
+from slot_guided_io import calibration_digest, load_frame_snapshot, run_offline_frame
+from slot_geometry_fusion import fuse_geometry
 
 
 class ExperimentTests(unittest.TestCase):
@@ -64,9 +68,7 @@ class ExperimentTests(unittest.TestCase):
         value = json.loads(self.manifest.read_text())
         value["frames"][0]["baseline_report_json"] = "baseline.json"
         self.manifest.write_text(json.dumps(value))
-        baseline = {"episode_id": "synthetic_two_instances", "frame_id": "sample-2", "source_frame_index": 7,
-                    "method": "original_ocrr_action_path", "evidence_kind": "synthetic_mock",
-                    "metrics": {"action_translation_error_m": {"value": None, "reason": "model_not_executed"}}}
+        baseline = self.baseline_fixture()
         (self.manifest.parent / "baseline.json").write_text(json.dumps(baseline))
         report = run_experiments(self.manifest, self.path / "results")
         self.assertEqual(report["frames"][0]["configurations"]["C"]["status"], "provided_baseline_report")
@@ -74,6 +76,55 @@ class ExperimentTests(unittest.TestCase):
         (self.manifest.parent / "baseline.json").write_text(json.dumps(baseline))
         with self.assertRaisesRegex(ValueError, "baseline report source_frame_index"):
             run_experiments(self.manifest, self.path / "results2")
+
+    def baseline_fixture(self):
+        snapshot = load_frame_snapshot(self.manifest.parent / "frame.json")
+        return {"schema_version": 1, "artifact_type": "ocrr_baseline_evaluation",
+                "episode_id": "synthetic_two_instances", "frame_id": "sample-2", "source_frame_index": 7,
+                "observed_at": snapshot.metadata["observed_at"], "calibration_sha256": calibration_digest(snapshot),
+                "method": "original_ocrr_action_path", "evidence_kind": "synthetic_mock",
+                "source_checkpoint": "mock://original_ocrr_fixture", "source_checkpoint_sha256": None,
+                "source_git_sha": "a" * 40,
+                "metrics": {name: metric(None, 0, reason="model_not_executed", unit=METRIC_UNITS[name]) for name in METRIC_NAMES}}
+
+    def test_C_rejects_malformed_source_and_measurements(self):
+        snapshot = load_frame_snapshot(self.manifest.parent / "frame.json")
+        path = self.manifest.parent / "baseline.json"
+        original = self.baseline_fixture()
+        cases = []
+        for key, value in (("schema_version", True), ("source_frame_index", True), ("source_git_sha", "short"),
+                           ("calibration_sha256", "b" * 64), ("source_checkpoint", None), ("metrics", {}),
+                           ("observed_at", "2026-11-05T10:00:01+08:00")):
+            cases.append(dict(original, **{key: value}))
+        for field, value in (("value", float("nan")), ("value", True), ("count", True), ("reason", None), ("unit", "cm")):
+            candidate = copy.deepcopy(original)
+            candidate["metrics"]["sam3_mask_iou"][field] = value
+            cases.append(candidate)
+        for value in cases:
+            with self.subTest(value=value):
+                path.write_text(json.dumps(value))
+                with self.assertRaises(ValueError):
+                    load_baseline_report(path, snapshot, "synthetic_mock")
+        real = dict(original, evidence_kind="real_offline")
+        path.write_text(json.dumps(real))
+        with self.assertRaisesRegex(ValueError, "real baseline"):
+            load_baseline_report(path, snapshot, "real_offline")
+
+    def test_IoU_uses_final_joint_selection_and_reports_local_selection_separately(self):
+        snapshot = load_frame_snapshot(self.manifest.parent / "frame.json")
+        guidance = load_guidance(self.manifest.parent / "predicted_mock.json")
+        backend = mock_backends(self.manifest.parent / "mock_masks.json", snapshot)
+        inference = run_offline_frame(snapshot.path, self.manifest.parent / "predicted_mock.json", backend, self.path / "local")
+        geometry = fuse_geometry(snapshot, guidance, inference)
+        for camera in inference["cameras"].values():
+            for role in ("target", "reference"):
+                # Isolate the evaluator boundary: final geometry retains index1,
+                # while the camera-local diagnostic refers to another mask.
+                camera["roles"][role]["selected_index"] = 0
+        labels = load_current_labels(self.manifest.parent / "labels.json", snapshot)
+        result = evaluate_frame(snapshot, guidance, inference, geometry, labels)
+        self.assertEqual(result["sam3_mask_iou"]["value"], 1.0)
+        self.assertEqual(result["camera_local_mask_iou"]["value"], 0.0)
 
     def test_pure_action_and_paired_metric_math(self):
         result = translation_error([[0, 0, 0], [1, 0, 0]], [[0.03, 0.04, 0], [1, 0, 0]])

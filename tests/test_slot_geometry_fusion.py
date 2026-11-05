@@ -17,8 +17,9 @@ from camera_geometry import project_points
 from slot_geometry_fusion import FusionConfig, fuse_geometry, load_geometry, save_geometry
 from slot_guidance import SlotGuidance, identity_world_transform
 from slot_guided_io import (FrameSnapshot, RGBDFrame, calibration_digest,
-                            guidance_input_digest, snapshot_input_digest)
-from slot_guided_sam3 import MockBackend, run_camera
+                            guidance_input_digest, load_inference_artifact, save_inference_artifact,
+                            snapshot_input_digest)
+from slot_guided_sam3 import MockBackend, mask_content_digest, run_camera
 from slot_prompt_adapter import CameraFrame
 
 
@@ -65,7 +66,7 @@ def scene(*, close_roles=False):
             mask[rounded[:, 1], rounded[:, 0]] = True
             role_results[role] = {"status": "VISIBLE", "prompt": {"prompt_valid": True},
                 "selected_index": 0, "failure_reason": None,
-                "candidates": [{"mask": mask, "sam3_score": .6, "quality_score": .8,
+                "candidates": [{"mask": mask, "mask_sha256": mask_content_digest(mask), "sam3_score": .6, "quality_score": .8,
                                 "accepted": True, "failure_reasons": [], "metrics": {}}]}
             camera_masks[role] = mask
         predictions[name] = {"camera": name, "roles": role_results}
@@ -116,6 +117,7 @@ class SlotGeometryFusionTests(unittest.TestCase):
         correct = row["candidates"][0]
         wrong = copy.deepcopy(correct)
         wrong["mask"] = np.roll(correct["mask"], 8, axis=1)
+        wrong["mask_sha256"] = mask_content_digest(wrong["mask"])
         wrong.update(sam3_score=.99, quality_score=.99)
         row["candidates"] = [wrong, correct]
         row["selected_index"] = 0  # Camera-local preference is deliberately wrong.
@@ -131,6 +133,7 @@ class SlotGeometryFusionTests(unittest.TestCase):
     def test_spatially_inconsistent_view_is_excluded_not_concatenated(self):
         row = self.inference["cameras"]["wrist"]["roles"]["target"]
         row["candidates"][0]["mask"] = np.roll(row["candidates"][0]["mask"], 15, axis=1)
+        row["candidates"][0]["mask_sha256"] = mask_content_digest(row["candidates"][0]["mask"])
         result = self.fuse(FusionConfig(min_support_cameras=2))
         self.assertEqual(result["roles"]["target"]["support_cameras"], ["front", "left_shoulder"])
         self.assertLess(np.max(result["points"]["target_points_world"][:, 0]), 0)
@@ -189,6 +192,7 @@ class SlotGeometryFusionTests(unittest.TestCase):
         self.inference["snapshot_input_sha256"] = snapshot_input_digest(self.snapshot)
         for camera in self.inference["cameras"].values():
             camera["roles"]["target"]["candidates"][0]["mask"][:] = False
+            camera["roles"]["target"]["candidates"][0]["mask_sha256"] = mask_content_digest(camera["roles"]["target"]["candidates"][0]["mask"])
         result = self.fuse()
         self.assertEqual(result["roles"]["target"]["candidate_diagnostics"][0]["failure_reason"], "EMPTY_MASK")
 
@@ -267,6 +271,37 @@ class SlotGeometryFusionTests(unittest.TestCase):
         result = self.fuse(FusionConfig(min_support_cameras=2))
         self.assertGreater(result["roles"]["target"]["point_count"], 0)
         self.assertGreater(result["roles"]["reference"]["point_count"], 0)
+
+    def test_changed_accepted_masks_cannot_reuse_old_acceptance(self):
+        for camera in self.inference["cameras"].values():
+            target = camera["roles"]["target"]["candidates"][0]
+            target["mask"] = camera["roles"]["reference"]["candidates"][0]["mask"].copy()
+        with self.assertRaisesRegex(ValueError, "mask content digest mismatch"):
+            self.fuse()
+
+    def test_missing_mask_digest_and_nonboolean_acceptance_are_rejected(self):
+        candidate = self.inference["cameras"]["front"]["roles"]["target"]["candidates"][0]
+        digest = candidate.pop("mask_sha256")
+        with self.assertRaisesRegex(ValueError, "mask content digest mismatch"):
+            self.fuse()
+        candidate["mask_sha256"] = digest
+        candidate["accepted"] = 1
+        with self.assertRaisesRegex(ValueError, "accepted state must be a boolean"):
+            self.fuse()
+
+    def test_scored_mask_digest_survives_inference_artifact_roundtrip(self):
+        for name, frame in self.snapshot.cameras.items():
+            backend = MockBackend({role: (mask[None], [.6]) for role, mask in self.masks[name].items()})
+            self.inference["cameras"][name] = run_camera(self.guidance, frame.camera, frame.rgb, frame.depth_m, backend)
+        inference_path = self.path.parent / "inference.json"
+        save_inference_artifact(inference_path, self.inference, self.snapshot)
+        loaded = load_inference_artifact(inference_path)
+        result = fuse_geometry(self.snapshot, self.guidance, loaded)
+        self.assertGreater(result["roles"]["target"]["point_count"], 0)
+        for camera in loaded["cameras"].values():
+            for role in ("target", "reference"):
+                candidate = camera["roles"][role]["candidates"][0]
+                self.assertEqual(candidate["mask_sha256"], mask_content_digest(candidate["mask"]))
 
     def test_stale_depth_rgb_and_guidance_points_are_detected(self):
         for change in ("depth", "rgb", "guidance_points"):

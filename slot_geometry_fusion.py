@@ -27,6 +27,7 @@ from slot_guidance import ROLES, STATUSES, SlotGuidance, _array, _number, _times
 from slot_guided_io import (FrameSnapshot, _canonical, _read_json, atomic_json, calibration_digest,
                             guidance_input_digest, json_value, snapshot_input_digest)
 from slot_prompt_adapter import _validate_frame
+from slot_guided_sam3 import mask_content_digest
 
 
 @dataclass(frozen=True)
@@ -157,6 +158,9 @@ def _validate_binding(snapshot: FrameSnapshot, guidance: SlotGuidance, inference
         for role in ROLES:
             if camera_result["roles"][role].get("status") != guidance.metadata[role]["status"]:
                 raise ValueError("inference role status mismatch")
+            for candidate in camera_result["roles"][role].get("candidates", []):
+                if type(candidate.get("accepted")) is not bool:
+                    raise ValueError("inference candidate accepted state must be a boolean")
 
 
 def _candidate_cloud(frame: Any, candidate: Mapping[str, Any], config: FusionConfig):
@@ -164,6 +168,8 @@ def _candidate_cloud(frame: Any, candidate: Mapping[str, Any], config: FusionCon
     depth = np.asarray(frame.depth_m)
     if mask.dtype != bool or mask.shape != depth.shape:
         return None, {"failure_reason": "INVALID_MASK_SHAPE_OR_TYPE"}
+    if candidate.get("mask_sha256") != mask_content_digest(mask):
+        raise ValueError("accepted candidate mask content digest mismatch")
     count = int(mask.sum())
     if not count:
         return None, {"failure_reason": "EMPTY_MASK"}

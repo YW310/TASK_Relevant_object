@@ -17,6 +17,8 @@ from slot_guided_io import atomic_json, load_frame_snapshot
 
 def create_demo(directory: str | Path) -> Path:
     directory = Path(directory)
+    if directory.exists() and any(directory.iterdir()):
+        raise FileExistsError("synthetic demo requires a new or empty input directory")
     directory.mkdir(parents=True, exist_ok=True)
     timestamp, source_index = "2026-11-05T10:00:00+08:00", 7
     identity = {"episode_id": "synthetic_two_instances", "frame_id": "sample-2", "source_frame_index": source_index}
@@ -87,10 +89,13 @@ def create_demo(directory: str | Path) -> Path:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--config", type=Path, help="validated offline threshold JSON")
     args = parser.parse_args()
     from run_slot_geometry_experiments import run_experiments
+    from slot_guided_config import load_slot_guided_config
+    config = load_slot_guided_config(args.config)
     manifest = create_demo(args.output_dir / "inputs")
-    report = run_experiments(manifest, args.output_dir / "results")
+    report = run_experiments(manifest, args.output_dir / "results", config=config)
     print(json.dumps({"manifest": str(manifest), "report": str(args.output_dir / "results" / "experiment_report.json"),
                       "evidence_kind": report["evidence_kind"], "real_offline_acceptance_passed": False}, indent=2))
 

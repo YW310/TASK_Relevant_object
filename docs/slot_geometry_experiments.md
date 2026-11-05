@@ -8,6 +8,14 @@ and puts diagnostic legends beside the original image so small objects remain
 visible; its artifact test was updated for that separate legend area. Existing
 Qwen/SAM3, fusion and model entry points are unchanged.
 
+Use the [current bilingual quickstart](slot_guided_quickstart.md) for executable
+Windows and prepared-environment commands. The checked-in
+[offline config](../configs/slot_guided_offline.json) preserves the original
+threshold defaults. Inspect it with
+`python slot_guided_config.py --config configs/slot_guided_offline.json`.
+Each CLI accepts `--config`; A/B reports retain all effective settings and their
+SHA256, and fusion artifacts retain their geometry settings.
+
 ## Current-frame producers
 
 `oracle_guidance(snapshot, role_masks, ...)` uses explicit task-role annotations
@@ -70,7 +78,7 @@ requires the same frame's near/far; wrist calibration has no static fallback.
 ## A/B/C and ablation harness
 
 ```powershell
-python run_slot_geometry_experiments.py --manifest experiment.json --output-dir artifacts/real_experiment --backend sam3 --checkpoint /path/to/sam3.pt --device cuda
+python run_slot_geometry_experiments.py --manifest experiment.json --output-dir artifacts/real_experiment --backend sam3 --checkpoint /path/to/sam3.pt --device cuda --config configs/slot_guided_offline.json
 ```
 
 `experiment.json` is a strict `slot_geometry_experiment` schema-1 object with
@@ -92,17 +100,34 @@ and never passed into B inference. Oracle Guidance is intentionally GT-based.
 Current labels contain episode_id/frame_id/source_frame_index and
 `roles:{target/reference:{status,instance_id,masks:{camera:path}}}`. Every camera
 must be explicitly annotated. A C report must have the same identity,
-`method=original_ocrr_action_path`, matching evidence_kind, checkpoint/Git source
-and externally measured `metrics`; importing it does not authenticate those
-measurements or establish real acceptance.
+`method=original_ocrr_action_path`, matching evidence_kind, observed_at and
+calibration digest, checkpoint identifier/digest, producer Git SHA and externally
+measured `metrics`. Its schema is `schema_version=1`,
+`artifact_type=ocrr_baseline_evaluation`. All nine metric names must be explicit:
+`role_selection_accuracy`, `prompt_instance_hit_rate`, `sam3_mask_iou`,
+`multiview_surface_distance_m`, `object_center_error_m`,
+`action_translation_error_m`, `rlbench_paired_task_success_rate`,
+`per_frame_backend_latency_ms`, `peak_vram_bytes`. Each uses
+`{value,count,reason,unit}`. Unavailable values require `value=null`, `count=0`
+and a nonempty reason; measured values require finite nonnegative numbers and
+positive integer counts, and rates must be in [0,1]. Units are m for metric
+distances, ms for latency, bytes for memory and null for ratios. Real reports
+require a checkpoint SHA256. Reports are structurally and temporally checked;
+importing one does not authenticate external measurements or establish real
+acceptance. `measurements_available=false` identifies an entirely unavailable C
+report, rather than implying that C executed.
 
 Outputs are `experiment_report.json`, flat `metrics.csv`, all PR2 masks/prompts/
 scores/diagnostics and PR3 object geometry. Metrics include separate per-role
 selection accuracy (only comparable instance IDs), prompt hit (all positive
-points in the annotated instance, or box center for box-only), selected mask IoU,
+points in the annotated instance, or box center for box-only), final mask IoU,
 75th-percentile cross-view surface distance, robust-center 3D error, backend
 latency and peak CUDA allocated memory. Missing/failed selections count as IoU
 zero for an annotated visible instance. Missing role identity remains unavailable.
+`sam3_mask_iou` uses each camera's candidate selected by the final joint geometry
+result. A view without final support counts as an empty prediction. The separate
+`camera_local_mask_iou` preserves the pre-fusion selection diagnostic, allowing
+cross-view reselection to be assessed. The CSV includes an explicit unit column.
 Single-view consistency, Action error, paired rollouts and unavailable GPU
 measurements remain null with an explicit reason. Evaluator-only pure helpers
 provide translation-error and paired-success arithmetic without feeding labels
@@ -111,11 +136,12 @@ into perception. No future expert action is loaded by this runner.
 ## Reproducible synthetic software experiment
 
 ```powershell
-python slot_guided_synthetic_demo.py --output-dir artifacts/synthetic_slot_demo
+python slot_guided_synthetic_demo.py --config configs/slot_guided_offline.json --output-dir artifacts/synthetic_slot_demo
 ```
 
-Use a new output directory: Guidance writers intentionally refuse implicit
-overwrite. The demo generates two identical-category planar instances in front
+Use a new output directory: the demo rejects existing nonempty inputs before
+modifying any file. Guidance writers also refuse implicit overwrite. The demo
+generates two identical-category planar instances in front
 and moving wrist cameras at source frame 7 (`frame_id=sample-2`), known original
 RGB-D/calibration, Oracle guidance and a **mocked** Coarse point output. Supplied
 Mock candidates include a wrong-instance mask with SAM score .99 and the correct
@@ -132,8 +158,10 @@ reviewed real-model report is required for PR4 activation.
 
 ## Validation and remaining limits
 
-The cumulative new path, original camera tests and default pipeline contract
-passed **151 tests and 167 subtests**. Existing fusion tests separately passed
+The initial PR3 cumulative path, original camera tests and default pipeline contract
+passed **151 tests and 167 subtests**. The post-review configuration/candidate and
+metric checks are included in the command below; the current run count is
+recorded in the [review notes](slot_guided_review.md). Existing fusion tests separately passed
 37 tests. The expanded unchanged Qwen candidate suite has 16 passing tests and
 one pre-existing wheel-prompt expectation failure
 (`test_osc_wheel_prompts_drop_color_noun_and_exclusion_text`), reproduced on the
@@ -144,7 +172,7 @@ prompt behavior was intentionally not changed.
 ```powershell
 $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'
 $env:BRIDGEVLA_REPO='C:\Users\yiwei.chen\BridgeVLA'
-python -m pytest tests/test_slot_guidance.py tests/test_slot_guidance_geometry.py tests/test_slot_prompt_adapter.py tests/test_slot_guided_sam3.py tests/test_slot_guided_io.py tests/test_slot_guidance_producers.py tests/test_slot_geometry_fusion.py tests/test_slot_geometry_experiments.py tests/test_camera_geometry.py tests/compatibility/test_pipeline_baseline.py -q
+python -m pytest tests/test_slot_guidance.py tests/test_slot_guidance_geometry.py tests/test_slot_prompt_adapter.py tests/test_slot_guided_sam3.py tests/test_slot_guided_io.py tests/test_slot_guidance_producers.py tests/test_slot_geometry_fusion.py tests/test_slot_geometry_experiments.py tests/test_slot_guided_config.py tests/test_camera_geometry.py tests/compatibility/test_pipeline_baseline.py -q
 python -m pytest tests/test_multiview_candidate_fusion.py -q
 ```
 

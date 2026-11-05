@@ -108,6 +108,18 @@ class SlotGuidedIOTests(unittest.TestCase):
             original_region = np.array(image)[:self.rgb.shape[0], :self.rgb.shape[1]]
             self.assertTrue(np.any(original_region != self.rgb))
 
+    def test_cached_selection_requires_an_accepted_candidate(self):
+        result = self.run_frame()
+        path = Path(result["artifact_path"])
+        original = json.loads(path.read_text(encoding="utf-8"))
+        for selected in (True, -1, 999, 0):
+            with self.subTest(selected=selected):
+                value = copy.deepcopy(original)
+                value["cameras"]["wrist"]["roles"]["target"]["selected_index"] = selected
+                path.write_text(json.dumps(value), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "accepted candidate"):
+                    load_inference_artifact(path)
+
     def test_cache_hit_does_not_repeat_image_encoder_or_rewrite_artifacts(self):
         backend = self.backend()
         first = self.run_frame(backend)

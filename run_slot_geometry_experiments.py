@@ -10,11 +10,19 @@ from run_slot_guided_sam3 import mock_backends
 from slot_guidance import load_guidance
 from slot_guided_io import atomic_json, load_frame_snapshot, run_offline_frame, _read_json
 from slot_guided_sam3 import Sam3Backend
-from slot_experiment_metrics import evaluate_frame, load_current_labels, metric
+from slot_experiment_metrics import METRIC_NAMES, evaluate_frame, load_baseline_report, load_current_labels, metric
 from slot_geometry_fusion import fuse_geometry, save_geometry
+from slot_guided_config import SlotGuidedConfig, load_slot_guided_config
 
 
-def run_experiments(manifest_path, output_dir, *, backend_kind="mock", checkpoint=None, device="cpu"):
+def run_experiments(manifest_path, output_dir, *, backend_kind="mock", checkpoint=None, device="cpu", config=None):
+    config = config if config is not None else SlotGuidedConfig()
+    if not isinstance(config, SlotGuidedConfig):
+        raise ValueError("config must be a validated SlotGuidedConfig")
+    if backend_kind not in ("mock", "sam3"):
+        raise ValueError("backend_kind must be mock or sam3")
+    if backend_kind == "sam3" and checkpoint is None:
+        raise ValueError("SAM3 experiments require an explicit local checkpoint")
     manifest_path, output_dir = Path(manifest_path), Path(output_dir)
     manifest = _read_json(manifest_path)
     if set(manifest) != {"schema_version", "artifact_type", "evidence_kind", "frames"} or type(manifest.get("schema_version")) is not int or manifest.get("schema_version") != 1 or manifest.get("artifact_type") != "slot_geometry_experiment":
@@ -52,8 +60,9 @@ def run_experiments(manifest_path, output_dir, *, backend_kind="mock", checkpoin
                 active_backend = backend or mock_backends(manifest_path.parent / entry["mock_candidates_json"], snapshot)
                 configuration = f"{variant}_{mode}"
                 directory = output_dir / snapshot.metadata["episode_id"] / str(identity[1]) / configuration
-                inference = run_offline_frame(snapshot_path, guidance_path, active_backend, directory, mode=mode, use_cache=False)
-                geometry = fuse_geometry(snapshot, guidance, inference)
+                inference = run_offline_frame(snapshot_path, guidance_path, active_backend, directory, mode=mode, use_cache=False,
+                                               adapter_config=config.adapter, selection_config=config.selection)
+                geometry = fuse_geometry(snapshot, guidance, inference, config=config.fusion)
                 save_geometry(directory / "object_geometry.json", geometry)
                 pending.append((configuration, guidance, inference, geometry))
         # Evaluator labels are loaded only after A/B perception has finished.
@@ -62,20 +71,19 @@ def run_experiments(manifest_path, output_dir, *, backend_kind="mock", checkpoin
             row["configurations"][configuration] = evaluate_frame(snapshot, guidance, inference, geometry, labels)
         baseline_path = entry.get("baseline_report_json")
         if baseline_path:
-            baseline = _read_json(manifest_path.parent / baseline_path)
-            for key in ("episode_id", "frame_id", "source_frame_index"):
-                if baseline.get(key) != row[key]:
-                    raise ValueError(f"baseline report {key} mismatch")
-            if baseline.get("method") != "original_ocrr_action_path" or baseline.get("evidence_kind") != manifest["evidence_kind"]:
-                raise ValueError("baseline must identify the original OCRR/action path and matching evidence kind")
+            baseline = load_baseline_report(manifest_path.parent / baseline_path, snapshot, manifest["evidence_kind"])
             row["configurations"]["C"] = {"status": "provided_baseline_report", "metrics": baseline.get("metrics", {}),
                                               "source_checkpoint": baseline.get("source_checkpoint"),
-                                              "source_git_sha": baseline.get("source_git_sha")}
+                                              "source_checkpoint_sha256": baseline["source_checkpoint_sha256"],
+                                              "calibration_sha256": baseline["calibration_sha256"],
+                                              "source_git_sha": baseline.get("source_git_sha"),
+                                              "measurements_available": any(item["value"] is not None for item in baseline["metrics"].values())}
         else:
             row["configurations"]["C"] = {"status": "not_executed", "reason": "original_ocrr_checkpoint_runtime_unavailable"}
         reports.append(row)
     report = {"schema_version": 1, "artifact_type": "slot_geometry_experiment_report",
               "evidence_kind": manifest["evidence_kind"], "backend_kind": backend_kind, "frames": reports,
+              "effective_config": config.to_dict(), "config_sha256": config.digest(),
               "real_offline_acceptance_passed": False,
               "acceptance_reason": "requires_separate_reviewed_real_model_and_paired_rollout_evidence",
               "missing_runtime_metrics": {
@@ -84,19 +92,16 @@ def run_experiments(manifest_path, output_dir, *, backend_kind="mock", checkpoin
               }}
     atomic_json(output_dir / "experiment_report.json", report)
     # Flat, shareable metrics including explicit missing C/action/rollout values.
-    names = ("role_selection_accuracy", "prompt_instance_hit_rate", "sam3_mask_iou", "multiview_surface_distance_m",
-             "object_center_error_m", "action_translation_error_m", "rlbench_paired_task_success_rate",
-             "per_frame_backend_latency_ms", "peak_vram_bytes")
     with (output_dir / "metrics.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["episode_id", "source_frame_index", "configuration", "evidence_kind", "metric", "value", "count", "reason"])
+        writer.writerow(["episode_id", "source_frame_index", "configuration", "evidence_kind", "metric", "value", "unit", "count", "reason"])
         for frame in reports:
             for configuration, result in frame["configurations"].items():
                 measured = result.get("metrics", result)
-                for name in names:
+                for name in METRIC_NAMES:
                     item = measured.get(name, metric(None, 0, reason=result.get("reason", "baseline_metric_unavailable")))
                     writer.writerow([frame["episode_id"], frame["source_frame_index"], configuration,
-                                     manifest["evidence_kind"], name, item.get("value"), item.get("count", 0), item.get("reason")])
+                                     manifest["evidence_kind"], name, item.get("value"), item.get("unit"), item.get("count", 0), item.get("reason")])
     return report
 
 
@@ -107,8 +112,12 @@ def main():
     parser.add_argument("--backend", choices=("mock", "sam3"), default="mock")
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--config", type=Path, help="validated adapter/selection/fusion threshold JSON")
     args = parser.parse_args()
-    report = run_experiments(args.manifest, args.output_dir, backend_kind=args.backend, checkpoint=args.checkpoint, device=args.device)
+    if args.backend == "sam3" and args.checkpoint is None:
+        parser.error("--checkpoint is required for --backend sam3")
+    config = load_slot_guided_config(args.config)
+    report = run_experiments(args.manifest, args.output_dir, backend_kind=args.backend, checkpoint=args.checkpoint, device=args.device, config=config)
     print(json.dumps({"report": str(args.output_dir / "experiment_report.json"), "evidence_kind": report["evidence_kind"],
                       "frames": len(report["frames"]), "real_offline_acceptance_passed": False}, indent=2))
 
