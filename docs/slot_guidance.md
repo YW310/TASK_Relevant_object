@@ -156,8 +156,11 @@ pytest plugin autoload was disabled after an initial plugin startup MemoryError.
 This verifies the tested software contracts; it is not a BridgeVLA checkpoint
 output comparison, a SAM3 experiment or a robot success-rate measurement.
 
-Remaining gates: verified real coarse-slot export/provenance; installed SAM3
-signature and coordinate checks; prompt/mask candidates and cache diagnostics
-(PR2); strict original RGB-D/calibration snapshots and labeled Oracle/Predicted
-experiments (PR3); disabled-feature checkpoint equality and frozen optional
-action conditioning (PR4). No robot performance metric is reported in PR1.
+Subsequent software is described in the [current quickstart](slot_guided_quickstart.md),
+[prompt/backend guide](slot_guided_offline.md) and [fusion/experiment guide](slot_geometry_experiments.md).
+PR2/PR3 implement candidate inference, cache diagnostics, current-frame snapshots
+and geometry fusion; PR4 is a default-disabled action-conditioning draft. The
+remaining gates are actual frozen checkpoint export/provenance, installed SAM3
+model smoke tests, calibrated real Oracle/Predicted/baseline experiments and
+reviewed action/paired-rollout evidence. PR1's historical software checks above
+do not measure robot performance.

@@ -10,6 +10,7 @@ from PIL import Image
 
 from slot_guided_io import load_frame_snapshot, run_offline_frame
 from slot_guided_sam3 import MockBackend, Sam3Backend
+from slot_guided_config import load_slot_guided_config
 
 
 def mock_backends(path: str | Path, snapshot) -> dict[str, MockBackend]:
@@ -51,7 +52,9 @@ def main() -> None:
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--no-cache", action="store_true")
+    parser.add_argument("--config", type=Path, help="validated adapter/selection/fusion threshold JSON")
     args = parser.parse_args()
+    config = load_slot_guided_config(args.config)
     snapshot = load_frame_snapshot(args.frame)
     if args.backend == "mock":
         if args.mock_candidates is None:
@@ -62,7 +65,8 @@ def main() -> None:
             parser.error("--checkpoint is required for --backend sam3")
         backend = Sam3Backend(args.checkpoint, device=args.device)
     report = run_offline_frame(args.frame, args.guidance, backend, args.output_dir,
-                               mode=args.mode, use_cache=not args.no_cache)
+                               mode=args.mode, use_cache=not args.no_cache,
+                               adapter_config=config.adapter, selection_config=config.selection)
     print(json.dumps({"artifact_path": report["artifact_path"], "cache_hit": report["cache_hit"],
                       "source_frame_index": report["source_frame_index"],
                       "roles": {name: {role: {"status": row["status"], "selected_index": row["selected_index"],

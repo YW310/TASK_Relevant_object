@@ -19,7 +19,7 @@ import numpy as np
 from slot_guidance import SlotGuidance, identity_world_transform
 from slot_guided_sam3 import (
     AUDITED_SAM3_SHA, MockBackend, Sam3Backend, SelectionConfig,
-    _check_predict_signature, run_camera, verify_sam3_api_contract,
+    _check_predict_signature, mask_content_digest, run_camera, verify_sam3_api_contract,
 )
 from slot_prompt_adapter import CameraFrame
 
@@ -203,6 +203,18 @@ class OfflineSam3Tests(unittest.TestCase):
         result["roles"]["target"]["candidates"][0]["mask"][:] = False
         self.assertTrue(self.run_backend(backend)["roles"]["target"]["candidates"][0]["mask"].any())
 
+    def test_mask_digest_binds_scored_content_shape_and_logical_layout(self):
+        result = self.run_backend(self.backend())
+        candidate = result["roles"]["target"]["candidates"][0]
+        self.assertEqual(candidate["mask_sha256"], mask_content_digest(candidate["mask"]))
+        candidate["mask"][0, 0] = ~candidate["mask"][0, 0]
+        self.assertNotEqual(candidate["mask_sha256"], mask_content_digest(candidate["mask"]))
+        self.assertNotEqual(mask_content_digest(np.zeros((2, 3), bool)), mask_content_digest(np.zeros((3, 2), bool)))
+        source = np.arange(24).reshape(4, 6) % 2 == 0
+        self.assertEqual(mask_content_digest(source[:, ::2]), mask_content_digest(source[:, ::2].copy()))
+        with self.assertRaises(ValueError):
+            mask_content_digest(np.zeros((2, 3), dtype=np.float32))
+
     def test_import_without_sam3_or_torch(self):
         script = "import sys; import slot_guided_sam3; assert not ({'torch','sam3','sam3_runtime'} & set(sys.modules))"
         subprocess.run([sys.executable, "-c", script], cwd=ROOT, env=os.environ.copy(), check=True,
@@ -210,7 +222,8 @@ class OfflineSam3Tests(unittest.TestCase):
 
     def test_invalid_configuration_and_mode(self):
         for config in ({"min_quality": 1.2}, {"max_center_error_m": 0}, {"min_mask_pixels": True},
-                       {"depth_tolerance_m": float("nan")}):
+                       {"depth_tolerance_m": float("nan")}, {"min_quality": True},
+                       {"max_center_error_m": False}, {"min_depth_fraction": "0.5"}):
             with self.subTest(config=config), self.assertRaises(ValueError):
                 SelectionConfig(**config)
         with self.assertRaises(ValueError):

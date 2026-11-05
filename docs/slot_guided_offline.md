@@ -5,6 +5,25 @@ entry point using the PR1 role/world/metre artifact. Real SAM3 requires the
 [audited source/API](sam3_api_contract.md), a local checkpoint and its dependencies.
 The source audit is not a real model smoke test. No weights are downloaded.
 
+Start with the [bilingual executable quickstart](slot_guided_quickstart.md) for
+the prepared Windows environment, a model-free run and cache replay.
+
+## Reproducible configuration
+
+All offline CLIs accept `--config configs/slot_guided_offline.json`. This checked-in
+file matches the existing AdapterConfig/SelectionConfig/FusionConfig defaults.
+Unknown fields, numeric booleans, invalid thresholds and duplicate keys fail
+before model construction. Omitted sections inherit those same defaults.
+
+```powershell
+python slot_guided_config.py --config configs/slot_guided_offline.json
+```
+
+This prints effective settings and a stable configuration SHA256 without loading
+SAM3 or opening data. Single-frame inference uses adapter/selection settings;
+the experiment runner also uses fusion settings. Effective settings are retained
+in inference and experiment reports. Configuration cannot activate BridgeVLA.
+
 ## Strict snapshot input
 
 Provide one JSON file for exactly one acquired observation. It must not contain
@@ -59,8 +78,8 @@ score. Failures select no mask; no box-shaped mask or unvalidated geometry is
 substituted. Cross-view association is PR3.
 
 ```powershell
-python run_slot_guided_sam3.py --frame snapshots/current.json --guidance guidance/current.json --backend sam3 --checkpoint /path/to/sam3.pt --device cuda --mode point+box --output-dir artifacts/slot_sam3
-python run_slot_guided_sam3.py --frame snapshots/current.json --guidance guidance/current.json --backend sam3 --checkpoint /path/to/sam3.pt --device cuda --mode box-only --output-dir artifacts/slot_sam3
+python run_slot_guided_sam3.py --frame snapshots/current.json --guidance guidance/current.json --backend sam3 --checkpoint /path/to/sam3.pt --device cuda --mode point+box --config configs/slot_guided_offline.json --output-dir artifacts/slot_sam3
+python run_slot_guided_sam3.py --frame snapshots/current.json --guidance guidance/current.json --backend sam3 --checkpoint /path/to/sam3.pt --device cuda --mode box-only --config configs/slot_guided_offline.json --output-dir artifacts/slot_sam3
 ```
 
 For model-free software checks, `--backend mock --mock-candidates masks.json`
@@ -72,8 +91,12 @@ Mocks return supplied masks; they are never reported as learned predictions.
 
 `slot_guided_io.run_offline_frame` writes `<output>/<cache_key>/inference.json`,
 checksum-linked NPZ containing **all** bool candidate masks at original RGB
-resolution, and one role/mask/prompt diagnostic PNG per camera. JSON contains
-every SAM score, composite score, gate diagnostic, chosen index and failure.
+resolution, and one role/mask/prompt diagnostic PNG per camera. Original RGB
+pixels retain their scale in the left region of the diagnostic, with a readable
+legend beside them. JSON contains every SAM score, composite score, gate
+diagnostic, chosen index, failure and per-candidate mask content digest. Fusion
+checks that digest before accepting a scored mask, so later mask mutation cannot
+silently reuse its earlier acceptance decision.
 
 The cache key hashes actual RGB, metric depth, guidance arrays and provenance,
 per-frame calibration, prompt/selection settings, mode, model/checkpoint/backend
@@ -84,7 +107,7 @@ backend. Mock CPU latency does not measure SAM3 performance.
 
 ```powershell
 $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'
-python -m pytest tests/test_slot_prompt_adapter.py tests/test_slot_guided_sam3.py tests/test_slot_guided_io.py tests/compatibility/test_pipeline_baseline.py -q
+python -m pytest tests/test_slot_prompt_adapter.py tests/test_slot_guided_sam3.py tests/test_slot_guided_io.py tests/test_slot_guided_config.py tests/compatibility/test_pipeline_baseline.py -q
 ```
 
 The inspected local episode has packed RGB depth and instance masks, but no

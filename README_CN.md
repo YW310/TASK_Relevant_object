@@ -1,5 +1,14 @@
 # SAM 3 ModelScope 本地单图测试包（修正版）
 
+## BridgeVLA Slot 引导 SAM3 离线路径
+
+从[离线快速开始（Windows / 可移植环境）](docs/slot_guided_quickstart.md)运行合成 Mock 示例、
+配置阈值、检查缓存并执行测试。新路径复用当前帧原始 RGB-D 和动态相机标定，
+由 Slot 决定语义角色、SAM3 分割实例，再输出对象级 world 米制点云。
+完整约定见[接口与坐标审计](docs/slot_guidance_interface_audit.md)、
+[单帧 SAM3](docs/slot_guided_offline.md)及[A/B/C 实验](docs/slot_geometry_experiments.md)。
+真实模型与机器人性能尚未测量，BridgeVLA 动作接入保持默认关闭的草稿状态。
+
 本包直接读取本地 `sam3.pt`，不下载模型。
 
 ## 修正内容

@@ -228,8 +228,8 @@ class SelectionConfig:
 
     def __post_init__(self):
         for key, value in asdict(self).items():
-            if not np.isfinite(value):
-                raise ValueError(f"nonfinite selection setting {key}")
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value):
+                raise ValueError(f"selection {key} must be a finite real number")
         for key in ("max_mask_fraction", "min_positive_coverage", "max_negative_coverage",
                     "min_depth_fraction", "min_box_fraction", "min_geometry_support", "min_quality"):
             if not 0 <= getattr(self, key) <= 1:
@@ -239,6 +239,16 @@ class SelectionConfig:
                 raise ValueError(f"selection {key} must be a positive integer")
         if self.max_center_error_m <= 0 or self.depth_tolerance_m <= 0:
             raise ValueError("selection metric tolerances must be positive")
+
+
+def mask_content_digest(mask: Any) -> str:
+    """Bind acceptance diagnostics to the exact original-resolution bool mask."""
+    array = np.asarray(mask)
+    if array.ndim != 2 or array.dtype != bool:
+        raise ValueError("mask digest requires an original-resolution 2D bool array")
+    array = np.ascontiguousarray(array)
+    header = f"bool:{array.shape[0]}:{array.shape[1]}:".encode("ascii")
+    return hashlib.sha256(header + array.tobytes()).hexdigest()
 
 
 def _coverage(mask: np.ndarray, points: Any, *, empty: float) -> float:
@@ -320,7 +330,8 @@ def score_candidate(mask: np.ndarray, sam3_score: float, *, prompt: RolePrompt,
         quality = 0.0
     if quality < config.min_quality:
         reasons.append("low_quality")
-    return {"mask": mask.copy(), "sam3_score": float(sam3_score) if np.isfinite(sam3_score) else None,
+    return {"mask": mask.copy(), "mask_sha256": mask_content_digest(mask),
+            "sam3_score": float(sam3_score) if np.isfinite(sam3_score) else None,
             "quality_score": float(quality), "accepted": not reasons, "failure_reasons": reasons,
             "metrics": {"area_pixels": count, "area_fraction": area_fraction,
                         "positive_coverage": positive, "negative_coverage": negative,
