@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/YW310/TASK_Relevant_object/schemas/slot_guidance.schema.json",
+  "title": "Slot Guidance Artifact v1",
+  "description": "Current-frame semantic role guidance in RLBench world coordinates, paired with an NPZ point archive.",
+  "$comment": "NPZ arrays are finite float point sets of shape [N,3] in metres and use the role points_key names. Runtime validation checks array shape/count, finiteness, digest, affine invertible similarity transforms, declared transform/frame agreement, and timestamps. When supplied by the caller, expected_source_frame_index must match the declared index; validation cannot inspect the producer's true geometry provenance or prove that no future observation was used. A NULL reference is a semantic decision; reference_null_probability records classifier calibration and need not equal 1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "episode_id",
+    "frame_id",
+    "source_frame_index",
+    "instruction",
+    "task_name",
+    "coordinate_frame",
+    "coordinate_units",
+    "observed_at",
+    "created_at",
+    "guidance_source",
+    "source_checkpoint",
+    "source_git_sha",
+    "transform",
+    "points_file",
+    "points_sha256",
+    "target",
+    "reference",
+    "reference_null_probability"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "artifact_type": { "const": "slot_guidance" },
+    "episode_id": { "$ref": "#/$defs/nonemptyString" },
+    "frame_id": { "$ref": "#/$defs/nonemptyString" },
+    "source_frame_index": { "type": "integer", "minimum": 0 },
+    "instruction": { "$ref": "#/$defs/nonemptyString" },
+    "task_name": { "$ref": "#/$defs/nonemptyString" },
+    "coordinate_frame": { "const": "rlbench_world" },
+    "coordinate_units": { "const": "m" },
+    "observed_at": { "$ref": "#/$defs/timestamp" },
+    "created_at": { "$ref": "#/$defs/timestamp" },
+    "guidance_source": {
+      "enum": ["oracle_gt", "predicted_coarse_slot", "mock"]
+    },
+    "source_checkpoint": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "pattern": "\\S",
+      "$comment": "Runtime permits null only for oracle_gt and mock guidance."
+    },
+    "source_git_sha": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$"
+    },
+    "transform": { "$ref": "#/$defs/transform" },
+    "points_file": {
+      "type": "string",
+      "minLength": 5,
+      "pattern": "^[A-Za-z0-9_.-]+\\.npz$",
+      "description": "Basename of the adjacent NPZ archive; directories and drive-qualified names are forbidden."
+    },
+    "points_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "target": {
+      "allOf": [
+        { "$ref": "#/$defs/role" },
+        {
+          "properties": {
+            "status": { "enum": ["VISIBLE", "NOT_VISIBLE", "LOW_CONFIDENCE"] },
+            "points_key": { "const": "target_points_world" }
+          }
+        }
+      ]
+    },
+    "reference": {
+      "allOf": [
+        { "$ref": "#/$defs/role" },
+        { "properties": { "points_key": { "const": "reference_points_world" } } }
+      ]
+    },
+    "reference_null_probability": { "$ref": "#/$defs/probability" }
+  },
+  "$defs": {
+    "nonemptyString": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$",
+      "description": "RFC 3339 timestamp using uppercase T/Z, seconds, and an explicit UTC marker or timezone offset."
+    },
+    "probability": { "type": "number", "minimum": 0, "maximum": 1 },
+    "vec3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "type": "number" }
+    },
+    "positiveVec3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "type": "number", "exclusiveMinimum": 0 }
+    },
+    "matrix4": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "items": { "type": "number" }
+      }
+    },
+    "normalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["center_world", "cube_scale"],
+      "properties": {
+        "center_world": { "$ref": "#/$defs/vec3" },
+        "cube_scale": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "transform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_frame",
+        "target_frame",
+        "matrix_world_from_source",
+        "source",
+        "timestamp",
+        "source_frame_index"
+      ],
+      "properties": {
+        "source_frame": { "$ref": "#/$defs/nonemptyString" },
+        "target_frame": { "const": "rlbench_world" },
+        "matrix_world_from_source": { "$ref": "#/$defs/matrix4" },
+        "source": { "$ref": "#/$defs/nonemptyString" },
+        "timestamp": { "$ref": "#/$defs/timestamp" },
+        "source_frame_index": { "type": "integer", "minimum": 0 },
+        "normalization": { "$ref": "#/$defs/normalization" }
+      }
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "semantic_valid",
+        "confidence",
+        "center_world",
+        "points_key",
+        "point_count"
+      ],
+      "properties": {
+        "status": { "enum": ["VISIBLE", "NULL", "NOT_VISIBLE", "LOW_CONFIDENCE"] },
+        "semantic_valid": { "type": "boolean" },
+        "confidence": { "$ref": "#/$defs/probability" },
+        "center_world": {
+          "anyOf": [{ "$ref": "#/$defs/vec3" }, { "type": "null" }]
+        },
+        "points_key": { "type": "string" },
+        "point_count": { "type": "integer", "minimum": 0 },
+        "spread_world": {
+          "$ref": "#/$defs/positiveVec3",
+          "description": "Verified world-axis-aligned half-extents in metres, centered at center_world."
+        },
+        "spread_source": { "$ref": "#/$defs/nonemptyString" },
+        "semantic_label": { "$ref": "#/$defs/nonemptyString" },
+        "instance_id": { "$ref": "#/$defs/nonemptyString" }
+      },
+      "dependentRequired": {
+        "spread_world": ["spread_source"],
+        "spread_source": ["spread_world"]
+      },
+      "allOf": [
+        {
+          "if": { "required": ["spread_world"] },
+          "then": { "properties": { "center_world": { "$ref": "#/$defs/vec3" } } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "NULL" } } },
+          "then": {
+            "properties": {
+              "semantic_valid": { "const": false },
+              "center_world": { "type": "null" },
+              "point_count": { "const": 0 }
+            },
+            "not": {
+              "anyOf": [
+                { "required": ["spread_world"] },
+                { "required": ["spread_source"] },
+                { "required": ["semantic_label"] },
+                { "required": ["instance_id"] }
+              ]
+            }
+          },
+          "else": { "properties": { "semantic_valid": { "const": true } } }
+        }
+      ],
+      "$comment": "NULL means the reference is absent in task semantics. NOT_VISIBLE means the role exists but lacks current visibility, and may retain geometry derived from the same observation. LOW_CONFIDENCE means the role exists but localization is unreliable. An empty point set is valid even for VISIBLE; a verified center and extent are needed before constructing a center-only prompt. Per-camera visibility is validated by the prompt adapter."
+    }
+  }
+}
