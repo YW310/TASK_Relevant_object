@@ -101,8 +101,12 @@ class SlotGuidedIOTests(unittest.TestCase):
         diagnostic = path.parent / loaded["cameras"]["wrist"]["diagnostic_image"]
         self.assertTrue(diagnostic.is_file())
         with Image.open(diagnostic) as image:
-            self.assertEqual(image.size, (121, 101))
-            self.assertTrue(np.any(np.array(image) != self.rgb))
+            # Original pixels remain at the left; the readable legend lives
+            # beside them and must not force resampling of the saved masks.
+            self.assertGreater(image.width, self.depth.shape[1])
+            self.assertGreaterEqual(image.height, self.depth.shape[0])
+            original_region = np.array(image)[:self.rgb.shape[0], :self.rgb.shape[1]]
+            self.assertTrue(np.any(original_region != self.rgb))
 
     def test_cache_hit_does_not_repeat_image_encoder_or_rewrite_artifacts(self):
         backend = self.backend()

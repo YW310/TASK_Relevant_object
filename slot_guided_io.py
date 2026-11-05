@@ -145,6 +145,19 @@ def calibration_digest(snapshot: FrameSnapshot) -> str:
     return hashlib.sha256(_canonical(value)).hexdigest()
 
 
+def snapshot_input_digest(snapshot: FrameSnapshot) -> str:
+    value = {"calibration_sha256": calibration_digest(snapshot),
+             "images": {name: {"rgb": _array_digest(frame.rgb), "depth": _array_digest(frame.depth_m)}
+                        for name, frame in sorted(snapshot.cameras.items())}}
+    return hashlib.sha256(_canonical(value)).hexdigest()
+
+
+def guidance_input_digest(guidance: SlotGuidance) -> str:
+    value = {"metadata": guidance.metadata,
+             "points": {role: _array_digest(guidance.points(role)) for role in ("target", "reference")}}
+    return hashlib.sha256(_canonical(value)).hexdigest()
+
+
 def inference_cache_key(snapshot: FrameSnapshot, guidance: SlotGuidance, backend: Mapping[str, Any],
                         *, mode: str, adapter_config: Any = None, selection_config: Any = None) -> str:
     """Bind cache to actual inputs, settings, checkpoint/backend and inference code."""
@@ -184,6 +197,7 @@ def save_inference_artifact(path: str | Path, report: Mapping[str, Any], snapsho
             raise ValueError("result camera does not match snapshot")
         rgb = snapshot.cameras[name].rgb
         overlay = Image.fromarray(rgb)
+        legend = []
         for role, color in (("target", (255, 80, 40)), ("reference", (40, 150, 255))):
             row = result["roles"][role]
             for index, candidate in enumerate(row["candidates"]):
@@ -205,9 +219,20 @@ def save_inference_artifact(path: str | Path, report: Mapping[str, Any], snapsho
                 draw.ellipse([x - 2, y - 2, x + 2, y + 2], fill=color)
             for x, y in prompt.get("negative_points_xy", []):
                 draw.line([x - 2, y - 2, x + 2, y + 2], fill=(255, 255, 255))
-            draw.text((2, 2 if role == "target" else 14), f"{role}: {row['status']}", fill=color)
+            legend.append((role, row["status"], row["selected_index"], row["failure_reason"], color))
         path.parent.mkdir(parents=True, exist_ok=True)
-        overlay.save(path.parent / f"{name}.diagnostic.png")
+        # Keep original pixels and prompt coordinates intact; put readable
+        # diagnostics beside even tiny RGB images instead of covering objects.
+        canvas = Image.new("RGB", (overlay.width + 280, max(overlay.height, 110)), (25, 25, 25))
+        canvas.paste(overlay, (0, 0))
+        draw = ImageDraw.Draw(canvas)
+        draw.text((overlay.width + 8, 4), name, fill=(235, 235, 235))
+        for index, (role, status, chosen, failure, color) in enumerate(legend):
+            y = 22 + index * 42
+            draw.text((overlay.width + 8, y), f"{role}: {status}; candidate={chosen}", fill=color)
+            if failure:
+                draw.text((overlay.width + 8, y + 14), str(failure)[:45], fill=(235, 235, 235))
+        canvas.save(path.parent / f"{name}.diagnostic.png")
         result["diagnostic_image"] = f"{name}.diagnostic.png"
     buffer = io.BytesIO()
     np.savez_compressed(buffer, **arrays)
@@ -300,7 +325,9 @@ def run_offline_frame(snapshot_path: str | Path, guidance_path: str | Path, back
               "guidance_source": guidance.metadata["guidance_source"], "backend": fingerprint, "cameras": cameras,
               "guidance_metadata": guidance.metadata, "reference_null_probability": guidance.metadata["reference_null_probability"],
               "source_git_sha": guidance.metadata["source_git_sha"], "source_checkpoint": guidance.metadata["source_checkpoint"],
-              "calibration_sha256": calibration_digest(snapshot)}
+              "calibration_sha256": calibration_digest(snapshot),
+              "snapshot_input_sha256": snapshot_input_digest(snapshot),
+              "guidance_input_sha256": guidance_input_digest(guidance)}
     save_inference_artifact(output, report, snapshot)
     report.update(cache_hit=False, artifact_path=str(output))
     return report
