@@ -2,8 +2,9 @@
 
 The existing Qwen3 → SAM3 commands are untouched. This is a separate offline
 entry point using the PR1 role/world/metre artifact. Real SAM3 requires the
-[audited source/API](sam3_api_contract.md), a local checkpoint and its dependencies.
-The source audit is not a real model smoke test. No weights are downloaded.
+[interactive runtime API](sam3_api_contract.md), a local checkpoint and its dependencies.
+There is no fixed source-hash or commit gate. Runtime signature and image/mask
+shape checks remain enabled; source hashes are provenance only. No weights are downloaded.
 
 Start with the [bilingual executable quickstart](slot_guided_quickstart.md) for
 the prepared Windows environment, a model-free run and cache replay.

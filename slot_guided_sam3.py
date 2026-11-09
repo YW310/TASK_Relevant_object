@@ -22,32 +22,28 @@ from slot_guidance import SlotGuidance
 from slot_prompt_adapter import AdapterConfig, CameraFrame, RolePrompt, build_prompts
 
 
-AUDITED_SAM3_SHA = "f1647e8d0c1d280991f4d1b7d974c2704537fe66"
-# LF-normalized full-source hashes, checked before importing installed SAM3.
-SAM3_CONTRACT_HASHES = {
-    "model/sam3_image.py": "2c20de90fb0b76b01dd437385eb7226f8c3cd4757a4c80cc8dec943dcf46a4a0",
-    "model/sam3_image_processor.py": "d8738a0efb6138b01c0dc5deceffd29de9e675860a9a1ed3822b08766373333b",
-    "model/sam1_task_predictor.py": "f8902ea6b997495875302cda47dc858c4178bd5d4f8497f40bc8e8531b0ca48a",
-    "model/utils/sam1_utils.py": "3eb335d6eb447e117eb079136cb897475a0210d41b3990edb830c5866b587c2a",
-}
+_SAM3_SOURCE_FILES = (
+    "model/sam3_image.py",
+    "model/sam3_image_processor.py",
+    "model/sam1_task_predictor.py",
+    "model/utils/sam1_utils.py",
+)
 
 
-def verify_sam3_api_contract(package_root: str | Path) -> dict[str, str]:
-    """Reject unreviewed installed implementations, allowing CRLF checkouts.
+def _sam3_source_hashes(package_root: str | Path) -> dict[str, str]:
+    """Record available source files for cache provenance, without a version gate.
 
-    A compatible new SAM3 revision needs a deliberate source audit and updated
-    hashes; parameter names alone cannot prove the coordinate convention.
+    No expected hashes or fixed revision are compared. Missing or unreadable
+    source files do not prevent loading a package with the required runtime API.
     """
-    root = Path(package_root)
-    for name, expected in SAM3_CONTRACT_HASHES.items():
-        path = root / name
-        if not path.is_file():
-            raise RuntimeError(f"unverified SAM3 API: missing {name}")
-        actual = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
-        if actual != expected:
-            raise RuntimeError(f"unverified SAM3 API: source mismatch in {name}; "
-                               f"use audited revision {AUDITED_SAM3_SHA}")
-    return dict(SAM3_CONTRACT_HASHES)
+    hashes = {}
+    for name in _SAM3_SOURCE_FILES:
+        try:
+            source = (Path(package_root) / name).read_bytes()
+        except OSError:
+            continue
+        hashes[name] = hashlib.sha256(source.replace(b"\r\n", b"\n")).hexdigest()
+    return hashes
 
 
 def _check_predict_signature(model: Any, processor: Any) -> None:
@@ -66,7 +62,7 @@ def _check_predict_signature(model: Any, processor: Any) -> None:
 
 
 class Sam3Backend:
-    """Frozen real backend with explicit checkpoint and reviewed pixel API.
+    """Frozen real backend with explicit checkpoint and runtime pixel API checks.
 
     Construction never downloads a checkpoint. SAM3 calls are serialized by
     run_camera; the official predictor temporarily mutates its internal state.
@@ -79,9 +75,10 @@ class Sam3Backend:
             raise FileNotFoundError(f"SAM3 checkpoint not found: {checkpoint}")
         spec = importlib.util.find_spec("sam3")
         if spec is None or not spec.submodule_search_locations:
-            raise RuntimeError("SAM3 is not installed; use MockBackend or install the audited source")
-        self.contract_hashes = verify_sam3_api_contract(next(iter(spec.submodule_search_locations)))
+            raise RuntimeError("SAM3 is not installed; use MockBackend or install a compatible SAM3 package")
+        package_root = Path(next(iter(spec.submodule_search_locations))).resolve()
         import torch
+        import sam3
         from sam3.model_builder import build_sam3_image_model
         from sam3.model.sam3_image_processor import Sam3Processor
         from sam3_runtime import autocast_context, normalize_masks, normalize_scores
@@ -108,8 +105,12 @@ class Sam3Backend:
         with checkpoint.open("rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
-        self._fingerprint = {"kind": "sam3", "api_source_git_sha": AUDITED_SAM3_SHA,
-                             "api_source_hashes": self.contract_hashes,
+        self._fingerprint = {"kind": "sam3",
+                             "sam3_version": getattr(sam3, "__version__", None),
+                             "sam3_package_root": str(package_root),
+                             "api_source_hashes": _sam3_source_hashes(package_root),
+                             "source_hash_enforced": False,
+                             "api_validation": "runtime_signature_and_output",
                              "checkpoint_sha256": digest.hexdigest(), "device": device,
                              "no_bf16": bool(no_bf16), "torch_version": torch.__version__,
                              "frozen": True}

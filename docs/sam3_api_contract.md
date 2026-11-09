@@ -1,4 +1,4 @@
-# Reviewed SAM3 interactive API
+# SAM3 interactive API and runtime compatibility
 
 On 2026-11-05 the official `facebookresearch/sam3` source was cloned read-only
 for API inspection, without installing SAM3 or downloading model weights.
@@ -6,13 +6,27 @@ The reviewed revision is
 [`f1647e8d0c1d280991f4d1b7d974c2704537fe66`](https://github.com/facebookresearch/sam3/tree/f1647e8d0c1d280991f4d1b7d974c2704537fe66).
 This verifies source contracts; it is not an installed-model smoke test.
 
-The real backend checks LF-normalized SHA256 hashes of four installed source
-files against the reviewed versions before importing model code. Other versions
-fail explicitly and need a source audit. Runtime signature inspection additionally
-requires all interactive predictor parameters. Missing installation/checkpoint
-is an explicit error. The builder uses an explicit local checkpoint,
-`load_from_HF=False`, `eval_mode=True`, `enable_inst_interactivity=True`.
-The checkpoint digest is retained in backend/cache provenance.
+The inspected commit is a reference for the table below, not an installation
+requirement. The fixed source-hash/revision gate was removed on 2026-11-09 at the
+user's request. An installed implementation is no longer rejected because its
+source differs from that reference, including harmless edits.
+
+The backend still requires instance interactivity and inspects the actual
+predictor signature for point/box arguments and `normalize_coords`. It checks
+the encoded original image dimensions and validates original-resolution mask
+shapes, finite outputs and candidate geometry. Model/checkpoint loading errors
+remain explicit. These checks do not certify every SAM3 release; verify a
+representative calibrated frame when changing the implementation.
+
+LF-normalized hashes of available source files are recorded only as cache
+provenance, without comparison to expected hashes. Missing/unreadable source
+files do not block startup. The fingerprint records the actual package root,
+package version and `source_hash_enforced=false`; it no longer reports the
+reference commit as the installed implementation. Checkpoint hashes, mask
+content hashes and cache-integrity checks remain unchanged.
+
+The builder uses an explicit local checkpoint, `load_from_HF=False`,
+`eval_mode=True`, `enable_inst_interactivity=True`.
 
 | Source | Verified behavior |
 | --- | --- |
@@ -43,6 +57,6 @@ unverified box/mask, confuses invisibility with reference NULL, or changes the
 existing Qwen/SAM3 entry points.
 
 Real checkpoint inference and GPU latency/VRAM measurements remain unmeasured
-until an audited SAM3 installation, accessible weights and representative
+until a compatible SAM3 installation, accessible weights and representative
 current-frame RGB-D inputs are supplied. CUDA timings synchronize and peak VRAM
 is `torch.cuda.max_memory_allocated` (allocated bytes, not process reservation).

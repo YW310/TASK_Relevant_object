@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from dataclasses import replace
 import importlib.util
 import os
@@ -18,8 +19,8 @@ import numpy as np
 
 from slot_guidance import SlotGuidance, identity_world_transform
 from slot_guided_sam3 import (
-    AUDITED_SAM3_SHA, MockBackend, Sam3Backend, SelectionConfig,
-    _check_predict_signature, mask_content_digest, run_camera, verify_sam3_api_contract,
+    MockBackend, Sam3Backend, SelectionConfig,
+    _check_predict_signature, _sam3_source_hashes, mask_content_digest, run_camera,
 )
 from slot_prompt_adapter import CameraFrame
 
@@ -229,15 +230,19 @@ class OfflineSam3Tests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.run_backend(self.backend(), mode="unreviewed")
 
-    def test_unreviewed_installation_rejected_before_model_import(self):
+    def test_source_hashes_are_observational_and_never_require_a_fixed_revision(self):
         with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(RuntimeError, "unverified SAM3 API"):
-                verify_sam3_api_contract(directory)
-            path = Path(directory) / "model"
-            path.mkdir()
-            (path / "sam3_image.py").write_text("# incompatible implementation", encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "source mismatch"):
-                verify_sam3_api_contract(directory)
+            self.assertEqual(_sam3_source_hashes(directory), {})
+            path = Path(directory) / "model/sam3_image.py"
+            path.parent.mkdir()
+            path.write_bytes(b"# arbitrary installed source\r\n")
+            first = _sam3_source_hashes(directory)
+            self.assertEqual(first, {"model/sam3_image.py": hashlib.sha256(
+                b"# arbitrary installed source\n").hexdigest()})
+            path.write_bytes(b"# a different source revision\n")
+            self.assertNotEqual(first, _sam3_source_hashes(directory))
+            with patch.object(Path, "read_bytes", side_effect=PermissionError("not readable")):
+                self.assertEqual(_sam3_source_hashes(directory), {})
         with self.assertRaises(FileNotFoundError):
             Sam3Backend(ROOT / "missing_sam3_checkpoint.pt")
 
@@ -245,18 +250,18 @@ class OfflineSam3Tests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "interactivity"):
             _check_predict_signature(SimpleNamespace(predict_inst=lambda *args: None), SimpleNamespace(set_image=lambda x: x))
 
-    def test_optional_checked_official_source_matches_contract(self):
-        path = Path(os.environ.get("SAM3_AUDIT_ROOT", str(ROOT.parent / "sam3-api-source"))) / "sam3"
-        if not path.is_dir():
-            self.skipTest("official source checkout not available; no model installation required")
-        result = verify_sam3_api_contract(path)
-        self.assertEqual(len(result), 4)
-        self.assertEqual(len(AUDITED_SAM3_SHA), 40)
+    def test_runtime_predict_signature_still_requires_combined_prompt_arguments(self):
+        class BoxOnly:
+            def predict(self, box=None):
+                pass
+        with self.assertRaisesRegex(RuntimeError, "signature lacks"):
+            _check_predict_signature(SimpleNamespace(predict_inst=lambda *args: None,
+                inst_interactive_predictor=BoxOnly()), SimpleNamespace(set_image=lambda x: x))
 
 
 @unittest.skipUnless(importlib.util.find_spec("torch"), "optional tensor gradient-boundary check")
 class FrozenBackendContractTests(unittest.TestCase):
-    def test_real_wrapper_freezes_and_detaches_with_reviewed_call_arguments(self):
+    def test_real_wrapper_accepts_changed_source_and_keeps_frozen_pixel_api(self):
         """A fake model checks our wrapper, not the unavailable learned SAM3."""
         import torch
         from PIL import Image
@@ -295,19 +300,32 @@ class FrozenBackendContractTests(unittest.TestCase):
         modules = {}
         for name in ("sam3", "sam3.model_builder", "sam3.model", "sam3.model.sam3_image_processor"):
             modules[name] = ModuleType(name)
+        modules["sam3"].__version__ = "different-installed-version"
         modules["sam3.model_builder"].build_sam3_image_model = build_model
         modules["sam3.model.sam3_image_processor"].Sam3Processor = Processor
         with tempfile.TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "sam3.pt"
             checkpoint.write_bytes(b"not a real checkpoint: fake builder only")
+            source = Path(directory) / "model/sam3_image.py"
+            source.parent.mkdir()
+            source.write_text("# installed source differs from the reference\n", encoding="utf-8")
             spec = SimpleNamespace(submodule_search_locations=[directory])
-            with patch.dict(sys.modules, modules), patch("slot_guided_sam3.importlib.util.find_spec", return_value=spec), \
-                    patch("slot_guided_sam3.verify_sam3_api_contract", return_value={"test": "mock_only"}):
+            with patch.dict(sys.modules, modules), patch("slot_guided_sam3.importlib.util.find_spec", return_value=spec):
                 backend = Sam3Backend(checkpoint, "cpu")
             guidance, camera, rgb, depth, _ = fixture()
             from slot_prompt_adapter import build_prompts
             prompt = build_prompts(guidance, camera, rgb, depth)["target"]
+            fingerprint = backend.fingerprint()
+            self.assertFalse(fingerprint["source_hash_enforced"])
+            self.assertNotIn("api_source_git_sha", fingerprint)
+            self.assertEqual(fingerprint["sam3_version"], "different-installed-version")
+            self.assertEqual(fingerprint["sam3_package_root"], str(Path(directory).resolve()))
+            self.assertEqual(fingerprint["api_source_hashes"], _sam3_source_hashes(directory))
             state = backend.set_image(rgb)
+            with patch.object(backend.processor, "set_image", return_value={
+                    "original_width": 24, "original_height": 32}):
+                with self.assertRaisesRegex(RuntimeError, "original image dimensions"):
+                    backend.set_image(rgb)
             masks, scores = backend.predict(state, role="target", prompt=prompt, mode="point+box")
             backend.predict(state, role="target", prompt=prompt, mode="box-only")
         self.assertFalse(model.training)
